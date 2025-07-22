@@ -953,7 +953,8 @@ def trending_outliers():
                 'thumbnail_url': video['thumbnail_url'],
                 'viral_score': multiplier / 10,
                 'engagement_rate': (stats['likes'] + stats['comments']) / stats['views'] if stats['views'] > 0 else 0,
-                'subscriber_count': channel_data.get('subscriber_count', 0)
+                'subscriber_count': channel_data.get('subscriber_count', 0),
+                'language': video.get('language', 'en')  # Add language field
             }
             outliers.append(video_result)
         
@@ -983,7 +984,8 @@ def trending_outliers():
                 'viral_score': round(video['viral_score'], 2),
                 'engagement_rate': round(video['engagement_rate'], 4),
                 'thumbnail_url': video['thumbnail_url'],
-                'subscriber_count': video['subscriber_count']
+                'subscriber_count': video['subscriber_count'],
+                'language': video['language']  # Include language in formatted output
             }
             formatted_outliers.append(formatted_video)
         

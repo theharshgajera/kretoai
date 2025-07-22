@@ -950,11 +950,17 @@ def trending_outliers():
         min_subscribers = filters.get('subscribers', 0)
         language = filters.get('language', None)  # None means no language filter
         
+        # Clear relevant cache to ensure fresh results
+        video_cache.clear()  # Clear video cache to avoid stale trending data
+        # Note: channel_cache is retained to avoid excessive API calls for channel stats
+        
         # Get trending videos
-        trending_videos = get_trending_videos(max_results=100)  # Fetch more videos
+        trending_videos = get_trending_videos(max_results=100)
         if not trending_videos:
             app.logger.warning("No trending videos retrieved, check internet or API key")
             return jsonify({'error': 'No trending videos found, check internet connection or API key'}), 503
+        
+        app.logger.debug(f"Fetched {len(trending_videos)} trending videos")
         
         # Analyze for outliers
         outlier_detector = OutlierDetector()
@@ -963,7 +969,10 @@ def trending_outliers():
         channel_ids = list(set(v['channel_id'] for v in trending_videos))
         processed_channels = {}
         for channel_id in channel_ids:
-            processed_channels[channel_id] = calculate_channel_average_views(channel_id)
+            if channel_id not in channel_cache:  # Only fetch if not cached
+                processed_channels[channel_id] = calculate_channel_average_views(channel_id)
+            else:
+                processed_channels[channel_id] = channel_cache[channel_id].get('average_views', 0)
         
         outliers = []
         for video in trending_videos:
@@ -983,7 +992,6 @@ def trending_outliers():
                 continue
             if min_subscribers and channel_data.get('subscriber_count', 0) < min_subscribers:
                 continue
-            # Only apply language filter if explicitly provided
             if language and video.get('language', 'en').lower() != language.lower():
                 continue
                 
@@ -1059,7 +1067,6 @@ def trending_outliers():
     except Exception as e:
         app.logger.error(f"Trending outliers error: {str(e)}")
         return jsonify({'success': False, 'error': f'An error occurred: {str(e)}'}), 500
-
 def get_top_videos(channel_id, n=5):
     youtube = build('youtube', 'v3', developerKey=YOUTUBE_API_KEY)
     try:

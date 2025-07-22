@@ -892,7 +892,7 @@ def check_internet(host="youtube.googleapis.com", port=443, timeout=5):
         app.logger.error(f"Internet connectivity check failed: {str(e)}")
         return False
 
-def get_trending_videos(max_results=50):
+def get_trending_videos(max_results=200):
     if not check_internet():
         app.logger.error("No internet connection to youtube.googleapis.com")
         return []
@@ -918,9 +918,10 @@ def get_trending_videos(max_results=50):
                 'views': int(item['statistics'].get('viewCount', 0)),
                 'likes': int(item['statistics'].get('likeCount', 0)),
                 'comments': int(item['statistics'].get('commentCount', 0)),
-                'duration': item['contentDetails']['duration']
+                'duration': item['contentDetails']['duration'],
+                'language': item['snippet'].get('defaultLanguage', 'en')
             })
-        app.logger.info(f"Fetched {len(videos)} trending videos")
+        app.logger.debug(f"Fetched {len(videos)} fresh trending videos")
         return videos
     except HttpError as e:
         app.logger.error(f"YouTube API error: {str(e)}")

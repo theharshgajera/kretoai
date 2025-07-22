@@ -945,8 +945,13 @@ def trending_outliers():
             app.logger.error("YOUTUBE_API_KEY is not set")
             return jsonify({'error': 'YouTube API key is not configured'}), 500
         
+        # Get filters from request
+        filters = data.get('filters', {})
+        min_subscribers = filters.get('subscribers', 0)
+        language = filters.get('language', None)  # None means no language filter
+        
         # Get trending videos
-        trending_videos = get_trending_videos(max_results=50)
+        trending_videos = get_trending_videos(max_results=100)  # Fetch more videos
         if not trending_videos:
             app.logger.warning("No trending videos retrieved, check internet or API key")
             return jsonify({'error': 'No trending videos found, check internet connection or API key'}), 503
@@ -967,30 +972,46 @@ def trending_outliers():
             if video_id not in video_stats or channel_id not in processed_channels:
                 continue
             stats = video_stats[video_id]
+            channel_data = channel_cache.get(channel_id, {})
             channel_avg = processed_channels[channel_id]
             if channel_avg == 0:
                 continue
             multiplier = stats['views'] / channel_avg
-            if multiplier > 5:  # Outlier threshold
-                duration_seconds = parse_duration(video['duration'])
-                video_result = {
-                    'video_id': video_id,
-                    'title': video['title'],
-                    'channel_title': video['channel_title'],
-                    'views': stats['views'],
-                    'channel_avg_views': channel_avg,
-                    'multiplier': round(multiplier, 2),
-                    'likes': stats['likes'],
-                    'comments': stats['comments'],
-                    'duration': video['duration'],
-                    'duration_seconds': duration_seconds,
-                    'url': f"https://www.youtube.com/watch?v={video_id}",
-                    'published_at': video['published_at'],
-                    'thumbnail_url': video['thumbnail_url'],
-                    'viral_score': multiplier / 10,  # Simplified viral score
-                    'engagement_rate': (stats['likes'] + stats['comments']) / stats['views'] if stats['views'] > 0 else 0
-                }
-                outliers.append(video_result)
+            
+            # Apply filters
+            if multiplier <= 2:  # Lowered threshold for more results
+                continue
+            if min_subscribers and channel_data.get('subscriber_count', 0) < min_subscribers:
+                continue
+            # Only apply language filter if explicitly provided
+            if language and video.get('language', 'en').lower() != language.lower():
+                continue
+                
+            duration_seconds = parse_duration(video['duration'])
+            video_result = {
+                'video_id': video_id,
+                'title': video['title'],
+                'channel_title': video['channel_title'],
+                'views': stats['views'],
+                'channel_avg_views': channel_avg,
+                'multiplier': round(multiplier, 2),
+                'likes': stats['likes'],
+                'comments': stats['comments'],
+                'duration': video['duration'],
+                'duration_seconds': duration_seconds,
+                'url': f"https://www.youtube.com/watch?v={video_id}",
+                'published_at': video['published_at'],
+                'thumbnail_url': video['thumbnail_url'],
+                'viral_score': multiplier / 10,  # Simplified viral score
+                'engagement_rate': (stats['likes'] + stats['comments']) / stats['views'] if stats['views'] > 0 else 0,
+                'subscriber_count': channel_data.get('subscriber_count', 0),
+                'language': video.get('language', 'en')
+            }
+            outliers.append(video_result)
+        
+        # Sort by multiplier and limit to 40 results
+        outliers.sort(key=lambda x: x['multiplier'], reverse=True)
+        outliers = outliers[:40]  # Ensure up to 40 results
         
         # Format results
         formatted_outliers = []
@@ -1014,7 +1035,9 @@ def trending_outliers():
                 'published_at': video['published_at'],
                 'viral_score': round(video['viral_score'], 2),
                 'engagement_rate': round(video['engagement_rate'], 4),
-                'thumbnail_url': video['thumbnail_url']
+                'thumbnail_url': video['thumbnail_url'],
+                'subscriber_count': video['subscriber_count'],
+                'language': video['language']
             }
             formatted_outliers.append(formatted_video)
         
@@ -1022,14 +1045,16 @@ def trending_outliers():
         search_history.append({
             'query': 'trending_outliers',
             'timestamp': datetime.now().isoformat(),
-            'results_count': len(formatted_outliers)
+            'results_count': len(formatted_outliers),
+            'filters': {'subscribers': min_subscribers, 'language': language}
         })
         
         app.logger.info(f"Found {len(formatted_outliers)} trending outliers")
         return jsonify({
             'success': True,
             'total_results': len(formatted_outliers),
-            'outliers': formatted_outliers
+            'outliers': formatted_outliers,
+            'filters_applied': {'subscribers': min_subscribers, 'language': language}
         })
     except Exception as e:
         app.logger.error(f"Trending outliers error: {str(e)}")

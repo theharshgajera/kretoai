@@ -8,7 +8,6 @@ import os
 from googleapiclient.errors import HttpError
 import re
 import socket
-from collections import defaultdict
 from datetime import datetime, timedelta
 import requests
 from PIL import Image
@@ -36,12 +35,29 @@ ACCESS_TOKEN = os.getenv('TRENDING_ACCESS_TOKEN', 'your_secure_token_123')
 # Configure Gemini client
 genai.configure(api_key=GEMINI_API_KEY)
 
-# In-memory cache for database replacement
-video_cache = {}
-channel_cache = {}
+# In-memory storage for search history (no caching for videos or channels)
 search_history = []
 
-# --- Simplified YouTube Service Logic ---
+# --- Helper Functions ---
+
+def check_internet(host="youtube.googleapis.com", port=443, timeout=5):
+    try:
+        socket.create_connection((host, port), timeout=timeout)
+        return True
+    except OSError as e:
+        app.logger.error(f"Internet connectivity check failed: {str(e)}")
+        return False
+
+def parse_duration(duration):
+    """Parse ISO 8601 duration to seconds."""
+    pattern = r'PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?'
+    match = re.match(pattern, duration)
+    if match:
+        hours = int(match.group(1) or 0)
+        minutes = int(match.group(2) or 0)
+        seconds = int(match.group(3) or 0)
+        return hours * 3600 + minutes * 60 + seconds
+    return 0
 
 def search_videos(query, max_results=50, region_code='US'):
     """Search YouTube videos using the API."""
@@ -65,8 +81,10 @@ def search_videos(query, max_results=50, region_code='US'):
                 'channel_id': item['snippet']['channelId'],
                 'channel_title': item['snippet']['channelTitle'],
                 'published_at': item['snippet']['publishedAt'],
-                'thumbnail_url': item['snippet']['thumbnails']['high']['url']
+                'thumbnail_url': item['snippet']['thumbnails']['high']['url'],
+                'language': item['snippet'].get('defaultLanguage', 'en')
             })
+        app.logger.debug(f"Fetched {len(videos)} videos for query: {query}")
         return videos
     except Exception as e:
         app.logger.error(f"YouTube search error: {str(e)}")
@@ -94,24 +112,11 @@ def get_video_stats(video_ids):
                 }
         except Exception as e:
             app.logger.error(f"YouTube video stats error: {str(e)}")
+    app.logger.debug(f"Fetched stats for {len(stats)} videos")
     return stats
 
-def parse_duration(duration):
-    """Parse ISO 8601 duration to seconds."""
-    pattern = r'PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?'
-    match = re.match(pattern, duration)
-    if match:
-        hours = int(match.group(1) or 0)
-        minutes = int(match.group(2) or 0)
-        seconds = int(match.group(3) or 0)
-        return hours * 3600 + minutes * 60 + seconds
-    return 0
-
 def calculate_channel_average_views(channel_id):
-    """Calculate average views for a channel."""
-    if channel_id in channel_cache:
-        return channel_cache[channel_id].get('average_views', 0)
-    
+    """Calculate average views and subscriber count for a channel."""
     youtube = build('youtube', 'v3', developerKey=YOUTUBE_API_KEY)
     try:
         channels_request = youtube.channels().list(
@@ -120,7 +125,7 @@ def calculate_channel_average_views(channel_id):
         )
         channels_response = channels_request.execute()
         if not channels_response['items']:
-            return 0
+            return 0, 0
         
         uploads_playlist_id = channels_response['items'][0]['contentDetails']['relatedPlaylists']['uploads']
         subscriber_count = int(channels_response['items'][0]['statistics'].get('subscriberCount', 0))
@@ -137,14 +142,163 @@ def calculate_channel_average_views(channel_id):
         total_views = sum(stats['views'] for stats in video_stats.values())
         avg_views = total_views / len(video_stats) if video_stats else 0
         
-        channel_cache[channel_id] = {
-            'average_views': avg_views,
-            'subscriber_count': subscriber_count
-        }
-        return avg_views
+        app.logger.debug(f"Calculated avg views {avg_views} and subscribers {subscriber_count} for channel {channel_id}")
+        return avg_views, subscriber_count
     except Exception as e:
         app.logger.error(f"Channel avg views error: {str(e)}")
-        return 0
+        return 0, 0
+
+def get_trending_videos(max_results=200):
+    """Fetch trending videos without caching."""
+    if not check_internet():
+        app.logger.error("No internet connection to youtube.googleapis.com")
+        return []
+    
+    youtube = build('youtube', 'v3', developerKey=YOUTUBE_API_KEY)
+    try:
+        request = youtube.videos().list(
+            part='id,snippet,statistics,contentDetails',
+            chart='mostPopular',
+            regionCode='US',
+            maxResults=max_results
+        )
+        response = request.execute()
+        videos = []
+        for item in response['items']:
+            videos.append({
+                'video_id': item['id'],
+                'title': item['snippet']['title'],
+                'channel_id': item['snippet']['channelId'],
+                'channel_title': item['snippet']['channelTitle'],
+                'published_at': item['snippet']['publishedAt'],
+                'thumbnail_url': item['snippet']['thumbnails']['high']['url'],
+                'views': int(item['statistics'].get('viewCount', 0)),
+                'likes': int(item['statistics'].get('likeCount', 0)),
+                'comments': int(item['statistics'].get('commentCount', 0)),
+                'duration': item['contentDetails']['duration']
+            })
+        app.logger.debug(f"Fetched {len(videos)} fresh trending videos")
+        return videos
+    except HttpError as e:
+        app.logger.error(f"YouTube API error: {str(e)}")
+        return []
+    except Exception as e:
+        app.logger.error(f"Error fetching trending videos: {str(e)}")
+        return []
+
+def get_top_videos(channel_id, n=5):
+    """Get top videos for a channel."""
+    youtube = build('youtube', 'v3', developerKey=YOUTUBE_API_KEY)
+    try:
+        request = youtube.search().list(
+            part='id,snippet',
+            channelId=channel_id,
+            order='viewCount',
+            type='video',
+            maxResults=n
+        )
+        response = request.execute()
+        videos = [
+            {
+                'video_id': item['id']['videoId'],
+                'title': item['snippet']['title']
+            } for item in response['items']
+        ]
+        app.logger.debug(f"Fetched {len(videos)} top videos for channel {channel_id}")
+        return videos
+    except Exception as e:
+        app.logger.error(f"Error fetching top videos for channel {channel_id}: {str(e)}")
+        return []
+
+def get_related_videos(video_id, m=15):
+    """Get related videos."""
+    youtube = build('youtube', 'v3', developerKey=YOUTUBE_API_KEY)
+    try:
+        request = youtube.search().list(
+            part='snippet',
+            relatedToVideoId=video_id,
+            type='video',
+            maxResults=m
+        )
+        response = request.execute()
+        related_videos = []
+        for item in response['items']:
+            related_videos.append({
+                'video_id': item['id']['videoId'],
+                'channel_id': item['snippet']['channelId'],
+                'channel_title': item['snippet']['channelTitle'],
+                'title': item['snippet']['title'],
+                'published_at': item['snippet']['publishedAt'],
+                'thumbnail_url': item['snippet']['thumbnails']['high']['url']
+            })
+        app.logger.debug(f"Fetched {len(related_videos)} related videos for video {video_id}")
+        return related_videos
+    except Exception as e:
+        app.logger.error(f"Error fetching related videos for video {video_id}: {str(e)}")
+        return []
+
+def search_videos_by_query(query, max_results=15):
+    """Search videos by query."""
+    youtube = build('youtube', 'v3', developerKey=YOUTUBE_API_KEY)
+    try:
+        request = youtube.search().list(
+            part='snippet',
+            q=query,
+            type='video',
+            maxResults=max_results,
+            order='viewCount'
+        )
+        response = request.execute()
+        videos = []
+        for item in response['items']:
+            videos.append({
+                'video_id': item['id']['videoId'],
+                'channel_id': item['snippet']['channelId'],
+                'channel_title': item['snippet']['channelTitle'],
+                'title': item['snippet']['title'],
+                'published_at': item['snippet']['publishedAt'],
+                'thumbnail_url': item['snippet']['thumbnails']['high']['url']
+            })
+        app.logger.debug(f"Fetched {len(videos)} videos for query '{query}'")
+        return videos
+    except Exception as e:
+        app.logger.error(f"Error searching videos for query '{query}': {str(e)}")
+        return []
+
+def analyze_videos_for_outliers(videos):
+    """Analyze videos for outliers."""
+    video_ids = [v['video_id'] for v in videos]
+    video_stats = get_video_stats(video_ids)
+    channel_ids = list(set(v['channel_id'] for v in videos))
+    processed_channels = {}
+    for channel_id in channel_ids:
+        avg_views, subscriber_count = calculate_channel_average_views(channel_id)
+        processed_channels[channel_id] = {'average_views': avg_views, 'subscriber_count': subscriber_count}
+    outlier_videos = []
+    for video in videos:
+        video_id = video['video_id']
+        channel_id = video['channel_id']
+        if video_id not in video_stats or channel_id not in processed_channels:
+            continue
+        stats = video_stats[video_id]
+        channel_avg = processed_channels[channel_id]['average_views']
+        if channel_avg == 0:
+            continue
+        multiplier = stats['views'] / channel_avg
+        if multiplier > 5:
+            video_result = {
+                'video_id': video_id,
+                'title': video['title'],
+                'channel_title': video['channel_title'],
+                'views': stats['views'],
+                'channel_avg_views': channel_avg,
+                'multiplier': round(multiplier, 2),
+                'url': f"https://www.youtube.com/watch?v={video_id}",
+                'thumbnail_url': video['thumbnail_url']
+            }
+            outlier_videos.append(video_result)
+    app.logger.debug(f"Found {len(outlier_videos)} outliers in analysis")
+    return outlier_videos
 
 # --- Outlier Detection Logic ---
 
@@ -165,15 +319,12 @@ class OutlierDetector:
         
         app.logger.debug(f"Starting search for: {query}")
         
-        # Generate related queries
         related_queries = self._generate_related_queries(query)
         all_videos = []
         
-        # Original query
         videos = self._get_videos_for_query(query, enhanced=True)
         all_videos.extend(videos)
         
-        # Related queries
         for related_query in related_queries[:3]:
             if self._check_api_quota():
                 related_videos = self._get_videos_for_query(related_query, enhanced=True)
@@ -199,6 +350,7 @@ class OutlierDetector:
             'api_calls_used': self.api_calls_count
         })
         
+        app.logger.debug(f"Detected {len(final_results)} outliers for query: {query}")
         return final_results
 
     def _generate_related_queries(self, original_query):
@@ -215,14 +367,9 @@ class OutlierDetector:
         return [v for v in variations if v.lower() != original_query.lower()][:3]
 
     def _get_videos_for_query(self, query, enhanced=False):
-        """Retrieve videos for a query."""
-        cache_key = f"{query}_enhanced" if enhanced else query
-        if cache_key in video_cache:
-            app.logger.debug(f"Using cached results for: {query}")
-            return video_cache[cache_key]
-        
+        """Retrieve videos for a query without caching."""
         if not self._check_api_quota():
-            return video_cache.get(cache_key, [])
+            return []
         
         videos = []
         if enhanced:
@@ -237,7 +384,6 @@ class OutlierDetector:
             videos = search_videos(query, max_results=50)
             self.api_calls_count += 1
         
-        video_cache[cache_key] = videos
         return videos
 
     def _remove_duplicate_videos(self, videos):
@@ -263,7 +409,8 @@ class OutlierDetector:
         processed_channels = {}
         for channel_id in channel_ids:
             if self._check_api_quota():
-                processed_channels[channel_id] = calculate_channel_average_views(channel_id)
+                avg_views, subscriber_count = calculate_channel_average_views(channel_id)
+                processed_channels[channel_id] = {'average_views': avg_views, 'subscriber_count': subscriber_count}
         
         outlier_videos = []
         for video in videos:
@@ -273,7 +420,8 @@ class OutlierDetector:
                 continue
             
             stats = video_stats[video_id]
-            channel_avg = processed_channels[channel_id]
+            channel_data = processed_channels[channel_id]
+            channel_avg = channel_data['average_views']
             if channel_avg == 0:
                 continue
             
@@ -300,7 +448,8 @@ class OutlierDetector:
                 'engagement_rate': round(engagement_rate, 4),
                 'viral_score': round(viral_score, 2),
                 'relevance_score': round(relevance_score, 2),
-                'video_age_days': self._get_video_age_days(video['published_at'])
+                'video_age_days': self._get_video_age_days(video['published_at']),
+                'subscriber_count': channel_data.get('subscriber_count', 0)
             }
             
             if self._passes_enhanced_filters(video_result, filters):
@@ -389,10 +538,8 @@ class OutlierDetector:
         if video['duration_seconds'] < min_duration:
             return False
         min_subscribers = filters.get('subscribers')
-        if min_subscribers:
-            channel_data = channel_cache.get(video['channel_id'], {})
-            if channel_data.get('subscriber_count', 0) < min_subscribers:
-                return False
+        if min_subscribers and video['subscriber_count'] < min_subscribers:
+            return False
         return True
 
     def _check_api_quota(self):
@@ -414,13 +561,12 @@ class OutlierDetector:
             return f"{num/1000:.1f}K"
         else:
             return str(num)
-    
+
 # --- Thumbnail Similarity Logic ---
 
 class UltraFastYouTubeSimilarity:
     def __init__(self):
         self._session = requests.Session()
-        self._feature_cache = {}
         self._batch_size = 64
         self._max_workers = 16
 
@@ -477,6 +623,7 @@ class UltraFastYouTubeSimilarity:
                 for item in playlist_response['items']
             ]
             videos = self._filter_shorts_strict(raw_videos)
+            app.logger.debug(f"Fetched {len(videos)} channel videos for {channel_id}")
             return videos[:max_results]
         except Exception as e:
             app.logger.error(f"Channel videos error: {str(e)}")
@@ -514,14 +661,11 @@ class UltraFastYouTubeSimilarity:
                     if video[0] not in video_ids_seen and len(all_videos) < max_results:
                         video_ids_seen.add(video[0])
                         all_videos.append(video)
+        app.logger.debug(f"Fetched {len(all_videos)} related videos")
         return all_videos
 
     def _preprocess_image_ultra_fast(self, image_url):
         """Preprocess image for similarity."""
-        cache_key = hash(image_url)
-        if cache_key in self._feature_cache:
-            return self._feature_cache[cache_key]
-        
         try:
             if image_url.startswith('http'):
                 response = self._session.get(image_url, timeout=5)
@@ -532,8 +676,7 @@ class UltraFastYouTubeSimilarity:
             img = img.convert('RGB').resize((224, 224), Image.Resampling.LANCZOS)
             img_array = np.array(img, dtype=np.float32) / 255.0
             img_array = (img_array - 0.5) * 2.0
-            img_array = img_array.flatten()  # Simple feature extraction
-            self._feature_cache[cache_key] = img_array
+            img_array = img_array.flatten()
             return img_array
         except Exception as e:
             app.logger.error(f"Image processing error: {str(e)}")
@@ -639,61 +782,13 @@ def find_similar_videos_enhanced(input_url, max_results=150, top_similar=50, sim
                 "average_visual_similarity": round(np.mean([v['visual_similarity'] for v in similar_videos_data]), 3) if similar_videos_data else 0
             }
         }
+        app.logger.debug(f"Found {len(similar_videos_data)} similar videos")
         return result_data, input_title, None
     except Exception as e:
         app.logger.error(f"Similarity analysis error: {str(e)}")
         return None, None, f"Analysis failed: {str(e)}"
 
 # --- Flask Routes ---
-
-@app.route('/generate_titles', methods=['POST'])
-def generate_titles():
-    """Generate viral YouTube titles."""
-    try:
-        data = request.get_json()
-        app.logger.debug(f"Received data: {data}")
-        idea = data.get('idea')
-        script = data.get('script')
-        if not idea:
-            return jsonify({'error': 'Idea is required'}), 400
-        
-        youtube = build('youtube', 'v3', developerKey=YOUTUBE_API_KEY)
-        search_response = youtube.search().list(
-            q=idea,
-            part='snippet',
-            type='video',
-            order='viewCount',
-            maxResults=10
-        ).execute()
-        titles = [item['snippet']['title'] for item in search_response.get('items', [])]
-        if not titles:
-            return jsonify({'error': 'No videos found for the given idea'}), 404
-        
-        prompt = (
-            f"Given the idea: '{idea}' and the following popular video titles related to it: "
-            f"{', '.join(titles)}, generate 5 viral video title options that are similar and likely to attract viewers. "
-        )
-        if script:
-            prompt += (
-                f"Also consider the following video script for context: '{script[:500]}' (truncated for brevity). "
-                f"Use the script's themes to inform the titles, tags, and description. "
-            )
-        prompt += (
-            f"For each title, provide a virality score out of 100. Also, provide 10 tags and one description that are common to all 5 titles. "
-            f"Return the response in valid JSON format wrapped in ```json\n...\n``` with the following structure: "
-            f"{{ 'titles': [{{'title': 'string', 'virality_score': int}}, ...], 'tags': ['string', ...], 'description': 'string' }}"
-        )
-        
-        client = genai.GenerativeModel('gemini-2.0-flash')
-        response = client.generate_content(prompt)
-        gemini_response = response.text
-        if gemini_response.startswith('```json\n') and gemini_response.endswith('\n```'):
-            gemini_response = gemini_response[7:-4]
-        gemini_response = json.loads(gemini_response)
-        return jsonify(gemini_response)
-    except Exception as e:
-        app.logger.error(f"Generate titles error: {str(e)}")
-        return jsonify({'error': str(e)}), 500
 
 @app.route('/')
 def index():
@@ -749,7 +844,8 @@ def search_outliers():
                 'engagement_rate': video.get('engagement_rate'),
                 'relevance_score': video.get('relevance_score'),
                 'video_age_days': video.get('video_age_days'),
-                'thumbnail_url': video['thumbnail_url']
+                'thumbnail_url': video['thumbnail_url'],
+                'subscriber_count': video['subscriber_count']
             }
             formatted_outliers.append(formatted_video)
         
@@ -762,6 +858,121 @@ def search_outliers():
         })
     except Exception as e:
         app.logger.error(f"Search outliers error: {str(e)}")
+        return jsonify({'success': False, 'error': f'An error occurred: {str(e)}'}), 500
+
+@app.route('/api/trending_outliers', methods=['POST'])
+def trending_outliers():
+    """Fetch trending outlier videos without caching or filters."""
+    try:
+        data = request.get_json()
+        if not data or 'access_token' not in data:
+            return jsonify({'error': 'Access token is required'}), 400
+        
+        access_token = data['access_token'].strip()
+        if access_token != ACCESS_TOKEN:
+            return jsonify({'error': 'Invalid access token'}), 401
+        
+        if not YOUTUBE_API_KEY:
+            app.logger.error("YOUTUBE_API_KEY is not set")
+            return jsonify({'error': 'YouTube API key is not configured'}), 500
+        
+        trending_videos = get_trending_videos(max_results=200)
+        if not trending_videos:
+            app.logger.warning("No trending videos retrieved, check internet or API key")
+            return jsonify({'error': 'No trending videos found, check internet connection or API key'}), 503
+        
+        app.logger.debug(f"Fetched {len(trending_videos)} trending videos")
+        
+        outlier_detector = OutlierDetector()
+        video_ids = [v['video_id'] for v in trending_videos]
+        video_stats = get_video_stats(video_ids)
+        channel_ids = list(set(v['channel_id'] for v in trending_videos))
+        processed_channels = {}
+        for channel_id in channel_ids:
+            avg_views, subscriber_count = calculate_channel_average_views(channel_id)
+            processed_channels[channel_id] = {'average_views': avg_views, 'subscriber_count': subscriber_count}
+        
+        outliers = []
+        for video in trending_videos:
+            video_id = video['video_id']
+            channel_id = video['channel_id']
+            if video_id not in video_stats or channel_id not in processed_channels:
+                continue
+            stats = video_stats[video_id]
+            channel_data = processed_channels[channel_id]
+            channel_avg = channel_data['average_views']
+            if channel_avg == 0:
+                continue
+            multiplier = stats['views'] / channel_avg
+            
+            if multiplier <= 0.5:  # Very low threshold to maximize results
+                continue
+                
+            duration_seconds = parse_duration(video['duration'])
+            video_result = {
+                'video_id': video_id,
+                'title': video['title'],
+                'channel_title': video['channel_title'],
+                'views': stats['views'],
+                'channel_avg_views': channel_avg,
+                'multiplier': round(multiplier, 2),
+                'likes': stats['likes'],
+                'comments': stats['comments'],
+                'duration': video['duration'],
+                'duration_seconds': duration_seconds,
+                'url': f"https://www.youtube.com/watch?v={video_id}",
+                'published_at': video['published_at'],
+                'thumbnail_url': video['thumbnail_url'],
+                'viral_score': multiplier / 10,
+                'engagement_rate': (stats['likes'] + stats['comments']) / stats['views'] if stats['views'] > 0 else 0,
+                'subscriber_count': channel_data.get('subscriber_count', 0)
+            }
+            outliers.append(video_result)
+        
+        app.logger.debug(f"Outliers before limiting: {len(outliers)}")
+        outliers.sort(key=lambda x: x['multiplier'], reverse=True)
+        outliers = outliers[:200]  # Return up to 200 results
+        
+        formatted_outliers = []
+        for video in outliers:
+            formatted_video = {
+                'video_id': video['video_id'],
+                'title': video['title'],
+                'channel_title': video['channel_title'],
+                'views': video['views'],
+                'views_formatted': outlier_detector.format_number(video['views']),
+                'channel_avg_views': video['channel_avg_views'],
+                'channel_avg_views_formatted': outlier_detector.format_number(video['channel_avg_views']),
+                'multiplier': video['multiplier'],
+                'likes': video['likes'],
+                'likes_formatted': outlier_detector.format_number(video['likes']),
+                'comments': video['comments'],
+                'comments_formatted': outlier_detector.format_number(video['comments']),
+                'duration': video['duration'],
+                'duration_seconds': video['duration_seconds'],
+                'url': video['url'],
+                'published_at': video['published_at'],
+                'viral_score': round(video['viral_score'], 2),
+                'engagement_rate': round(video['engagement_rate'], 4),
+                'thumbnail_url': video['thumbnail_url'],
+                'subscriber_count': video['subscriber_count']
+            }
+            formatted_outliers.append(formatted_video)
+        
+        search_history.append({
+            'query': 'trending_outliers',
+            'timestamp': datetime.now().isoformat(),
+            'results_count': len(formatted_outliers)
+        })
+        
+        app.logger.info(f"Found {len(formatted_outliers)} trending outliers")
+        return jsonify({
+            'success': True,
+            'total_results': len(formatted_outliers),
+            'outliers': formatted_outliers
+        })
+    except Exception as e:
+        app.logger.error(f"Trending outliers error: {str(e)}")
         return jsonify({'success': False, 'error': f'An error occurred: {str(e)}'}), 500
 
 @app.route('/api/similar-thumbnails', methods=['POST'])
@@ -798,11 +1009,12 @@ def health_check():
     return jsonify({
         'status': 'healthy',
         'service': 'YouTube Title Generation and Outlier Detection Tool',
-        'timestamp': '2025-07-16 11:46 IST'
+        'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S IST')
     })
 
 @app.route('/api/channel_outliers_by_id', methods=['POST'])
 def channel_outliers_by_id():
+    """Find outlier videos from related channels."""
     try:
         data = request.get_json()
         if not data or 'channel_id' not in data:
@@ -811,7 +1023,6 @@ def channel_outliers_by_id():
         if not channel_id:
             return jsonify({'error': 'Channel ID cannot be empty'}), 400
         
-        # Verify the channel exists
         youtube = build('youtube', 'v3', developerKey=YOUTUBE_API_KEY)
         channel_request = youtube.channels().list(
             part='id,snippet',
@@ -822,25 +1033,21 @@ def channel_outliers_by_id():
             return jsonify({'error': 'Channel not found'}), 404
         channel_title = response['items'][0]['snippet']['title']
         
-        # Get top videos from the channel
         top_videos = get_top_videos(channel_id, n=5)
         if not top_videos:
             return jsonify({'error': 'No top videos found for the channel'}), 404
         
-        # Collect related videos from other channels
         related_videos = []
         for video in top_videos:
             video_id = video['video_id']
             rel_vids = get_related_videos(video_id, m=15)
             for vid in rel_vids:
-                if vid['channel_id'] != channel_id:  # Exclude original channel
+                if vid['channel_id'] != channel_id:
                     related_videos.append(vid)
         
-        # Fallback: Search using keywords from top video titles
         if not related_videos:
             app.logger.info(f"No related videos found for channel {channel_id}, falling back to keyword search")
             for video in top_videos:
-                # Extract key terms from video title
                 query = ' '.join([word for word in video['title'].split() if len(word) > 3 and word.lower() not in ['the', 'and', 'video']])[:50]
                 if query:
                     search_vids = search_videos_by_query(query, max_results=15)
@@ -851,10 +1058,8 @@ def channel_outliers_by_id():
         if not related_videos:
             return jsonify({'error': 'No related videos found from similar channels after fallback search'}), 404
         
-        # Find outliers among related videos
         outlier_videos = analyze_videos_for_outliers(related_videos)
         
-        # Format results with OutlierDetector
         outlier_detector = OutlierDetector()
         formatted_outliers = []
         for video in outlier_videos:
@@ -872,7 +1077,6 @@ def channel_outliers_by_id():
             }
             formatted_outliers.append(formatted_video)
         
-        # Return JSON response
         return jsonify({
             'success': True,
             'channel_id': channel_id,
@@ -884,294 +1088,54 @@ def channel_outliers_by_id():
         app.logger.error(f"Channel outliers by ID error: {str(e)}")
         return jsonify({'error': f'An error occurred: {str(e)}'}), 500
 
-def check_internet(host="youtube.googleapis.com", port=443, timeout=5):
-    try:
-        socket.create_connection((host, port), timeout=timeout)
-        return True
-    except OSError as e:
-        app.logger.error(f"Internet connectivity check failed: {str(e)}")
-        return False
-
-def get_trending_videos(max_results=200):
-    if not check_internet():
-        app.logger.error("No internet connection to youtube.googleapis.com")
-        return []
-    
-    youtube = build('youtube', 'v3', developerKey=YOUTUBE_API_KEY)
-    try:
-        request = youtube.videos().list(
-            part='id,snippet,statistics,contentDetails',
-            chart='mostPopular',
-            regionCode='US',  # Adjust region as needed
-            maxResults=max_results
-        )
-        response = request.execute()
-        videos = []
-        for item in response['items']:
-            videos.append({
-                'video_id': item['id'],
-                'title': item['snippet']['title'],
-                'channel_id': item['snippet']['channelId'],
-                'channel_title': item['snippet']['channelTitle'],
-                'published_at': item['snippet']['publishedAt'],
-                'thumbnail_url': item['snippet']['thumbnails']['high']['url'],
-                'views': int(item['statistics'].get('viewCount', 0)),
-                'likes': int(item['statistics'].get('likeCount', 0)),
-                'comments': int(item['statistics'].get('commentCount', 0)),
-                'duration': item['contentDetails']['duration'],
-                'language': item['snippet'].get('defaultLanguage', 'en')
-            })
-        app.logger.debug(f"Fetched {len(videos)} fresh trending videos")
-        return videos
-    except HttpError as e:
-        app.logger.error(f"YouTube API error: {str(e)}")
-        return []
-    except Exception as e:
-        app.logger.error(f"Error fetching trending videos: {str(e)}")
-        return []
-
-@app.route('/api/trending_outliers', methods=['POST'])
-def trending_outliers():
+@app.route('/generate_titles', methods=['POST'])
+def generate_titles():
+    """Generate viral YouTube titles."""
     try:
         data = request.get_json()
-        if not data or 'access_token' not in data:
-            return jsonify({'error': 'Access token is required'}), 400
+        app.logger.debug(f"Received data: {data}")
+        idea = data.get('idea')
+        script = data.get('script')
+        if not idea:
+            return jsonify({'error': 'Idea is required'}), 400
         
-        access_token = data['access_token'].strip()
-        if access_token != ACCESS_TOKEN:
-            return jsonify({'error': 'Invalid access token'}), 401
-        
-        # Check API key
-        if not YOUTUBE_API_KEY:
-            app.logger.error("YOUTUBE_API_KEY is not set")
-            return jsonify({'error': 'YouTube API key is not configured'}), 500
-        
-        # Get filters from request
-        filters = data.get('filters', {})
-        min_subscribers = filters.get('subscribers', 0)
-        language = filters.get('language', None)  # None means no language filter
-        
-        # Clear relevant cache to ensure fresh results
-        video_cache.clear()  # Clear video cache to avoid stale trending data
-        # Note: channel_cache is retained to avoid excessive API calls for channel stats
-        
-        # Get trending videos
-        trending_videos = get_trending_videos(max_results=100)
-        if not trending_videos:
-            app.logger.warning("No trending videos retrieved, check internet or API key")
-            return jsonify({'error': 'No trending videos found, check internet connection or API key'}), 503
-        
-        app.logger.debug(f"Fetched {len(trending_videos)} trending videos")
-        
-        # Analyze for outliers
-        outlier_detector = OutlierDetector()
-        video_ids = [v['video_id'] for v in trending_videos]
-        video_stats = get_video_stats(video_ids)
-        channel_ids = list(set(v['channel_id'] for v in trending_videos))
-        processed_channels = {}
-        for channel_id in channel_ids:
-            if channel_id not in channel_cache:  # Only fetch if not cached
-                processed_channels[channel_id] = calculate_channel_average_views(channel_id)
-            else:
-                processed_channels[channel_id] = channel_cache[channel_id].get('average_views', 0)
-        
-        outliers = []
-        for video in trending_videos:
-            video_id = video['video_id']
-            channel_id = video['channel_id']
-            if video_id not in video_stats or channel_id not in processed_channels:
-                continue
-            stats = video_stats[video_id]
-            channel_data = channel_cache.get(channel_id, {})
-            channel_avg = processed_channels[channel_id]
-            if channel_avg == 0:
-                continue
-            multiplier = stats['views'] / channel_avg
-            
-            # Apply filters
-            if multiplier <= 2:  # Lowered threshold for more results
-                continue
-            if min_subscribers and channel_data.get('subscriber_count', 0) < min_subscribers:
-                continue
-            if language and video.get('language', 'en').lower() != language.lower():
-                continue
-                
-            duration_seconds = parse_duration(video['duration'])
-            video_result = {
-                'video_id': video_id,
-                'title': video['title'],
-                'channel_title': video['channel_title'],
-                'views': stats['views'],
-                'channel_avg_views': channel_avg,
-                'multiplier': round(multiplier, 2),
-                'likes': stats['likes'],
-                'comments': stats['comments'],
-                'duration': video['duration'],
-                'duration_seconds': duration_seconds,
-                'url': f"https://www.youtube.com/watch?v={video_id}",
-                'published_at': video['published_at'],
-                'thumbnail_url': video['thumbnail_url'],
-                'viral_score': multiplier / 10,  # Simplified viral score
-                'engagement_rate': (stats['likes'] + stats['comments']) / stats['views'] if stats['views'] > 0 else 0,
-                'subscriber_count': channel_data.get('subscriber_count', 0),
-                'language': video.get('language', 'en')
-            }
-            outliers.append(video_result)
-        
-        # Sort by multiplier and limit to 40 results
-        outliers.sort(key=lambda x: x['multiplier'], reverse=True)
-        outliers = outliers[:40]  # Ensure up to 40 results
-        
-        # Format results
-        formatted_outliers = []
-        for video in outliers:
-            formatted_video = {
-                'video_id': video['video_id'],
-                'title': video['title'],
-                'channel_title': video['channel_title'],
-                'views': video['views'],
-                'views_formatted': outlier_detector.format_number(video['views']),
-                'channel_avg_views': video['channel_avg_views'],
-                'channel_avg_views_formatted': outlier_detector.format_number(video['channel_avg_views']),
-                'multiplier': video['multiplier'],
-                'likes': video['likes'],
-                'likes_formatted': outlier_detector.format_number(video['likes']),
-                'comments': video['comments'],
-                'comments_formatted': outlier_detector.format_number(video['comments']),
-                'duration': video['duration'],
-                'duration_seconds': video['duration_seconds'],
-                'url': video['url'],
-                'published_at': video['published_at'],
-                'viral_score': round(video['viral_score'], 2),
-                'engagement_rate': round(video['engagement_rate'], 4),
-                'thumbnail_url': video['thumbnail_url'],
-                'subscriber_count': video['subscriber_count'],
-                'language': video['language']
-            }
-            formatted_outliers.append(formatted_video)
-        
-        # Log search to search_history
-        search_history.append({
-            'query': 'trending_outliers',
-            'timestamp': datetime.now().isoformat(),
-            'results_count': len(formatted_outliers),
-            'filters': {'subscribers': min_subscribers, 'language': language}
-        })
-        
-        app.logger.info(f"Found {len(formatted_outliers)} trending outliers")
-        return jsonify({
-            'success': True,
-            'total_results': len(formatted_outliers),
-            'outliers': formatted_outliers,
-            'filters_applied': {'subscribers': min_subscribers, 'language': language}
-        })
-    except Exception as e:
-        app.logger.error(f"Trending outliers error: {str(e)}")
-        return jsonify({'success': False, 'error': f'An error occurred: {str(e)}'}), 500
-def get_top_videos(channel_id, n=5):
-    youtube = build('youtube', 'v3', developerKey=YOUTUBE_API_KEY)
-    try:
-        request = youtube.search().list(
-            part='id,snippet',
-            channelId=channel_id,
+        youtube = build('youtube', 'v3', developerKey=YOUTUBE_API_KEY)
+        search_response = youtube.search().list(
+            q=idea,
+            part='snippet',
+            type='video',
             order='viewCount',
-            type='video',
-            maxResults=n
+            maxResults=10
+        ).execute()
+        titles = [item['snippet']['title'] for item in search_response.get('items', [])]
+        if not titles:
+            return jsonify({'error': 'No videos found for the given idea'}), 404
+        
+        prompt = (
+            f"Given the idea: '{idea}' and the following popular video titles related to it: "
+            f"{', '.join(titles)}, generate 5 viral video title options that are similar and likely to attract viewers. "
         )
-        response = request.execute()
-        videos = [
-            {
-                'video_id': item['id']['videoId'],
-                'title': item['snippet']['title']
-            } for item in response['items']
-        ]
-        return videos
-    except Exception as e:
-        app.logger.error(f"Error fetching top videos for channel {channel_id}: {str(e)}")
-        return []
-
-def get_related_videos(video_id, m=15):
-    youtube = build('youtube', 'v3', developerKey=YOUTUBE_API_KEY)
-    try:
-        request = youtube.search().list(
-            part='snippet',
-            relatedToVideoId=video_id,
-            type='video',
-            maxResults=m
+        if script:
+            prompt += (
+                f"Also consider the following video script for context: '{script[:500]}' (truncated for brevity). "
+                f"Use the script's themes to inform the titles, tags, and description. "
+            )
+        prompt += (
+            f"For each title, provide a virality score out of 100. Also, provide 10 tags and one description that are common to all 5 titles. "
+            f"Return the response in valid JSON format wrapped in ```json\n...\n``` with the following structure: "
+            f"{{ 'titles': [{{'title': 'string', 'virality_score': int}}, ...], 'tags': ['string', ...], 'description': 'string' }}"
         )
-        response = request.execute()
-        related_videos = []
-        for item in response['items']:
-            related_videos.append({
-                'video_id': item['id']['videoId'],
-                'channel_id': item['snippet']['channelId'],
-                'channel_title': item['snippet']['channelTitle'],
-                'title': item['snippet']['title'],
-                'published_at': item['snippet']['publishedAt'],
-                'thumbnail_url': item['snippet']['thumbnails']['high']['url']
-            })
-        return related_videos
+        
+        client = genai.GenerativeModel('gemini-2.0-flash')
+        response = client.generate_content(prompt)
+        gemini_response = response.text
+        if gemini_response.startswith('```json\n') and gemini_response.endswith('\n```'):
+            gemini_response = gemini_response[7:-4]
+        gemini_response = json.loads(gemini_response)
+        return jsonify(gemini_response)
     except Exception as e:
-        app.logger.error(f"Error fetching related videos for video {video_id}: {str(e)}")
-        return []
-
-def search_videos_by_query(query, max_results=15):
-    youtube = build('youtube', 'v3', developerKey=YOUTUBE_API_KEY)
-    try:
-        request = youtube.search().list(
-            part='snippet',
-            q=query,
-            type='video',
-            maxResults=max_results,
-            order='viewCount'
-        )
-        response = request.execute()
-        videos = []
-        for item in response['items']:
-            videos.append({
-                'video_id': item['id']['videoId'],
-                'channel_id': item['snippet']['channelId'],
-                'channel_title': item['snippet']['channelTitle'],
-                'title': item['snippet']['title'],
-                'published_at': item['snippet']['publishedAt'],
-                'thumbnail_url': item['snippet']['thumbnails']['high']['url']
-            })
-        return videos
-    except Exception as e:
-        app.logger.error(f"Error searching videos for query '{query}': {str(e)}")
-        return []
-
-def analyze_videos_for_outliers(videos):
-    video_ids = [v['video_id'] for v in videos]
-    video_stats = get_video_stats(video_ids)
-    channel_ids = list(set(v['channel_id'] for v in videos))
-    processed_channels = {}
-    for channel_id in channel_ids:
-        processed_channels[channel_id] = calculate_channel_average_views(channel_id)
-    outlier_videos = []
-    for video in videos:
-        video_id = video['video_id']
-        channel_id = video['channel_id']
-        if video_id not in video_stats or channel_id not in processed_channels:
-            continue
-        stats = video_stats[video_id]
-        channel_avg = processed_channels[channel_id]
-        if channel_avg == 0:
-            continue
-        multiplier = stats['views'] / channel_avg
-        if multiplier > 5:  # Outlier threshold
-            video_result = {
-                'video_id': video_id,
-                'title': video['title'],
-                'channel_title': video['channel_title'],
-                'views': stats['views'],
-                'channel_avg_views': channel_avg,
-                'multiplier': round(multiplier, 2),
-                'url': f"https://www.youtube.com/watch?v={video_id}",
-                'thumbnail_url': video['thumbnail_url']
-            }
-            outlier_videos.append(video_result)
-    return outlier_videos
+        app.logger.error(f"Generate titles error: {str(e)}")
+        return jsonify({'error': str(e)}), 500
 
 @app.errorhandler(404)
 def not_found(error):

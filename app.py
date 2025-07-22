@@ -875,7 +875,7 @@ def search_outliers():
 
 @app.route('/api/trending_outliers', methods=['POST'])
 def trending_outliers():
-    """Fetch random trending outlier videos without caching or filters."""
+    """Fetch random trending outlier videos without caching, excluding Shorts."""
     try:
         request_id = str(time.time())
         app.logger.debug(f"Request ID: {request_id}")
@@ -892,13 +892,22 @@ def trending_outliers():
             app.logger.error("YOUTUBE_API_KEY is not set")
             return jsonify({'error': 'YouTube API key is not configured'}), 500
         
+        # Fetch trending videos
         trending_videos = get_random_trending_videos(max_results=200)
         if not trending_videos:
             app.logger.warning("No trending videos retrieved, check internet or API key")
             return jsonify({'error': 'No trending videos found, check internet connection or API key'}), 503
         
-        app.logger.debug(f"Fetched {len(trending_videos)} random trending videos")
+        # Filter out Shorts
+        similarity_finder = UltraFastYouTubeSimilarity()
+        raw_videos = [[v['video_id'], v['title'], v['thumbnail_url']] for v in trending_videos]
+        filtered_videos = similarity_finder._filter_shorts_strict(raw_videos, max_duration=60)
+        video_id_to_data = {v['video_id']: v for v in trending_videos}
+        trending_videos = [video_id_to_data[video[0]] for video in filtered_videos if video[0] in video_id_to_data]
         
+        app.logger.debug(f"Fetched {len(trending_videos)} trending videos after filtering out Shorts")
+        
+        # Process videos for outliers
         outlier_detector = OutlierDetector()
         video_ids = [v['video_id'] for v in trending_videos]
         video_stats = get_video_stats(video_ids)
@@ -923,7 +932,7 @@ def trending_outliers():
                 continue
             multiplier = stats['views'] / channel_avg
             
-            if multiplier <= 0.5:  # Very low threshold to maximize results
+            if multiplier <= 0.5:  # Low threshold to maximize results
                 app.logger.debug(f"Skipping video {video_id}: multiplier {multiplier} <= 0.5")
                 continue
                 
@@ -949,7 +958,7 @@ def trending_outliers():
             outliers.append(video_result)
         
         app.logger.debug(f"Outliers before limiting: {len(outliers)}")
-        random.shuffle(outliers)  # Shuffle outliers for additional randomness
+        random.shuffle(outliers)  # Shuffle outliers for randomness
         outliers = outliers[:200]  # Return up to 200 results
         
         formatted_outliers = []
@@ -984,7 +993,7 @@ def trending_outliers():
             'results_count': len(formatted_outliers)
         })
         
-        app.logger.info(f"Found {len(formatted_outliers)} random trending outliers")
+        app.logger.info(f"Found {len(formatted_outliers)} random trending outliers (Shorts excluded)")
         return jsonify({
             'success': True,
             'total_results': len(formatted_outliers),

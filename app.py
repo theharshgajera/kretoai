@@ -16,6 +16,7 @@ from io import BytesIO
 import time
 from sklearn.metrics.pairwise import cosine_similarity
 from dotenv import load_dotenv
+import random
 
 load_dotenv()
 
@@ -59,7 +60,7 @@ def parse_duration(duration):
         return hours * 3600 + minutes * 60 + seconds
     return 0
 
-def search_videos(query, max_results=50, region_code='US'):
+def search_videos(query, max_results=50, region_code='US', published_after=None):
     """Search YouTube videos using the API."""
     youtube = build('youtube', 'v3', developerKey=YOUTUBE_API_KEY)
     try:
@@ -69,31 +70,41 @@ def search_videos(query, max_results=50, region_code='US'):
             type='video',
             maxResults=min(max_results, 50),
             order='viewCount',
-            regionCode=region_code
+            regionCode=region_code,
+            publishedAfter=published_after
         )
         response = request.execute()
+        video_ids = [item['id']['videoId'] for item in response['items']]
+        # Fetch additional video details including contentDetails
         videos = []
-        for item in response['items']:
-            video_id = item['id']['videoId']
-            videos.append({
-                'video_id': video_id,
-                'title': item['snippet']['title'],
-                'channel_id': item['snippet']['channelId'],
-                'channel_title': item['snippet']['channelTitle'],
-                'published_at': item['snippet']['publishedAt'],
-                'thumbnail_url': item['snippet']['thumbnails']['high']['url'],
-                'language': item['snippet'].get('defaultLanguage', 'en')
-            })
-        app.logger.debug(f"Fetched {len(videos)} videos for query: {query}")
+        if video_ids:
+            video_details = get_video_details_batch(video_ids)
+            for item in response['items']:
+                video_id = item['id']['videoId']
+                details = video_details.get(video_id, {})
+                videos.append({
+                    'video_id': video_id,
+                    'title': item['snippet']['title'],
+                    'channel_id': item['snippet']['channelId'],
+                    'channel_title': item['snippet']['channelTitle'],
+                    'published_at': item['snippet']['publishedAt'],
+                    'thumbnail_url': item['snippet']['thumbnails']['high']['url'],
+                    'language': item['snippet'].get('defaultLanguage', 'en'),
+                    'views': details.get('views', 0),
+                    'likes': details.get('likes', 0),
+                    'comments': details.get('comments', 0),
+                    'duration': details.get('duration', 'PT0S')
+                })
+        app.logger.debug(f"Fetched {len(videos)} videos for query: {query}, region: {region_code}")
         return videos
     except Exception as e:
         app.logger.error(f"YouTube search error: {str(e)}")
         return []
 
-def get_video_stats(video_ids):
-    """Get statistics for a list of video IDs."""
+def get_video_details_batch(video_ids):
+    """Get details for a batch of video IDs including statistics and contentDetails."""
     youtube = build('youtube', 'v3', developerKey=YOUTUBE_API_KEY)
-    stats = {}
+    details = {}
     for i in range(0, len(video_ids), 50):
         batch_ids = video_ids[i:i+50]
         try:
@@ -104,16 +115,19 @@ def get_video_stats(video_ids):
             response = request.execute()
             for item in response['items']:
                 video_id = item['id']
-                stats[video_id] = {
+                details[video_id] = {
                     'views': int(item['statistics'].get('viewCount', 0)),
                     'likes': int(item['statistics'].get('likeCount', 0)),
                     'comments': int(item['statistics'].get('commentCount', 0)),
                     'duration': item['contentDetails']['duration']
                 }
         except Exception as e:
-            app.logger.error(f"YouTube video stats error: {str(e)}")
-    app.logger.debug(f"Fetched stats for {len(stats)} videos")
-    return stats
+            app.logger.error(f"YouTube video details error: {str(e)}")
+    return details
+
+def get_video_stats(video_ids):
+    """Get statistics for a list of video IDs."""
+    return get_video_details_batch(video_ids)
 
 def calculate_channel_average_views(channel_id):
     """Calculate average views and subscriber count for a channel."""
@@ -148,42 +162,42 @@ def calculate_channel_average_views(channel_id):
         app.logger.error(f"Channel avg views error: {str(e)}")
         return 0, 0
 
-def get_trending_videos(max_results=200):
-    """Fetch trending videos without caching."""
+def get_random_trending_videos(max_results=200):
+    """Fetch random trending videos using varied queries, regions, and dates."""
     if not check_internet():
         app.logger.error("No internet connection to youtube.googleapis.com")
         return []
     
-    youtube = build('youtube', 'v3', developerKey=YOUTUBE_API_KEY)
+    # Define a list of broad, generic queries to simulate trending topics
+    trending_queries = [
+        "trending", "popular", "viral", "new video", "latest", "hot", "buzz", "top videos",
+        "music", "gaming", "vlog", "tutorial", "review", "reaction", "challenge"
+    ]
+    
+    # Randomly select a query
+    query = random.choice(trending_queries)
+    
+    # Randomly select a region
+    regions = ['US', 'GB', 'IN', 'CA', 'AU', 'DE', 'FR']
+    region_code = random.choice(regions)
+    
+    # Randomize publishedAfter to get recent videos from different time windows
+    days_back = random.randint(1, 30)  # Videos from the last 1-30 days
+    published_after = (datetime.utcnow() - timedelta(days=days_back)).isoformat("T") + "Z"
+    
     try:
-        request = youtube.videos().list(
-            part='id,snippet,statistics,contentDetails',
-            chart='mostPopular',
-            regionCode='US',
-            maxResults=max_results
+        videos = search_videos(
+            query=query,
+            max_results=max_results,
+            region_code=region_code,
+            published_after=published_after
         )
-        response = request.execute()
-        videos = []
-        for item in response['items']:
-            videos.append({
-                'video_id': item['id'],
-                'title': item['snippet']['title'],
-                'channel_id': item['snippet']['channelId'],
-                'channel_title': item['snippet']['channelTitle'],
-                'published_at': item['snippet']['publishedAt'],
-                'thumbnail_url': item['snippet']['thumbnails']['high']['url'],
-                'views': int(item['statistics'].get('viewCount', 0)),
-                'likes': int(item['statistics'].get('likeCount', 0)),
-                'comments': int(item['statistics'].get('commentCount', 0)),
-                'duration': item['contentDetails']['duration']
-            })
-        app.logger.debug(f"Fetched {len(videos)} fresh trending videos")
+        # Shuffle videos to ensure random order
+        random.shuffle(videos)
+        app.logger.debug(f"Fetched {len(videos)} random trending videos for query: {query}, region: {region_code}, published after: {published_after}")
         return videos
-    except HttpError as e:
-        app.logger.error(f"YouTube API error: {str(e)}")
-        return []
     except Exception as e:
-        app.logger.error(f"Error fetching trending videos: {str(e)}")
+        app.logger.error(f"Error fetching random trending videos: {str(e)}")
         return []
 
 def get_top_videos(channel_id, n=5):
@@ -835,14 +849,13 @@ def search_outliers():
                 'comments_formatted': outlier_detector.format_number(video['comments']),
                 'duration': video['duration'],
                 'duration_seconds': video['duration_seconds'],
-                'url': video['url'],
                 'published_at': video['published_at'],
                 'rank': video.get('rank'),
                 'performance_tier': video.get('performance_tier'),
                 'composite_score': video.get('composite_score'),
                 'viral_score': video.get('viral_score'),
-                'engagement_rate': video.get('engagement_rate'),
-                'relevance_score': video.get('relevance_score'),
+                'engagement_rate': video['engagement_rate'],
+                'relevance_score': video['relevance_score'],
                 'video_age_days': video.get('video_age_days'),
                 'thumbnail_url': video['thumbnail_url'],
                 'subscriber_count': video['subscriber_count']
@@ -862,8 +875,11 @@ def search_outliers():
 
 @app.route('/api/trending_outliers', methods=['POST'])
 def trending_outliers():
-    """Fetch trending outlier videos without caching or filters."""
+    """Fetch random trending outlier videos without caching or filters."""
     try:
+        request_id = str(time.time())
+        app.logger.debug(f"Request ID: {request_id}")
+        
         data = request.get_json()
         if not data or 'access_token' not in data:
             return jsonify({'error': 'Access token is required'}), 400
@@ -876,12 +892,12 @@ def trending_outliers():
             app.logger.error("YOUTUBE_API_KEY is not set")
             return jsonify({'error': 'YouTube API key is not configured'}), 500
         
-        trending_videos = get_trending_videos(max_results=200)
+        trending_videos = get_random_trending_videos(max_results=200)
         if not trending_videos:
             app.logger.warning("No trending videos retrieved, check internet or API key")
             return jsonify({'error': 'No trending videos found, check internet connection or API key'}), 503
         
-        app.logger.debug(f"Fetched {len(trending_videos)} trending videos")
+        app.logger.debug(f"Fetched {len(trending_videos)} random trending videos")
         
         outlier_detector = OutlierDetector()
         video_ids = [v['video_id'] for v in trending_videos]
@@ -897,18 +913,21 @@ def trending_outliers():
             video_id = video['video_id']
             channel_id = video['channel_id']
             if video_id not in video_stats or channel_id not in processed_channels:
+                app.logger.debug(f"Skipping video {video_id}: missing stats or channel data")
                 continue
             stats = video_stats[video_id]
             channel_data = processed_channels[channel_id]
             channel_avg = channel_data['average_views']
             if channel_avg == 0:
+                app.logger.debug(f"Skipping video {video_id}: channel average views is 0")
                 continue
             multiplier = stats['views'] / channel_avg
             
             if multiplier <= 0.5:  # Very low threshold to maximize results
+                app.logger.debug(f"Skipping video {video_id}: multiplier {multiplier} <= 0.5")
                 continue
                 
-            duration_seconds = parse_duration(video['duration'])
+            duration_seconds = parse_duration(stats.get('duration', 'PT0S'))
             video_result = {
                 'video_id': video_id,
                 'title': video['title'],
@@ -918,7 +937,7 @@ def trending_outliers():
                 'multiplier': round(multiplier, 2),
                 'likes': stats['likes'],
                 'comments': stats['comments'],
-                'duration': video['duration'],
+                'duration': stats['duration'],
                 'duration_seconds': duration_seconds,
                 'url': f"https://www.youtube.com/watch?v={video_id}",
                 'published_at': video['published_at'],
@@ -930,7 +949,7 @@ def trending_outliers():
             outliers.append(video_result)
         
         app.logger.debug(f"Outliers before limiting: {len(outliers)}")
-        outliers.sort(key=lambda x: x['multiplier'], reverse=True)
+        random.shuffle(outliers)  # Shuffle outliers for additional randomness
         outliers = outliers[:200]  # Return up to 200 results
         
         formatted_outliers = []
@@ -965,7 +984,7 @@ def trending_outliers():
             'results_count': len(formatted_outliers)
         })
         
-        app.logger.info(f"Found {len(formatted_outliers)} trending outliers")
+        app.logger.info(f"Found {len(formatted_outliers)} random trending outliers")
         return jsonify({
             'success': True,
             'total_results': len(formatted_outliers),

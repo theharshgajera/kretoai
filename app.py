@@ -7,6 +7,7 @@ import json
 import os
 from googleapiclient.errors import HttpError
 import re
+from youtube_thumbnail_similarity import find_similar_videos_enhanced
 import socket
 from datetime import datetime, timedelta
 import requests
@@ -1007,20 +1008,28 @@ def trending_outliers():
 
 @app.route('/api/similar-thumbnails', methods=['POST'])
 def get_similar_thumbnails():
-    """Get similar thumbnails for a video ID."""
+    """API endpoint to get similar thumbnails for a given video ID"""
     try:
         data = request.get_json()
         video_id = data.get('video_id')
         if not video_id:
             return jsonify({'error': 'Video ID is required'}), 400
+
+        video_url = f"https://www.youtube.com/watch?v={video_id}"
+        result_data, _, error = find_similar_videos_enhanced(video_url)
         
-        result_data, _, error = find_similar_videos_enhanced(f"https://www.youtube.com/watch?v={video_id}")
         if error:
-            return jsonify({'error': error}), 400
-        return jsonify(result_data)
+            return jsonify({'success': False, 'error': error}), 400
+
+        return jsonify({'success': True, **result_data})
+    
     except Exception as e:
-        app.logger.error(f"Similar thumbnails error: {str(e)}")
-        return jsonify({'success': False, 'error': f'An error occurred: {str(e)}'}), 500
+        print(f"Error in get_similar_thumbnails: {str(e)}")
+        print(traceback.format_exc())
+        return jsonify({
+            'success': False,
+            'error': f'An error occurred: {str(e)}'
+        }), 500
 
 @app.route('/api/stats', methods=['GET'])
 def get_stats():

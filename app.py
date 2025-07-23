@@ -1255,7 +1255,7 @@ def similar_channels():
         return jsonify({'success': False, 'error': f'An error occurred: {str(e)}'}), 500
 
 def parse_duration(duration):
-    """Parse ISO 8601 duration to seconds."""
+    """Parse ISO 8601 duration (e.g., PT1H2M3S) to seconds."""
     pattern = r'PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?'
     match = re.match(pattern, duration)
     if match:
@@ -1266,7 +1266,7 @@ def parse_duration(duration):
     return 0
 
 def format_number(num):
-    """Format large numbers for display."""
+    """Format large numbers into a readable string (e.g., 1200 -> 1.2K, 1500000 -> 1.5M)."""
     if num >= 1000000:
         return f"{num/1000000:.1f}M"
     elif num >= 1000:
@@ -1276,11 +1276,8 @@ def format_number(num):
 
 @app.route('/api/similar_videos', methods=['POST'])
 def similar_videos():
-    """Fetch up to 15 similar videos for a given video ID using title-based search."""
+    """Fetch up to 15 similar videos for a given video ID using a title-based search."""
     try:
-        request_id = str(time.time())
-        app.logger.debug(f"Request ID: {request_id}")
-        
         # Validate input
         data = request.get_json()
         if not data or 'video_id' not in data:
@@ -1293,59 +1290,46 @@ def similar_videos():
         # Initialize YouTube API client
         youtube = build('youtube', 'v3', developerKey=YOUTUBE_API_KEY)
         
-        # Fetch input video details
-        video_request = youtube.videos().list(
-            part='snippet,statistics,contentDetails',
+        # Step 1: Fetch input video details
+        video_response = youtube.videos().list(
+            part='snippet',
             id=video_id
-        )
-        try:
-            response = video_request.execute()
-        except HttpError as e:
-            app.logger.error(f"YouTube API error for video {video_id}: {str(e)}")
-            return jsonify({'error': f'Failed to fetch video details: {str(e)}'}), 400
+        ).execute()
         
-        if not response['items']:
-            app.logger.error(f"Video {video_id} not found")
+        if not video_response['items']:
             return jsonify({'error': 'Video not found'}), 404
         
-        input_video = response['items'][0]
+        input_video = video_response['items'][0]
         input_title = input_video['snippet']['title']
         input_channel_id = input_video['snippet']['channelId']
         input_channel_title = input_video['snippet']['channelTitle']
-        app.logger.debug(f"Input video: {input_title}, channel: {input_channel_title}")
         
-        # Generate search query from title
-        query = ' '.join([word for word in input_title.split() if len(word) > 3 and word.lower() not in ['the', 'and', 'video']])[:50]
+        # Step 2: Generate search query from the title
+        # Use simple title-based query, excluding short or common words
+        query = ' '.join([word for word in input_title.split() if len(word) > 3 and word.lower() not in ['the', 'and', 'video']])
         if not query:
-            app.logger.warning(f"No valid search query generated from title: {input_title}")
-            return jsonify({'error': 'No similar videos found due to invalid title query'}), 404
+            return jsonify({'error': 'No valid search query generated from title'}), 404
         
-        # Fetch similar videos using search().list with the query
-        search_request = youtube.search().list(
+        # Step 3: Search for similar videos
+        search_response = youtube.search().list(
             part='snippet',
             q=query,
             type='video',
-            maxResults=25,  # Fetch more to account for filtering
-            order='relevance',
-            regionCode='US'
-        )
-        try:
-            search_response = search_request.execute()
-        except HttpError as e:
-            app.logger.error(f"YouTube API search error for query '{query}': {str(e)}")
-            return jsonify({'error': f'Failed to fetch similar videos: {str(e)}'}), 503
+            maxResults=25,  # Fetch extra results to allow filtering
+            order='relevance'
+        ).execute()
         
         if not search_response.get('items', []):
-            app.logger.warning(f"No similar videos found for query '{query}'")
             return jsonify({'error': 'No similar videos found'}), 404
         
-        # Filter out videos from the same channel and collect video IDs
+        # Step 4: Filter results
         related_videos = []
         video_ids = []
-        seen_video_ids = {video_id}
+        seen_video_ids = {video_id}  # Track seen IDs to avoid duplicates
         for item in search_response['items']:
             rel_video_id = item['id']['videoId']
             rel_channel_id = item['snippet']['channelId']
+            # Exclude input video and same-channel videos
             if rel_video_id not in seen_video_ids and rel_channel_id != input_channel_id:
                 seen_video_ids.add(rel_video_id)
                 video_ids.append(rel_video_id)
@@ -1359,22 +1343,16 @@ def similar_videos():
                 })
         
         if not related_videos:
-            app.logger.warning(f"No similar videos from different channels found for query '{query}'")
             return jsonify({'error': 'No similar videos found from different channels'}), 404
         
-        # Fetch additional stats for related videos
-        video_request = youtube.videos().list(
+        # Step 5: Fetch additional details for the filtered videos
+        details_response = youtube.videos().list(
             part='statistics,contentDetails',
-            id=','.join(video_ids[:25])
-        )
-        try:
-            video_response = video_request.execute()
-        except HttpError as e:
-            app.logger.error(f"YouTube API videos error for similar videos: {str(e)}")
-            return jsonify({'error': f'Failed to fetch video stats: {str(e)}'}), 503
+            id=','.join(video_ids[:25])  # Limit to 25 IDs per API call
+        ).execute()
         
         video_stats = {}
-        for item in video_response.get('items', []):
+        for item in details_response.get('items', []):
             vid = item['id']
             video_stats[vid] = {
                 'views': int(item['statistics'].get('viewCount', 0)),
@@ -1383,41 +1361,38 @@ def similar_videos():
                 'duration': item['contentDetails']['duration']
             }
         
-        # Format output to match trending_outliers structure
+        # Step 6: Format the response
         formatted_videos = []
-        for video in related_videos[:15]:  # Limit to 15
+        for video in related_videos[:15]:  # Limit to 15 similar videos
             vid = video['video_id']
-            if vid not in video_stats:
-                app.logger.debug(f"Skipping video {vid}: missing stats")
-                continue
-            stats = video_stats[vid]
-            duration_seconds = parse_duration(stats['duration'])
-            
-            formatted_video = {
-                'video_id': vid,
-                'title': video['title'],
-                'channel_title': video['channel_title'],
-                'views': stats['views'],
-                'views_formatted': format_number(stats['views']),
-                'likes': stats['likes'],
-                'likes_formatted': format_number(stats['likes']),
-                'comments': stats['comments'],
-                'comments_formatted': format_number(stats['comments']),
-                'duration': stats['duration'],
-                'duration_seconds': duration_seconds,
-                'url': f"https://www.youtube.com/watch?v={vid}",
-                'published_at': video['published_at'],
-                'thumbnail_url': video['thumbnail_url'],
-                'engagement_rate': round((stats['likes'] + stats['comments']) / stats['views'], 4) if stats['views'] > 0 else 0,
-                'language': video['language']
-            }
-            formatted_videos.append(formatted_video)
+            if vid in video_stats:
+                stats = video_stats[vid]
+                duration_seconds = parse_duration(stats['duration'])
+                engagement_rate = (stats['likes'] + stats['comments']) / stats['views'] if stats['views'] > 0 else 0
+                formatted_video = {
+                    'video_id': vid,
+                    'title': video['title'],
+                    'channel_title': video['channel_title'],
+                    'views': stats['views'],
+                    'views_formatted': format_number(stats['views']),
+                    'likes': stats['likes'],
+                    'likes_formatted': format_number(stats['likes']),
+                    'comments': stats['comments'],
+                    'comments_formatted': format_number(stats['comments']),
+                    'duration': stats['duration'],
+                    'duration_seconds': duration_seconds,
+                    'url': f"https://www.youtube.com/watch?v={vid}",
+                    'published_at': video['published_at'],
+                    'thumbnail_url': video['thumbnail_url'],
+                    'engagement_rate': round(engagement_rate, 4),
+                    'language': video['language']
+                }
+                formatted_videos.append(formatted_video)
         
         if not formatted_videos:
-            app.logger.warning(f"No valid similar videos after processing for video {video_id}")
-            return jsonify({'error': 'No similar videos found after processing'}), 404
+            return jsonify({'error': 'No valid similar videos after processing'}), 404
         
-        app.logger.info(f"Found {len(formatted_videos)} similar videos for video {video_id}")
+        # Return successful response
         return jsonify({
             'success': True,
             'input_video_id': video_id,
@@ -1426,8 +1401,12 @@ def similar_videos():
             'total_results': len(formatted_videos),
             'similar_videos': formatted_videos
         })
+    
+    except HttpError as e:
+        # Handle YouTube API-specific errors (e.g., quota exceeded)
+        return jsonify({'success': False, 'error': f'YouTube API error: {str(e)}'}), 503
     except Exception as e:
-        app.logger.error(f"Similar videos error: {str(e)}")
+        # Handle unexpected errors
         return jsonify({'success': False, 'error': f'An error occurred: {str(e)}'}), 500
         
 @app.errorhandler(404)

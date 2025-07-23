@@ -1253,6 +1253,103 @@ def similar_channels():
     except Exception as e:
         app.logger.error(f"Similar channels error: {str(e)}")
         return jsonify({'success': False, 'error': f'An error occurred: {str(e)}'}), 500
+
+@app.route('/api/similar_videos', methods=['POST'])
+def similar_videos():
+    """Fetch up to 15 similar videos based on a given video ID."""
+    try:
+        data = request.get_json()
+        if not data or 'video_id' not in data:
+            return jsonify({'error': 'Video ID is required'}), 400
+        
+        video_id = data['video_id'].strip()
+        if not video_id:
+            return jsonify({'error': 'Video ID cannot be empty'}), 400
+        
+        # Verify the input video exists and get its details
+        youtube = build('youtube', 'v3', developerKey=YOUTUBE_API_KEY)
+        video_request = youtube.videos().list(
+            part='snippet,statistics,contentDetails',
+            id=video_id
+        )
+        response = video_request.execute()
+        if not response['items']:
+            return jsonify({'error': 'Video not found'}), 404
+        input_video = response['items'][0]
+        input_title = input_video['snippet']['title']
+        input_channel_id = input_video['snippet']['channelId']
+        input_channel_title = input_video['snippet']['channelTitle']
+        
+        # Fetch related videos
+        related_videos = get_related_videos(video_id, m=15)
+        
+        # If insufficient videos, fall back to keyword search based on video title
+        if len(related_videos) < 15:
+            app.logger.info(f"Only {len(related_videos)} related videos found for video {video_id}, falling back to keyword search")
+            query = ' '.join([word for word in input_title.split() if len(word) > 3 and word.lower() not in ['the', 'and', 'video']])[:50]
+            if query:
+                search_vids = search_videos_by_query(query, max_results=15)
+                for vid in search_vids:
+                    if vid['channel_id'] != input_channel_id and len(related_videos) < 15:
+                        related_videos.append(vid)
+        
+        if not related_videos:
+            return jsonify({'error': 'No similar videos found'}), 404
+        
+        # Remove duplicates and filter out input video/channel
+        unique_videos = []
+        seen_video_ids = {video_id}
+        for video in related_videos:
+            if video['video_id'] not in seen_video_ids and video['channel_id'] != input_channel_id:
+                seen_video_ids.add(video['video_id'])
+                unique_videos.append(video)
+        
+        # Fetch additional stats for videos
+        video_ids = [v['video_id'] for v in unique_videos]
+        video_stats = get_video_stats(video_ids)
+        
+        # Format output to match trending_outliers structure
+        outlier_detector = OutlierDetector()
+        formatted_videos = []
+        for video in unique_videos[:15]:  # Limit to 15
+            video_id = video['video_id']
+            if video_id not in video_stats:
+                continue
+            stats = video_stats[video_id]
+            duration_seconds = parse_duration(stats['duration'])
+            
+            formatted_video = {
+                'video_id': video_id,
+                'title': video['title'],
+                'channel_title': video['channel_title'],
+                'views': stats['views'],
+                'views_formatted': outlier_detector.format_number(stats['views']),
+                'likes': stats['likes'],
+                'likes_formatted': outlier_detector.format_number(stats['likes']),
+                'comments': stats['comments'],
+                'comments_formatted': outlier_detector.format_number(stats['comments']),
+                'duration': stats['duration'],
+                'duration_seconds': duration_seconds,
+                'url': f"https://www.youtube.com/watch?v={video_id}",
+                'published_at': video['published_at'],
+                'thumbnail_url': video['thumbnail_url'],
+                'engagement_rate': round((stats['likes'] + stats['comments']) / stats['views'], 4) if stats['views'] > 0 else 0,
+                'language': video.get('language', 'en')
+            }
+            formatted_videos.append(formatted_video)
+        
+        app.logger.info(f"Found {len(formatted_videos)} similar videos for video {video_id}")
+        return jsonify({
+            'success': True,
+            'input_video_id': video_id,
+            'input_video_title': input_title,
+            'input_channel_title': input_channel_title,
+            'total_results': len(formatted_videos),
+            'similar_videos': formatted_videos
+        })
+    except Exception as e:
+        app.logger.error(f"Similar videos error: {str(e)}")
+        return jsonify({'success': False, 'error': f'An error occurred: {str(e)}'}), 500
 @app.errorhandler(404)
 def not_found(error):
     return jsonify({'error': 'Endpoint not found'}), 404

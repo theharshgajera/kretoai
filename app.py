@@ -1265,9 +1265,18 @@ def parse_duration(duration):
         return hours * 3600 + minutes * 60 + seconds
     return 0
 
+def format_number(num):
+    """Format large numbers for display."""
+    if num >= 1000000:
+        return f"{num/1000000:.1f}M"
+    elif num >= 1000:
+        return f"{num/1000:.1f}K"
+    else:
+        return str(num)
+
 @app.route('/api/similar_videos', methods=['POST'])
 def similar_videos():
-    """Fetch up to 15 similar videos for a given video ID using relatedToVideoId."""
+    """Fetch up to 15 similar videos for a given video ID using title-based search."""
     try:
         request_id = str(time.time())
         app.logger.debug(f"Request ID: {request_id}")
@@ -1284,7 +1293,7 @@ def similar_videos():
         # Initialize YouTube API client
         youtube = build('youtube', 'v3', developerKey=YOUTUBE_API_KEY)
         
-        # Verify input video exists and get details
+        # Fetch input video details
         video_request = youtube.videos().list(
             part='snippet,statistics,contentDetails',
             id=video_id
@@ -1305,22 +1314,29 @@ def similar_videos():
         input_channel_title = input_video['snippet']['channelTitle']
         app.logger.debug(f"Input video: {input_title}, channel: {input_channel_title}")
         
-        # Fetch related videos using search().list with relatedToVideoId
+        # Generate search query from title
+        query = ' '.join([word for word in input_title.split() if len(word) > 3 and word.lower() not in ['the', 'and', 'video']])[:50]
+        if not query:
+            app.logger.warning(f"No valid search query generated from title: {input_title}")
+            return jsonify({'error': 'No similar videos found due to invalid title query'}), 404
+        
+        # Fetch similar videos using search().list with the query
         search_request = youtube.search().list(
             part='snippet',
-            relatedToVideoId=video_id,
+            q=query,
             type='video',
             maxResults=25,  # Fetch more to account for filtering
-            order='relevance'
+            order='relevance',
+            regionCode='US'
         )
         try:
             search_response = search_request.execute()
         except HttpError as e:
-            app.logger.error(f"YouTube API search error for related videos to {video_id}: {str(e)}")
-            return jsonify({'error': f'Failed to fetch related videos: {str(e)}'}), 503
+            app.logger.error(f"YouTube API search error for query '{query}': {str(e)}")
+            return jsonify({'error': f'Failed to fetch similar videos: {str(e)}'}), 503
         
         if not search_response.get('items', []):
-            app.logger.warning(f"No related videos found for video {video_id}")
+            app.logger.warning(f"No similar videos found for query '{query}'")
             return jsonify({'error': 'No similar videos found'}), 404
         
         # Filter out videos from the same channel and collect video IDs
@@ -1343,7 +1359,7 @@ def similar_videos():
                 })
         
         if not related_videos:
-            app.logger.warning(f"No related videos from different channels found for video {video_id}")
+            app.logger.warning(f"No similar videos from different channels found for query '{query}'")
             return jsonify({'error': 'No similar videos found from different channels'}), 404
         
         # Fetch additional stats for related videos
@@ -1354,7 +1370,7 @@ def similar_videos():
         try:
             video_response = video_request.execute()
         except HttpError as e:
-            app.logger.error(f"YouTube API videos error for related videos: {str(e)}")
+            app.logger.error(f"YouTube API videos error for similar videos: {str(e)}")
             return jsonify({'error': f'Failed to fetch video stats: {str(e)}'}), 503
         
         video_stats = {}
@@ -1368,7 +1384,6 @@ def similar_videos():
             }
         
         # Format output to match trending_outliers structure
-        outlier_detector = OutlierDetector()
         formatted_videos = []
         for video in related_videos[:15]:  # Limit to 15
             vid = video['video_id']
@@ -1383,11 +1398,11 @@ def similar_videos():
                 'title': video['title'],
                 'channel_title': video['channel_title'],
                 'views': stats['views'],
-                'views_formatted': outlier_detector.format_number(stats['views']),
+                'views_formatted': format_number(stats['views']),
                 'likes': stats['likes'],
-                'likes_formatted': outlier_detector.format_number(stats['likes']),
+                'likes_formatted': format_number(stats['likes']),
                 'comments': stats['comments'],
-                'comments_formatted': outlier_detector.format_number(stats['comments']),
+                'comments_formatted': format_number(stats['comments']),
                 'duration': stats['duration'],
                 'duration_seconds': duration_seconds,
                 'url': f"https://www.youtube.com/watch?v={vid}",

@@ -1414,6 +1414,7 @@ def similar_videos():
     except Exception as e:
         app.logger.error(f"Similar videos error: {str(e)}")
         return jsonify({'success': False, 'error': f'An error occurred: {str(e)}'}), 500
+        
 @app.errorhandler(404)
 def not_found(error):
     return jsonify({'error': 'Endpoint not found'}), 404

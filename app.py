@@ -1305,7 +1305,6 @@ def similar_videos():
         input_channel_title = input_video['snippet']['channelTitle']
         
         # Step 2: Generate search query from the title
-        # Use simple title-based query, excluding short or common words
         query = ' '.join([word for word in input_title.split() if len(word) > 3 and word.lower() not in ['the', 'and', 'video']])
         if not query:
             return jsonify({'error': 'No valid search query generated from title'}), 404
@@ -1336,6 +1335,7 @@ def similar_videos():
                 related_videos.append({
                     'video_id': rel_video_id,
                     'title': item['snippet']['title'],
+                    'channel_id': rel_channel_id,  # Store channel_id
                     'channel_title': item['snippet']['channelTitle'],
                     'published_at': item['snippet']['publishedAt'],
                     'thumbnail_url': item['snippet']['thumbnails']['high']['url'],
@@ -1345,7 +1345,7 @@ def similar_videos():
         if not related_videos:
             return jsonify({'error': 'No similar videos found from different channels'}), 404
         
-        # Step 5: Fetch additional details for the filtered videos
+        # Step 5: Fetch additional details for videos
         details_response = youtube.videos().list(
             part='statistics,contentDetails',
             id=','.join(video_ids[:25])  # Limit to 25 IDs per API call
@@ -1361,17 +1361,31 @@ def similar_videos():
                 'duration': item['contentDetails']['duration']
             }
         
-        # Step 6: Format the response
+        # Step 6: Fetch channel stats for average views and subscribers
+        channel_ids = list(set(video['channel_id'] for video in related_videos))
+        processed_channels = {}
+        for channel_id in channel_ids:
+            avg_views, subscriber_count = calculate_channel_average_views(channel_id)
+            processed_channels[channel_id] = {
+                'average_views': avg_views,
+                'subscriber_count': subscriber_count
+            }
+        
+        # Step 7: Format the response
         formatted_videos = []
         for video in related_videos[:15]:  # Limit to 15 similar videos
             vid = video['video_id']
             if vid in video_stats:
                 stats = video_stats[vid]
+                channel_data = processed_channels.get(video['channel_id'], {'average_views': 0, 'subscriber_count': 0})
+                channel_avg = channel_data['average_views']
+                multiplier = stats['views'] / channel_avg if channel_avg > 0 else 0
                 duration_seconds = parse_duration(stats['duration'])
                 engagement_rate = (stats['likes'] + stats['comments']) / stats['views'] if stats['views'] > 0 else 0
                 formatted_video = {
                     'video_id': vid,
                     'title': video['title'],
+                    'channel_id': video['channel_id'],  # Added
                     'channel_title': video['channel_title'],
                     'views': stats['views'],
                     'views_formatted': format_number(stats['views']),
@@ -1385,7 +1399,11 @@ def similar_videos():
                     'published_at': video['published_at'],
                     'thumbnail_url': video['thumbnail_url'],
                     'engagement_rate': round(engagement_rate, 4),
-                    'language': video['language']
+                    'language': video['language'],
+                    'multiplier': round(multiplier, 2),  # Added
+                    'channel_avg_views': channel_avg,  # Added
+                    'channel_avg_views_formatted': format_number(channel_avg),  # Added
+                    'subscriber_count': channel_data['subscriber_count']  # Added
                 }
                 formatted_videos.append(formatted_video)
         

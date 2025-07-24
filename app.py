@@ -1105,6 +1105,7 @@ def channel_outliers_by_id():
             formatted_video = {
                 'video_id': video['video_id'],
                 'title': video['title'],
+                'channel_id': video['channel_id'],  # Added
                 'channel_title': video['channel_title'],
                 'views': video['views'],
                 'views_formatted': outlier_detector.format_number(video['views']),
@@ -1126,7 +1127,7 @@ def channel_outliers_by_id():
     except Exception as e:
         app.logger.error(f"Channel outliers by ID error: {str(e)}")
         return jsonify({'error': f'An error occurred: {str(e)}'}), 500
-
+        
 @app.route('/generate_titles', methods=['POST'])
 def generate_titles():
     """Generate viral YouTube titles."""

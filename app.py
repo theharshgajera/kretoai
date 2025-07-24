@@ -282,34 +282,40 @@ def search_videos_by_query(query, max_results=15):
 
 def analyze_videos_for_outliers(videos):
     """Analyze videos for outliers."""
-    video_ids = [v['video_id'] for v in videos]
+    video_ids = [v['video_id'] for v in videos if 'video_id' in v]
     video_stats = get_video_stats(video_ids)
-    channel_ids = list(set(v['channel_id'] for v in videos))
+    channel_ids = list(set(v['channel_id'] for v in videos if 'channel_id' in v))
     processed_channels = {}
     for channel_id in channel_ids:
         avg_views, subscriber_count = calculate_channel_average_views(channel_id)
         processed_channels[channel_id] = {'average_views': avg_views, 'subscriber_count': subscriber_count}
     outlier_videos = []
     for video in videos:
-        video_id = video['video_id']
-        channel_id = video['channel_id']
+        video_id = video.get('video_id')
+        channel_id = video.get('channel_id')
+        if not video_id or not channel_id:
+            app.logger.debug(f"Skipping video: missing video_id or channel_id - {video}")
+            continue
         if video_id not in video_stats or channel_id not in processed_channels:
+            app.logger.debug(f"Skipping video {video_id}: missing stats or channel data")
             continue
         stats = video_stats[video_id]
         channel_avg = processed_channels[channel_id]['average_views']
         if channel_avg == 0:
+            app.logger.debug(f"Skipping video {video_id}: channel average views is 0")
             continue
         multiplier = stats['views'] / channel_avg
         if multiplier > 5:
             video_result = {
                 'video_id': video_id,
-                'title': video['title'],
-                'channel_title': video['channel_title'],
+                'title': video.get('title', 'Unknown Title'),
+                'channel_id': channel_id,
+                'channel_title': video.get('channel_title', 'Unknown Channel'),
                 'views': stats['views'],
                 'channel_avg_views': channel_avg,
                 'multiplier': round(multiplier, 2),
                 'url': f"https://www.youtube.com/watch?v={video_id}",
-                'thumbnail_url': video['thumbnail_url']
+                'thumbnail_url': video.get('thumbnail_url', '')
             }
             outlier_videos.append(video_result)
     app.logger.debug(f"Found {len(outlier_videos)} outliers in analysis")

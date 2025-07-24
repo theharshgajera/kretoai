@@ -941,6 +941,7 @@ def trending_outliers():
             video_result = {
                 'video_id': video_id,
                 'title': video['title'],
+                'channel_id': channel_id,  # Added
                 'channel_title': video['channel_title'],
                 'views': stats['views'],
                 'channel_avg_views': channel_avg,
@@ -955,7 +956,7 @@ def trending_outliers():
                 'viral_score': multiplier / 10,
                 'engagement_rate': (stats['likes'] + stats['comments']) / stats['views'] if stats['views'] > 0 else 0,
                 'subscriber_count': channel_data.get('subscriber_count', 0),
-                'language': video.get('language', 'en')  # Add language field
+                'language': video.get('language', 'en')
             }
             outliers.append(video_result)
         
@@ -968,6 +969,7 @@ def trending_outliers():
             formatted_video = {
                 'video_id': video['video_id'],
                 'title': video['title'],
+                'channel_id': video['channel_id'],  # Added
                 'channel_title': video['channel_title'],
                 'views': video['views'],
                 'views_formatted': outlier_detector.format_number(video['views']),
@@ -986,7 +988,7 @@ def trending_outliers():
                 'engagement_rate': round(video['engagement_rate'], 4),
                 'thumbnail_url': video['thumbnail_url'],
                 'subscriber_count': video['subscriber_count'],
-                'language': video['language']  # Include language in formatted output
+                'language': video['language']
             }
             formatted_outliers.append(formatted_video)
         
@@ -1005,6 +1007,7 @@ def trending_outliers():
     except Exception as e:
         app.logger.error(f"Trending outliers error: {str(e)}")
         return jsonify({'success': False, 'error': f'An error occurred: {str(e)}'}), 500
+        
 
 @app.route('/api/similar-thumbnails', methods=['POST'])
 def get_similar_thumbnails():

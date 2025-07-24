@@ -1090,7 +1090,7 @@ def channel_outliers_by_id():
             video_id = video['video_id']
             rel_vids = get_related_videos(video_id, m=15)
             for vid in rel_vids:
-                if vid['channel_id'] != channel_id:
+                if vid.get('channel_id') != channel_id:
                     related_videos.append(vid)
         
         if not related_videos:
@@ -1100,7 +1100,7 @@ def channel_outliers_by_id():
                 if query:
                     search_vids = search_videos_by_query(query, max_results=15)
                     for vid in search_vids:
-                        if vid['channel_id'] != channel_id:
+                        if vid.get('channel_id') != channel_id:
                             related_videos.append(vid)
         
         if not related_videos:
@@ -1114,7 +1114,7 @@ def channel_outliers_by_id():
             formatted_video = {
                 'video_id': video['video_id'],
                 'title': video['title'],
-                'channel_id': video['channel_id'],  # Added
+                'channel_id': video['channel_id'],
                 'channel_title': video['channel_title'],
                 'views': video['views'],
                 'views_formatted': outlier_detector.format_number(video['views']),

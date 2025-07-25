@@ -1205,42 +1205,49 @@ def similar_channels():
             return jsonify({'error': 'Channel ID cannot be empty'}), 400
         
         # Verify the input channel exists
-        youtube = build('youtube', 'v3', developerKey=YOUTUBE_API_KEY)
+        youtube = build('youtube', 'v3', developerKey=YOUTUBE_API_KEY, cache_discovery=False)
         channel_request = youtube.channels().list(
             part='id,snippet',
             id=channel_id
         )
         response = channel_request.execute()
         if not response['items']:
+            app.logger.error(f"Channel {channel_id} not found")
             return jsonify({'error': 'Channel not found'}), 404
         input_channel_title = response['items'][0]['snippet']['title']
         
         # Get top videos from the input channel
         top_videos = get_top_videos(channel_id, n=5)
         if not top_videos:
+            app.logger.error(f"No top videos found for channel {channel_id}")
             return jsonify({'error': 'No top videos found for the channel'}), 404
         
         # Collect related videos to find similar channels
         related_channel_ids = set()
         for video in top_videos:
             video_id = video['video_id']
-            related_videos = get_related_videos(video_id, m=15)
+            related_videos = get_related_videos(video_id, m=25)  # Increased to 25 for more candidates
             for vid in related_videos:
-                if vid['channel_id'] != channel_id and len(related_channel_ids) < 15:
+                if vid.get('channel_id') and vid['channel_id'] != channel_id and len(related_channel_ids) < 15:
                     related_channel_ids.add(vid['channel_id'])
+            app.logger.debug(f"Found {len(related_channel_ids)} unique channel IDs after processing video {video_id}")
         
         # If insufficient channels, fall back to keyword search based on top video titles
         if len(related_channel_ids) < 15:
             app.logger.info(f"Only {len(related_channel_ids)} related channels found for channel {channel_id}, falling back to keyword search")
             for video in top_videos:
-                query = ' '.join([word for word in video['title'].split() if len(word) > 3 and word.lower() not in ['the', 'and', 'video']])[:50]
+                # Enhanced query generation
+                title_words = [word for word in video['title'].split() if len(word) > 3 and word.lower() not in ['the', 'and', 'video', 'in', 'to', 'for']]
+                query = ' '.join(title_words[:3])[:50]  # Use first 3 significant words
                 if query:
-                    search_vids = search_videos_by_query(query, max_results=15)
+                    search_vids = search_videos_by_query(query, max_results=25)  # Increased to 25
                     for vid in search_vids:
-                        if vid['channel_id'] != channel_id and len(related_channel_ids) < 15:
+                        if vid.get('channel_id') and vid['channel_id'] != channel_id and len(related_channel_ids) < 15:
                             related_channel_ids.add(vid['channel_id'])
+                    app.logger.debug(f"Found {len(related_channel_ids)} unique channel IDs after keyword search for query '{query}'")
         
         if not related_channel_ids:
+            app.logger.error(f"No similar channels found for channel {channel_id} after related videos and keyword search")
             return jsonify({'error': 'No similar channels found'}), 404
         
         # Fetch details for similar channels
@@ -1259,6 +1266,10 @@ def similar_channels():
                 'subscriber_count': int(item['statistics'].get('subscriberCount', 0))
             })
         
+        if not similar_channels:
+            app.logger.error(f"No channel details retrieved for channel IDs: {related_channel_ids}")
+            return jsonify({'error': 'No similar channels found after fetching details'}), 404
+        
         app.logger.info(f"Found {len(similar_channels)} similar channels for channel {channel_id}")
         return jsonify({
             'success': True,
@@ -1267,8 +1278,11 @@ def similar_channels():
             'total_results': len(similar_channels),
             'similar_channels': similar_channels
         })
+    except HttpError as e:
+        app.logger.error(f"YouTube API error in similar_channels for channel {channel_id}: {str(e)}")
+        return jsonify({'success': False, 'error': f'YouTube API error: {str(e)}'}), 503
     except Exception as e:
-        app.logger.error(f"Similar channels error: {str(e)}")
+        app.logger.error(f"Unexpected error in similar_channels for channel {channel_id}: {str(e)}")
         return jsonify({'success': False, 'error': f'An error occurred: {str(e)}'}), 500
 
 def parse_duration(duration):

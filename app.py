@@ -227,7 +227,7 @@ def get_top_videos(channel_id, n=5):
 
 def get_related_videos(video_id, m=15):
     """Get related videos."""
-    youtube = build('youtube', 'v3', developerKey=YOUTUBE_API_KEY)
+    youtube = build('youtube', 'v3', developerKey=YOUTUBE_API_KEY, cache_discovery=False)
     try:
         request = youtube.search().list(
             part='snippet',
@@ -237,21 +237,28 @@ def get_related_videos(video_id, m=15):
         )
         response = request.execute()
         related_videos = []
-        for item in response['items']:
-            related_videos.append({
-                'video_id': item['id']['videoId'],
-                'channel_id': item['snippet']['channelId'],
-                'channel_title': item['snippet']['channelTitle'],
-                'title': item['snippet']['title'],
-                'published_at': item['snippet']['publishedAt'],
-                'thumbnail_url': item['snippet']['thumbnails']['high']['url']
-            })
+        for item in response.get('items', []):
+            if 'id' in item and 'videoId' in item['id'] and 'snippet' in item:
+                channel_id = item['snippet'].get('channelId')
+                if not channel_id:
+                    app.logger.debug(f"Skipping related video {item['id']['videoId']}: missing channelId")
+                    continue
+                related_videos.append({
+                    'video_id': item['id']['videoId'],
+                    'channel_id': channel_id,
+                    'channel_title': item['snippet'].get('channelTitle', 'Unknown Channel'),
+                    'title': item['snippet'].get('title', 'Unknown Title'),
+                    'published_at': item['snippet'].get('publishedAt', ''),
+                    'thumbnail_url': item['snippet']['thumbnails']['high']['url']
+                })
         app.logger.debug(f"Fetched {len(related_videos)} related videos for video {video_id}")
         return related_videos
-    except Exception as e:
-        app.logger.error(f"Error fetching related videos for video {video_id}: {str(e)}")
+    except HttpError as e:
+        app.logger.error(f"YouTube API error in get_related_videos for video {video_id}: {str(e)}")
         return []
-
+    except Exception as e:
+        app.logger.error(f"Unexpected error in get_related_videos for video {video_id}: {str(e)}")
+        return []
 def search_videos_by_query(query, max_results=15):
     """Search videos by query."""
     youtube = build('youtube', 'v3', developerKey=YOUTUBE_API_KEY)

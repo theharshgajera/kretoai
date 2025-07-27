@@ -2,6 +2,7 @@ from flask import Flask, render_template, request, jsonify
 from flask_cors import CORS
 import google.generativeai as genai
 from googleapiclient.discovery import build
+from script_generate import generate_script
 import logging
 import json
 import os
@@ -1548,6 +1549,35 @@ def refine_description():
         app.logger.error(f"Refine description error: {str(e)}")
         return jsonify({'success': False, 'error': f'An error occurred: {str(e)}'}), 500
 
+@app.route('/api/generate_script', methods=['POST'])
+def generate_script_api():
+    try:
+        data = request.get_json()
+        text = data.get('text')
+        duration = data.get('duration')  # in minutes
+        style_links = data.get('style_links', [])
+        content_links = data.get('content_links', [])
+        wpm = data.get('wpm', 145)  # default to 145 WPM
+        creator_name = data.get('creator_name', 'YourChannelName')
+        audience = data.get('audience', 'beginners')
+        language = data.get('language', 'en')  # default to English
+
+        if not text or not duration:
+            return jsonify({'error': 'Text and duration are required'}), 400
+
+        duration = float(duration)
+        if duration <= 0:
+            return jsonify({'error': 'Duration must be a positive number'}), 400
+
+        script = generate_script(text, duration, style_links, content_links, wpm, creator_name, audience, language)
+
+        return jsonify({
+            'success': True,
+            'script': script
+        })
+    except Exception as e:
+        app.logger.error(f"Generate script error: {str(e)}")
+        return jsonify({'success': False, 'error': f'An error occurred: {str(e)}'}), 500
 
 @app.errorhandler(404)
 def not_found(error):

@@ -5,3 +5,7 @@ numpy
 flask_cors
 Pillow
 scikit-learn
+dotenv
+google.generativeai
+opencv-python
+tensorflow

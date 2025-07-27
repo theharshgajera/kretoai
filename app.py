@@ -1457,6 +1457,56 @@ def similar_videos():
     except Exception as e:
         # Handle unexpected errors
         return jsonify({'success': False, 'error': f'An error occurred: {str(e)}'}), 500
+
+@app.route('/api/refine_title', methods=['POST'])
+def refine_title():
+    """Refine a YouTube title by making it shorter or longer and adjust virality score."""
+    try:
+        data = request.get_json()
+        if not data or 'title' not in data or 'action' not in data or 'previous_virality_score' not in data:
+            return jsonify({'error': 'Title, action (shorter/longer), and previous_virality_score are required'}), 400
+        
+        title = data['title'].strip()
+        action = data['action'].strip().lower()
+        previous_virality_score = int(data['previous_virality_score'])
+        if not title or action not in ['shorter', 'longer'] or previous_virality_score < 0 or previous_virality_score > 100:
+            return jsonify({'error': 'Invalid input: title cannot be empty, action must be "shorter" or "longer", and previous_virality_score must be between 0 and 100'}), 400
+        
+        # Prepare prompt for Gemini, including the previous virality score
+        prompt = (
+            f"Refine the YouTube video title: '{title}'. "
+            f"The previous virality score was {previous_virality_score} out of 100. "
+            f"Make it {'shorter' if action == 'shorter' else 'longer'} while keeping it engaging and viral. "
+            f"Ensure the refined title retains the core idea, uses attention-grabbing words, and fits YouTube best practices. "
+            f"Provide the refined title and a new virality score out of 100 based on its appeal, length adjustment, and aiming to improve or maintain the previous virality score. "
+            f"Return the response in valid JSON format wrapped in ```json\n...\n``` with the structure: "
+            f"{{ 'refined_title': 'string', 'virality_score': int }}"
+        )
+        
+        client = genai.GenerativeModel('gemini-2.0-flash')
+        response = client.generate_content(prompt)
+        gemini_response = response.text
+        if gemini_response.startswith('```json\n') and gemini_response.endswith('\n```'):
+            gemini_response = gemini_response[7:-4]
+        gemini_data = json.loads(gemini_response)
+        
+        return jsonify({
+            'success': True,
+            'original_title': title,
+            'action': action,
+            'previous_virality_score': previous_virality_score,
+            'refined_title': gemini_data['refined_title'],
+            'virality_score': gemini_data['virality_score']
+        })
+    except Exception as e:
+        error_message = str(e)
+        app.logger.error(f"Refine title error: {error_message}")
+        if "API key" in error_message or "authentication" in error_message.lower():
+            return jsonify({
+                'success': False,
+                'error': 'API key or authentication error. Please renew the API key and restart the application.'
+            }), 500
+        return jsonify({'success': False, 'error': f'An error occurred: {error_message}'}), 500
         
 @app.errorhandler(404)
 def not_found(error):

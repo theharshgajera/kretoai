@@ -1144,7 +1144,7 @@ def channel_outliers_by_id():
         app.logger.error(f"Channel outliers by ID error: {str(e)}")
         return jsonify({'error': f'An error occurred: {str(e)}'}), 500
         
-@app.route('/generate_titles', methods=['POST'])
+@app.route('/api/generate_titles', methods=['POST'])
 def generate_titles():
     """Generate viral YouTube titles."""
     try:

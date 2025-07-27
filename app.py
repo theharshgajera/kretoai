@@ -1508,6 +1508,47 @@ def refine_title():
             }), 500
         return jsonify({'success': False, 'error': f'An error occurred: {error_message}'}), 500
         
+
+@app.route('/api/refine_description', methods=['POST'])
+def refine_description():
+    """Refine a YouTube video description by making it shorter or longer."""
+    try:
+        data = request.get_json()
+        if not data or 'description' not in data or 'action' not in data:
+            return jsonify({'error': 'Description and action (shorter/longer) are required'}), 400
+        
+        description = data['description'].strip()
+        action = data['action'].strip().lower()
+        if not description or action not in ['shorter', 'longer']:
+            return jsonify({'error': 'Invalid input: description cannot be empty, action must be "shorter" or "longer"'}), 400
+        
+        # Prepare prompt for Gemini to refine the description
+        prompt = (
+            f"Refine the YouTube video description: '{description}'. "
+            f"Make it {'shorter' if action == 'shorter' else 'longer'} while keeping it engaging, informative, and aligned with YouTube best practices. "
+            f"Ensure the refined description retains the core idea and enhances viewer interest. "
+            f"Return the response in valid JSON format wrapped in ```json\n...\n``` with the structure: "
+            f"{{ 'refined_description': 'string' }}"
+        )
+        
+        client = genai.GenerativeModel('gemini-2.0-flash')
+        response = client.generate_content(prompt)
+        gemini_response = response.text
+        if gemini_response.startswith('```json\n') and gemini_response.endswith('\n```'):
+            gemini_response = gemini_response[7:-4]
+        gemini_data = json.loads(gemini_response)
+        
+        return jsonify({
+            'success': True,
+            'original_description': description,
+            'action': action,
+            'refined_description': gemini_data['refined_description']
+        })
+    except Exception as e:
+        app.logger.error(f"Refine description error: {str(e)}")
+        return jsonify({'success': False, 'error': f'An error occurred: {str(e)}'}), 500
+
+
 @app.errorhandler(404)
 def not_found(error):
     return jsonify({'error': 'Endpoint not found'}), 404

@@ -69,8 +69,27 @@ def generate_script(text, duration, style_links, content_links, wpm=145, creator
     )
 
     # Call Gemini API with consistent style
-    model = genai.GenerativeModel('gemini-2.5-pro')  # Updated model name
+    model = genai.GenerativeModel('gemini-2.5-flash')  # Updated model name
     response = model.generate_content(prompt)
     script = response.text
 
+    return script
+def generate_script_from_title(title, duration, wpm=145, creator_name="YourChannelName", audience="beginners", language="en"):
+    """Generate a professional video script based on the provided title and duration. Provide ONLY the raw script content with no introductory text, explanations, or formatting notes. The output should begin immediately with the script's first line of dialogue or action. Do not include any meta-commentary, section headers, or production notes - only the pure script content that would be used for filming."""
+    # Use empty lists for style and content links to rely solely on the title
+    style_links = []
+    content_links = []
+    
+    # Call the existing generate_script function with default parameters
+    script = generate_script(
+        text=title,
+        duration=duration,
+        style_links=style_links,
+        content_links=content_links,
+        wpm=wpm,
+        creator_name=creator_name,
+        audience=audience,
+        language=language
+    )
+    
     return script

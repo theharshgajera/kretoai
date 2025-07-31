@@ -5,6 +5,8 @@ from googleapiclient.discovery import build
 from script_generate import generate_script
 import logging
 import json
+from script_generate import generate_script_from_title
+
 import os
 from googleapiclient.errors import HttpError
 import re
@@ -2268,6 +2270,51 @@ def channel_shorts_outliers():
     except Exception as e:
         app.logger.error(f"Channel Shorts outliers error: {str(e)}")
         return jsonify({'success': False, 'error': f'An error occurred: {str(e)}'}), 500
+
+@app.route('/api/generate-script-from-title', methods=['POST'])
+def generate_script_from_title_endpoint():
+    """API endpoint to generate a video script from a title and duration."""
+    try:
+        data = request.get_json()
+        title = data.get('title')
+        duration = data.get('duration')
+        if not title or not duration:
+            return jsonify({'error': 'Title and duration are required'}), 400
+        try:
+            duration = float(duration)
+            if duration <= 0:
+                raise ValueError("Duration must be a positive number")
+        except (ValueError, TypeError):
+            return jsonify({'error': 'Duration must be a valid positive number'}), 400
+        # Optional parameters
+        wpm = data.get('wpm', 145)
+        creator_name = data.get('creator_name', 'YourChannelName')
+        audience = data.get('audience', 'beginners')
+        language = data.get('language', 'en')
+        script, _, error = generate_script_from_title(
+            title=title,
+            duration=duration,
+            wpm=wpm,
+            creator_name=creator_name,
+            audience=audience,
+            language=language
+        ), title, None  # Mimic find_similar_videos_enhanced return structure
+        if error:
+            return jsonify({'success': False, 'error': error}), 400
+        result_data = {
+            'title': title,
+            'duration': duration,
+            'script': script,
+            'wpm': wpm,
+            'creator_name': creator_name,
+            'audience': audience,
+            'language': language
+        }
+        return jsonify({'success': True, **result_data})
+    except Exception as e:
+        print(f"Error in generate_script_from_title_endpoint: {str(e)}")
+        return jsonify({'success': False, 'error': f'An error occurred: {str(e)}'}), 500
+
 @app.errorhandler(404)
 def not_found(error):
     return jsonify({'error': 'Endpoint not found'}), 404

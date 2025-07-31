@@ -1148,28 +1148,21 @@ def trending_outliers():
 
 @app.route('/api/similar-thumbnails', methods=['POST'])
 def get_similar_thumbnails():
-    """API endpoint to get similar thumbnails for a given video ID"""
+    """API endpoint to get similar thumbnails for a given video ID."""
     try:
         data = request.get_json()
         video_id = data.get('video_id')
         if not video_id:
             return jsonify({'error': 'Video ID is required'}), 400
-
+        similarity_threshold = data.get('similarity_threshold', 0.45)
         video_url = f"https://www.youtube.com/watch?v={video_id}"
-        result_data, _, error = find_similar_videos_enhanced(video_url)
-        
+        result_data, _, error = find_similar_videos_enhanced(video_url, similarity_threshold=similarity_threshold)
         if error:
             return jsonify({'success': False, 'error': error}), 400
-
         return jsonify({'success': True, **result_data})
-    
     except Exception as e:
         print(f"Error in get_similar_thumbnails: {str(e)}")
-        print(traceback.format_exc())
-        return jsonify({
-            'success': False,
-            'error': f'An error occurred: {str(e)}'
-        }), 500
+        return jsonify({'success': False, 'error': f'An error occurred: {str(e)}'}), 500
 
 @app.route('/api/stats', methods=['GET'])
 def get_stats():

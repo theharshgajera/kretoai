@@ -6,6 +6,7 @@ from script_generate import generate_script
 import logging
 import json
 from script_generate import generate_script_from_title
+from thumbnail_review import review_thumbnail
 
 import os
 from googleapiclient.errors import HttpError
@@ -2315,6 +2316,22 @@ def generate_script_from_title_endpoint():
         print(f"Error in generate_script_from_title_endpoint: {str(e)}")
         return jsonify({'success': False, 'error': f'An error occurred: {str(e)}'}), 500
 
+
+@app.route('/api/review-thumbnail', methods=['POST'])
+def review_thumbnail_endpoint():
+    """API endpoint to review a thumbnail image."""
+    try:
+        data = request.get_json()
+        image_url = data.get('image_url')
+        if not image_url:
+            return jsonify({'error': 'Image URL is required'}), 400
+        review_data, error = review_thumbnail(image_url)
+        if error:
+            return jsonify({'success': False, 'error': error}), 400
+        return jsonify({'success': True, **review_data})
+    except Exception as e:
+        print(f"Error in review_thumbnail_endpoint: {str(e)}")
+        return jsonify({'success': False, 'error': f'An error occurred: {str(e)}'}), 500
 @app.errorhandler(404)
 def not_found(error):
     return jsonify({'error': 'Endpoint not found'}), 404

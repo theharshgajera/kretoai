@@ -1789,25 +1789,39 @@ def refine_description():
 @app.route('/api/generate_script', methods=['POST'])
 def generate_script_api():
     try:
+        # Get JSON data from the request
         data = request.get_json()
+
+        # Validate required fields
         text = data.get('text')
         duration = data.get('duration')  # in minutes
-        style_links = data.get('style_links', [])
-        content_links = data.get('content_links', [])
+        groups = data.get('groups', [])  # Array of group objects with name and videos
+
+        if not text or not duration:
+            return jsonify({'error': 'Text and duration are required'}), 400
+
+        # Convert duration to float and validate
+        duration = float(duration)
+        if duration <= 0:
+            return jsonify({'error': 'Duration must be a positive number'}), 400
+
+        # Optional parameters with defaults
         wpm = data.get('wpm', 145)  # default to 145 WPM
         creator_name = data.get('creator_name', 'YourChannelName')
         audience = data.get('audience', 'beginners')
         language = data.get('language', 'en')  # default to English
 
-        if not text or not duration:
-            return jsonify({'error': 'Text and duration are required'}), 400
+        # Prepare data in the format expected by generate_script
+        script_data = {
+            'text': text,
+            'duration': duration,
+            'groups': groups
+        }
 
-        duration = float(duration)
-        if duration <= 0:
-            return jsonify({'error': 'Duration must be a positive number'}), 400
+        # Generate the script using the updated generate_script function
+        script = generate_script(script_data)
 
-        script = generate_script(text, duration, style_links, content_links, wpm, creator_name, audience, language)
-
+        # Return the generated script as JSON response
         return jsonify({
             'success': True,
             'script': script

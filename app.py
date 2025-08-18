@@ -1430,7 +1430,7 @@ def generate_titles():
         return jsonify({'error': str(e)}), 500
 @app.route('/api/similar_channels', methods=['POST'])
 def similar_channels():
-    """Fetch up to 15 similar channels based on a given channel ID."""
+    """Fetch up to 15 similar channels based on a given channel ID, including descriptions."""
     try:
         data = request.get_json()
         if not data or 'channel_id' not in data:
@@ -1462,7 +1462,7 @@ def similar_channels():
         related_channel_ids = set()
         for video in top_videos:
             video_id = video['video_id']
-            related_videos = get_related_videos(video_id, m=25)  # Increased to 25 for more candidates
+            related_videos = get_related_videos(video_id, m=25)
             for vid in related_videos:
                 if vid.get('channel_id') and vid['channel_id'] != channel_id and len(related_channel_ids) < 15:
                     related_channel_ids.add(vid['channel_id'])
@@ -1472,11 +1472,10 @@ def similar_channels():
         if len(related_channel_ids) < 15:
             app.logger.info(f"Only {len(related_channel_ids)} related channels found for channel {channel_id}, falling back to keyword search")
             for video in top_videos:
-                # Enhanced query generation
                 title_words = [word for word in video['title'].split() if len(word) > 3 and word.lower() not in ['the', 'and', 'video', 'in', 'to', 'for']]
-                query = ' '.join(title_words[:3])[:50]  # Use first 3 significant words
+                query = ' '.join(title_words[:3])[:50]
                 if query:
-                    search_vids = search_videos_by_query(query, max_results=25)  # Increased to 25
+                    search_vids = search_videos_by_query(query, max_results=25)
                     for vid in search_vids:
                         if vid.get('channel_id') and vid['channel_id'] != channel_id and len(related_channel_ids) < 15:
                             related_channel_ids.add(vid['channel_id'])
@@ -1499,7 +1498,8 @@ def similar_channels():
                 'channel_id': item['id'],
                 'channel_title': item['snippet']['title'],
                 'thumbnail_url': item['snippet']['thumbnails']['high']['url'],
-                'subscriber_count': int(item['statistics'].get('subscriberCount', 0))
+                'subscriber_count': int(item['statistics'].get('subscriberCount', 0)),
+                'description': item['snippet'].get('description', '')  # Added channel description
             })
         
         if not similar_channels:

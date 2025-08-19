@@ -7,6 +7,7 @@ import logging
 import json
 from script_generate import generate_script_from_title
 from thumbnail_review import review_thumbnail
+import base64
 
 import os
 from googleapiclient.errors import HttpError
@@ -1386,40 +1387,55 @@ def generate_titles():
     try:
         data = request.get_json()
         app.logger.debug(f"Received data: {data}")
-        idea = data.get('idea')
+        topic = data.get('topic')
+        prompt = data.get('prompt')
         script = data.get('script')
-        if not idea:
-            return jsonify({'error': 'Idea is required'}), 400
         
-        youtube = build('youtube', 'v3', developerKey=YOUTUBE_API_KEY)
-        search_response = youtube.search().list(
-            q=idea,
-            part='snippet',
-            type='video',
-            order='viewCount',
-            maxResults=10
-        ).execute()
-        titles = [item['snippet']['title'] for item in search_response.get('items', [])]
-        if not titles:
-            return jsonify({'error': 'No videos found for the given idea'}), 404
+        # Check if at least one input is provided
+        if not any([topic, prompt, script]):
+            return jsonify({'error': 'At least one of topic, prompt, or script is required'}), 400
         
-        prompt = (
-            f"Given the idea: '{idea}' and the following popular video titles related to it: "
-            f"{', '.join(titles)}, generate 5 viral video title options that are similar and likely to attract viewers. "
-        )
+        # Initialize base prompt
+        base_prompt = "Generate 5 viral YouTube video title options that are likely to attract viewers. "
+        
+        # Add topic to prompt if provided
+        if topic:
+            youtube = build('youtube', 'v3', developerKey=YOUTUBE_API_KEY)
+            search_response = youtube.search().list(
+                q=topic,
+                part='snippet',
+                type='video',
+                order='viewCount',
+                maxResults=10
+            ).execute()
+            titles = [item['snippet']['title'] for item in search_response.get('items', [])]
+            if not titles:
+                return jsonify({'error': 'No videos found for the given topic'}), 404
+            base_prompt += (
+                f"Given the topic: '{topic}' and the following popular video titles related to it: "
+                f"{', '.join(titles)}, "
+            )
+        
+        # Add custom prompt if provided
+        if prompt:
+            base_prompt += f"Use the following user prompt for context: '{prompt[:500]}' (truncated for brevity). "
+        
+        # Add script to prompt if provided
         if script:
-            prompt += (
+            base_prompt += (
                 f"Also consider the following video script for context: '{script[:500]}' (truncated for brevity). "
                 f"Use the script's themes to inform the titles, tags, and description. "
             )
-        prompt += (
+        
+        # Finalize prompt
+        base_prompt += (
             f"For each title, provide a virality score out of 100. Also, provide 10 tags and one description that are common to all 5 titles. "
             f"Return the response in valid JSON format wrapped in ```json\n...\n``` with the following structure: "
             f"{{ 'titles': [{{'title': 'string', 'virality_score': int}}, ...], 'tags': ['string', ...], 'description': 'string' }}"
         )
         
         client = genai.GenerativeModel('gemini-2.0-flash')
-        response = client.generate_content(prompt)
+        response = client.generate_content(base_prompt)
         gemini_response = response.text
         if gemini_response.startswith('```json\n') and gemini_response.endswith('\n```'):
             gemini_response = gemini_response[7:-4]
@@ -1428,6 +1444,107 @@ def generate_titles():
     except Exception as e:
         app.logger.error(f"Generate titles error: {str(e)}")
         return jsonify({'error': str(e)}), 500
+@app.route('/api/generate_thumbnail', methods=['POST'])
+def generate_thumbnail():
+    """
+    Generate a YouTube video thumbnail based on a user-provided prompt with 1280x720 resolution.
+    The prompt is sent as a JSON payload to this endpoint.
+    """
+    try:
+        data = request.get_json()
+        app.logger.debug(f"Received data: {data}")
+        prompt = data.get('prompt')
+
+        if not prompt:
+            # Return an error if the prompt is missing from the request
+            return jsonify({'error': 'Prompt is required'}), 400
+
+        # Use the specific model for image generation
+        client = genai.GenerativeModel('gemini-2.0-flash-preview-image-generation')
+
+        # Enhanced prompt with explicit dimension requirement
+        enhanced_prompt = (
+            f"{prompt}. Generate the image as a YouTube thumbnail with a resolution of 1280x720 pixels, "
+            f"ensuring it is vibrant, eye-catching, and optimized for clickability with bold colors and clear text."
+        )
+
+        # Use dictionary for generation settings, removing unsupported width/height
+        generation_config = {
+            "response_modalities": ["TEXT", "IMAGE"]
+        }
+
+        # Make the API call to generate content
+        response = client.generate_content(
+            enhanced_prompt,
+            generation_config=generation_config
+        )
+
+        # Log the response structure for debugging
+        app.logger.debug(f"Response structure: {response.__dict__}")
+
+        # Check if the response contains content parts
+        if not response.candidates or not response.candidates[0].content.parts:
+            app.logger.error("No content parts returned by the generative model.")
+            return jsonify({'error': 'Failed to generate thumbnail: no content'}), 500
+
+        # Find the base64-encoded image data within the response parts
+        image_part = None
+        mime_type = 'image/png'  # Default assumption
+        for part in response.candidates[0].content.parts:
+            if part.inline_data and part.inline_data.mime_type.startswith('image/'):
+                image_part = base64.b64encode(part.inline_data.data).decode('utf-8')
+                mime_type = part.inline_data.mime_type
+                break
+            elif hasattr(part, 'text'):
+                app.logger.debug(f"Text output (if any): {part.text}")
+
+        if not image_part:
+            app.logger.error("No image data found in the response parts.")
+            return jsonify({'error': 'Failed to generate thumbnail: no image data'}), 500
+
+        # Validate base64 string
+        try:
+            image_data = base64.b64decode(image_part)
+        except Exception as e:
+            app.logger.error(f"Invalid base64 image data: {str(e)}")
+            return jsonify({'error': 'Invalid thumbnail data generated'}), 500
+
+        # Optional: Verify image dimensions
+        try:
+            from PIL import Image
+            import io
+            image = Image.open(io.BytesIO(image_data))
+            width, height = image.size
+            app.logger.debug(f"Generated image dimensions: {width}x{height}")
+            if width != 1280 or height != 720:
+                app.logger.warning(f"Image dimensions {width}x{height} do not match requested 1280x720")
+        except Exception as e:
+            app.logger.error(f"Failed to verify image dimensions: {str(e)}")
+
+        # Determine format from mime_type
+        format_map = {
+            'image/png': 'png',
+            'image/jpeg': 'jpeg',
+            'image/jpg': 'jpeg'
+        }
+        image_format = format_map.get(mime_type, 'png')
+
+        # Return the successful response with the base64-encoded image data
+        return jsonify({
+            'success': True,
+            'prompt': prompt,
+            'thumbnail': {
+                'format': image_format,
+                'data': image_part
+            }
+        })
+
+    except Exception as e:
+        # Catch and handle any unexpected errors
+        app.logger.error(f"Generate thumbnail error: {str(e)}")
+        return jsonify({'error': f'An error occurred: {str(e)}'}), 500
+
+
 @app.route('/api/similar_channels', methods=['POST'])
 def similar_channels():
     """Fetch up to 15 similar channels based on a given channel ID, including descriptions."""

@@ -1662,6 +1662,95 @@ def generate_thumbnail_from_title():
         app.logger.error(f"Generate thumbnail error: {str(e)}")
         return jsonify({'error': f'An error occurred: {str(e)}'}), 500
 
+@app.route('/api/generate_video_ideas', methods=['POST'])
+def generate_video_ideas():
+    """
+    Generate 5 video ideas for a YouTube channel based on its channel ID.
+    Input: JSON payload with 'channel_id'.
+    Output: JSON with channel info and 5 video idea titles.
+    """
+    try:
+        data = request.get_json()
+        app.logger.debug(f"Received data: {data}")
+        channel_id = data.get('channel_id')
+
+        if not channel_id:
+            return jsonify({'error': 'Channel ID is required'}), 400
+
+        if YOUTUBE_API_KEY == 'YOUR_YOUTUBE_API_KEY':
+            app.logger.error("YouTube API key not configured.")
+            return jsonify({'error': 'YouTube API key not configured'}), 500
+
+        # Fetch channel info using YouTube API
+        youtube = build('youtube', 'v3', developerKey=YOUTUBE_API_KEY)
+        channel_request = youtube.channels().list(
+            part='snippet',
+            id=channel_id
+        )
+        channel_response = channel_request.execute()
+
+        if not channel_response.get('items'):
+            app.logger.error(f"Channel not found for ID: {channel_id}")
+            return jsonify({'error': 'Channel not found'}), 404
+
+        channel_info = channel_response['items'][0]['snippet']
+        channel_title = channel_info.get('title', 'Unknown Channel')
+        channel_description = channel_info.get('description', 'No description available')
+
+        # Use Gemini 2.5 Flash to generate video ideas
+        client = genai.GenerativeModel('gemini-2.5-flash')
+        prompt = (
+            f"Based on the YouTube channel '{channel_title}' with description: '{channel_description}', "
+            f"generate 5 video idea titles that align with the channel's content style. "
+            f"Ensure the ideas are creative, engaging, and relevant to the channel's audience. "
+            f"Return the response in valid JSON format wrapped in ```json\n...\n``` with the structure: "
+            f"{{ 'ideas': ['title1', 'title2', 'title3', 'title4', 'title5'] }}"
+        )
+
+        response = client.generate_content(prompt)
+        
+        # Log the response for debugging
+        app.logger.debug(f"Gemini response structure: {response.__dict__}")
+
+        # Extract the text response
+        if not response.candidates or not response.candidates[0].content.parts:
+            app.logger.error("No content parts in Gemini response.")
+            return jsonify({'error': 'Failed to generate video ideas: no content'}), 500
+
+        gemini_response = next((
+            part.text for part in response.candidates[0].content.parts
+            if hasattr(part, 'text')
+        ), None)
+
+        if not gemini_response:
+            app.logger.error("No text content in Gemini response.")
+            return jsonify({'error': 'Failed to generate video ideas: no text'}), 500
+
+        # Parse the JSON response from Gemini
+        if gemini_response.startswith('```json\n') and gemini_response.endswith('\n```'):
+            gemini_response = gemini_response[7:-4]
+        try:
+            ideas_data = json.loads(gemini_response)
+        except json.JSONDecodeError as e:
+            app.logger.error(f"Failed to parse Gemini JSON response: {str(e)}")
+            return jsonify({'error': f'Invalid JSON response from Gemini: {str(e)}'}), 500
+
+        if not isinstance(ideas_data.get('ideas'), list) or len(ideas_data.get('ideas', [])) != 5:
+            app.logger.error("Gemini response does not contain 5 video ideas.")
+            return jsonify({'error': 'Failed to generate 5 video ideas'}), 500
+
+        # Return the successful response
+        return jsonify({
+            'success': True,
+            'channel_id': channel_id,
+            'channel_title': channel_title,
+            'ideas': ideas_data['ideas']
+        })
+
+    except Exception as e:
+        app.logger.error(f"Generate video ideas error: {str(e)}")
+        return jsonify({'error': f'An error occurred: {str(e)}'}), 500
+
 @app.route('/api/similar_channels', methods=['POST'])
 def similar_channels():
     """Fetch up to 15 similar channels based on a given channel ID, including descriptions."""

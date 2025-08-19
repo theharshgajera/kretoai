@@ -1543,7 +1543,124 @@ def generate_thumbnail():
         # Catch and handle any unexpected errors
         app.logger.error(f"Generate thumbnail error: {str(e)}")
         return jsonify({'error': f'An error occurred: {str(e)}'}), 500
+@app.route('/api/generate_thumbnail_from_title', methods=['POST'])
+def generate_thumbnail_from_title():
+    """
+    Generate a YouTube video thumbnail from a title using Gemini with 1024x576 resolution.
+    """
+    try:
+        data = request.get_json()
+        app.logger.debug(f"Received data: {data}")
+        title = data.get('title')
 
+        if not title:
+            return jsonify({'error': 'Title is required'}), 400
+
+        # Step 1: Generate a thumbnail prompt using Gemini
+        prompt_client = genai.GenerativeModel('gemini-2.5-flash')
+        prompt_request = (
+            f"Based on the video title '{title}', create a detailed prompt for generating a YouTube thumbnail. "
+            f"The prompt should describe a vibrant, eye-catching image optimized for clickability with bold colors and clear text. "
+            f"Explicitly include that the image must have a resolution of 1024x576 pixels. "
+            f"Return only the prompt text."
+        )
+        
+        prompt_response = prompt_client.generate_content(prompt_request)
+        
+        # Log the prompt response
+        app.logger.debug(f"Prompt response structure: {prompt_response.__dict__}")
+
+        # Extract the generated prompt
+        if not prompt_response.candidates or not prompt_response.candidates[0].content.parts:
+            app.logger.error("No content parts in prompt response.")
+            return jsonify({'error': 'Failed to generate thumbnail prompt: no content'}), 500
+
+        generated_prompt = next((
+            part.text for part in prompt_response.candidates[0].content.parts
+            if hasattr(part, 'text')
+        ), None)
+
+        if not generated_prompt:
+            app.logger.error("No text prompt generated.")
+            return jsonify({'error': 'Failed to generate thumbnail prompt: no text'}), 500
+
+        app.logger.debug(f"Generated prompt: {generated_prompt}")
+
+        # Step 2: Generate the thumbnail
+        thumbnail_client = genai.GenerativeModel('gemini-2.0-flash-preview-image-generation')
+        generation_config = {
+            "response_modalities": ["TEXT", "IMAGE"]
+        }
+
+        response = thumbnail_client.generate_content(
+            generated_prompt,
+            generation_config=generation_config
+        )
+
+        # Log the thumbnail response
+        app.logger.debug(f"Thumbnail response structure: {response.__dict__}")
+
+        # Check if the response contains content parts
+        if not response.candidates or not response.candidates[0].content.parts:
+            app.logger.error("No content parts returned by the generative model.")
+            return jsonify({'error': 'Failed to generate thumbnail: no content'}), 500
+
+        # Find the base64-encoded image data
+        image_part = None
+        mime_type = 'image/png'
+        for part in response.candidates[0].content.parts:
+            if part.inline_data and part.inline_data.mime_type.startswith('image/'):
+                image_part = base64.b64encode(part.inline_data.data).decode('utf-8')
+                mime_type = part.inline_data.mime_type
+                break
+            elif hasattr(part, 'text'):
+                app.logger.debug(f"Text output (if any): {part.text}")
+
+        if not image_part:
+            app.logger.error("No image data found in the response parts.")
+            return jsonify({'error': 'Failed to generate thumbnail: no image data'}), 500
+
+        # Validate base64 string
+        try:
+            image_data = base64.b64decode(image_part)
+        except Exception as e:
+            app.logger.error(f"Invalid base64 image data: {str(e)}")
+            return jsonify({'error': 'Invalid thumbnail data generated'}), 500
+
+        # Verify image dimensions
+        try:
+            from PIL import Image
+            import io
+            image = Image.open(io.BytesIO(image_data))
+            width, height = image.size
+            app.logger.debug(f"Generated image dimensions: {width}x{height}")
+            if width != 1024 or height != 576:
+                app.logger.warning(f"Image dimensions {width}x{height} do not match requested 1024x576")
+        except Exception as e:
+            app.logger.error(f"Failed to verify image dimensions: {str(e)}")
+
+        # Determine format from mime_type
+        format_map = {
+            'image/png': 'png',
+            'image/jpeg': 'jpeg',
+            'image/jpg': 'jpeg'
+        }
+        image_format = format_map.get(mime_type, 'png')
+
+        # Return the response
+        return jsonify({
+            'success': True,
+            'title': title,
+            'generated_prompt': generated_prompt,
+            'thumbnail': {
+                'format': image_format,
+                'data': image_part
+            }
+        })
+
+    except Exception as e:
+        app.logger.error(f"Generate thumbnail error: {str(e)}")
+        return jsonify({'error': f'An error occurred: {str(e)}'}), 500
 
 @app.route('/api/similar_channels', methods=['POST'])
 def similar_channels():

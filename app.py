@@ -1662,13 +1662,9 @@ def generate_thumbnail_from_title():
         app.logger.error(f"Generate thumbnail error: {str(e)}")
         return jsonify({'error': f'An error occurred: {str(e)}'}), 500
 
-@app.route('/api/generate_video_ideas', methods=['POST'])
-def generate_video_ideas():
-    """
-    Generate 5 video ideas for a YouTube channel based on its channel ID.
-    Input: JSON payload with 'channel_id'.
-    Output: JSON with channel info and 5 video idea titles.
-    """
+@app.route('/api/ideas_by_channel_id', methods=['POST'])
+def ideas_by_channel_id():
+    """Fetch the last 15 videos (including Shorts) from a YouTube channel by channel ID."""
     try:
         data = request.get_json()
         app.logger.debug(f"Received data: {data}")
@@ -1676,80 +1672,102 @@ def generate_video_ideas():
 
         if not channel_id:
             return jsonify({'error': 'Channel ID is required'}), 400
+        channel_id = channel_id.strip()
+        if not channel_id:
+            return jsonify({'error': 'Channel ID cannot be empty'}), 400
 
         if YOUTUBE_API_KEY == 'YOUR_YOUTUBE_API_KEY':
             app.logger.error("YouTube API key not configured.")
             return jsonify({'error': 'YouTube API key not configured'}), 500
 
-        # Fetch channel info using YouTube API
+        # Build YouTube API client
         youtube = build('youtube', 'v3', developerKey=YOUTUBE_API_KEY)
-        channel_request = youtube.channels().list(
-            part='snippet',
-            id=channel_id
-        )
-        channel_response = channel_request.execute()
 
+        # Verify channel exists
+        channel_request = youtube.channels().list(part='id,snippet', id=channel_id)
+        channel_response = channel_request.execute()
         if not channel_response.get('items'):
             app.logger.error(f"Channel not found for ID: {channel_id}")
             return jsonify({'error': 'Channel not found'}), 404
+        channel_title = channel_response['items'][0]['snippet']['title']
 
-        channel_info = channel_response['items'][0]['snippet']
-        channel_title = channel_info.get('title', 'Unknown Channel')
-        channel_description = channel_info.get('description', 'No description available')
-
-        # Use Gemini 2.5 Flash to generate video ideas
-        client = genai.GenerativeModel('gemini-2.5-flash')
-        prompt = (
-            f"Based on the YouTube channel '{channel_title}' with description: '{channel_description}', "
-            f"generate 5 video idea titles that align with the channel's content style. "
-            f"Ensure the ideas are creative, engaging, and relevant to the channel's audience. "
-            f"Return the response in valid JSON format wrapped in ```json\n...\n``` with the structure: "
-            f"{{ 'ideas': ['title1', 'title2', 'title3', 'title4', 'title5'] }}"
+        # Fetch the last 15 videos
+        search_request = youtube.search().list(
+            part='id',
+            channelId=channel_id,
+            order='date',
+            maxResults=15,
+            type='video'
         )
+        search_response = search_request.execute()
 
-        response = client.generate_content(prompt)
-        
-        # Log the response for debugging
-        app.logger.debug(f"Gemini response structure: {response.__dict__}")
+        if not search_response.get('items'):
+            app.logger.error(f"No videos found for channel ID: {channel_id}")
+            return jsonify({'error': 'No videos found for the channel'}), 404
 
-        # Extract the text response
-        if not response.candidates or not response.candidates[0].content.parts:
-            app.logger.error("No content parts in Gemini response.")
-            return jsonify({'error': 'Failed to generate video ideas: no content'}), 500
+        # Get video details
+        video_ids = [item['id']['videoId'] for item in search_response['items']]
+        video_details_request = youtube.videos().list(
+            part='snippet,statistics,contentDetails',
+            id=','.join(video_ids)
+        )
+        video_details_response = video_details_request.execute()
 
-        gemini_response = next((
-            part.text for part in response.candidates[0].content.parts
-            if hasattr(part, 'text')
-        ), None)
+        videos = []
+        for item in video_details_response.get('items', []):
+            duration = item['contentDetails']['duration']
+            duration_seconds = parse_duration(duration)
+            views = int(item['statistics'].get('viewCount', 0))
+            likes = int(item['statistics'].get('likeCount', 0))
+            comments = int(item['statistics'].get('commentCount', 0))
+            engagement_rate = (likes + comments) / views if views > 0 else 0
+            try:
+                pub_date = datetime.datetime.strptime(item['snippet']['publishedAt'], '%Y-%m-%dT%H:%M:%SZ')
+                video_age_days = (datetime.datetime.utcnow() - pub_date).days
+            except:
+                video_age_days = 0
 
-        if not gemini_response:
-            app.logger.error("No text content in Gemini response.")
-            return jsonify({'error': 'Failed to generate video ideas: no text'}), 500
+            video = {
+                'video_id': item['id'],
+                'title': item['snippet']['title'],
+                'channel_id': item['snippet']['channelId'],
+                'channel_title': item['snippet']['channelTitle'],
+                'views': views,
+                'views_formatted': format_number(views),
+                'likes': likes,
+                'likes_formatted': format_number(likes),
+                'comments': comments,
+                'comments_formatted': format_number(comments),
+                'duration': duration,
+                'duration_seconds': duration_seconds,
+                'url': f"https://www.youtube.com/watch?v={item['id']}",
+                'published_at': item['snippet']['publishedAt'],
+                'thumbnail_url': item['snippet']['thumbnails']['high']['url'],
+                'engagement_rate': round(engagement_rate, 4),
+                'video_age_days': video_age_days
+            }
+            videos.append(video)
 
-        # Parse the JSON response from Gemini
-        if gemini_response.startswith('```json\n') and gemini_response.endswith('\n```'):
-            gemini_response = gemini_response[7:-4]
-        try:
-            ideas_data = json.loads(gemini_response)
-        except json.JSONDecodeError as e:
-            app.logger.error(f"Failed to parse Gemini JSON response: {str(e)}")
-            return jsonify({'error': f'Invalid JSON response from Gemini: {str(e)}'}), 500
+        # Sort by published date (most recent first)
+        videos.sort(key=lambda x: x['published_at'], reverse=True)
+        videos = videos[:15]  # Ensure max 15 videos
 
-        if not isinstance(ideas_data.get('ideas'), list) or len(ideas_data.get('ideas', [])) != 5:
-            app.logger.error("Gemini response does not contain 5 video ideas.")
-            return jsonify({'error': 'Failed to generate 5 video ideas'}), 500
-
-        # Return the successful response
+        app.logger.info(f"Found {len(videos)} videos for channel {channel_id}")
         return jsonify({
             'success': True,
             'channel_id': channel_id,
             'channel_title': channel_title,
-            'ideas': ideas_data['ideas']
+            'total_results': len(videos),
+            'videos': videos
         })
 
+    except HttpError as e:
+        app.logger.error(f"YouTube API error in ideas_by_channel_id for channel {channel_id}: {str(e)}")
+        return jsonify({'error': f'YouTube API error: {str(e)}'}), 503
     except Exception as e:
-        app.logger.error(f"Generate video ideas error: {str(e)}")
+        app.logger.error(f"Ideas by channel ID error: {str(e)}")
         return jsonify({'error': f'An error occurred: {str(e)}'}), 500
+
 
 @app.route('/api/get_viral_thumbnails', methods=['POST'])
 def get_viral_thumbnails():

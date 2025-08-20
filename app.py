@@ -5,6 +5,7 @@ from googleapiclient.discovery import build
 from script_generate import generate_script
 import logging
 import json
+import isodate
 from script_generate import generate_script_from_title
 from thumbnail_review import review_thumbnail
 import base64
@@ -2501,6 +2502,170 @@ def shorts_outliers():
     except Exception as e:
         app.logger.error(f"Shorts outliers error: {str(e)}")
         return jsonify({'success': False, 'error': f'An error occurred: {str(e)}'}), 500
+
+@app.route('/api/similar_shorts', methods=['POST'])
+def similar_shorts():
+    """Fetch up to 15 similar YouTube Shorts (≤ 90 seconds) for a given video ID using a title-based search."""
+    try:
+        # Validate input
+        data = request.get_json()
+        if not data or 'video_id' not in data:
+            return jsonify({'error': 'Video ID is required'}), 400
+        
+        video_id = data['video_id'].strip()
+        if not video_id:
+            return jsonify({'error': 'Video ID cannot be empty'}), 400
+        
+        if YOUTUBE_API_KEY == 'YOUR_YOUTUBE_API_KEY':
+            app.logger.error("YouTube API key not configured.")
+            return jsonify({'error': 'YouTube API key not configured'}), 500
+
+        # Initialize YouTube API client
+        youtube = build('youtube', 'v3', developerKey=YOUTUBE_API_KEY)
+        
+        # Step 1: Fetch input video details
+        video_response = youtube.videos().list(
+            part='snippet',
+            id=video_id
+        ).execute()
+        
+        if not video_response['items']:
+            app.logger.error(f"Video not found for ID: {video_id}")
+            return jsonify({'error': 'Video not found'}), 404
+        
+        input_video = video_response['items'][0]
+        input_title = input_video['snippet']['title']
+        input_channel_id = input_video['snippet']['channelId']
+        input_channel_title = input_video['snippet']['channelTitle']
+        
+        # Step 2: Generate search query from the title
+        query = ' '.join([word for word in input_title.split() if len(word) > 3 and word.lower() not in ['the', 'and', 'video']])
+        if not query:
+            app.logger.error(f"No valid search query generated from title: {input_title}")
+            return jsonify({'error': 'No valid search query generated from title'}), 404
+        
+        # Step 3: Search for similar videos
+        search_response = youtube.search().list(
+            part='snippet',
+            q=query,
+            type='video',
+            maxResults=25,  # Fetch extra results to allow filtering for Shorts
+            order='relevance'
+        ).execute()
+        
+        if not search_response.get('items', []):
+            app.logger.error(f"No similar videos found for query: {query}")
+            return jsonify({'error': 'No similar videos found'}), 404
+        
+        # Step 4: Filter results for Shorts (≤ 90 seconds)
+        related_videos = []
+        video_ids = []
+        seen_video_ids = {video_id}  # Track seen IDs to avoid duplicates
+        for item in search_response['items']:
+            rel_video_id = item['id']['videoId']
+            rel_channel_id = item['snippet']['channelId']
+            # Exclude input video and same-channel videos
+            if rel_video_id not in seen_video_ids and rel_channel_id != input_channel_id:
+                seen_video_ids.add(rel_video_id)
+                video_ids.append(rel_video_id)
+        
+        # Step 5: Fetch additional details for videos
+        if not video_ids:
+            app.logger.error("No valid video IDs after filtering.")
+            return jsonify({'error': 'No similar videos found from different channels'}), 404
+
+        details_response = youtube.videos().list(
+            part='snippet,statistics,contentDetails',
+            id=','.join(video_ids[:25])  # Limit to 25 IDs per API call
+        ).execute()
+        
+        video_stats = {}
+        for item in details_response.get('items', []):
+            duration = item['contentDetails']['duration']
+            duration_seconds = parse_duration(duration)
+            if duration_seconds <= 90:  # Filter for Shorts
+                video_stats[item['id']] = {
+                    'views': int(item['statistics'].get('viewCount', 0)),
+                    'likes': int(item['statistics'].get('likeCount', 0)),
+                    'comments': int(item['statistics'].get('commentCount', 0)),
+                    'duration': duration,
+                    'duration_seconds': duration_seconds,
+                    'title': item['snippet']['title'],
+                    'channel_id': item['snippet']['channelId'],
+                    'channel_title': item['snippet']['channelTitle'],
+                    'published_at': item['snippet']['publishedAt'],
+                    'thumbnail_url': item['snippet']['thumbnails']['high']['url'],
+                    'language': item['snippet'].get('defaultLanguage', 'en')
+                }
+        
+        # Step 6: Fetch subscriber count for each channel
+        channel_ids = list(set(video['channel_id'] for video in video_stats.values()))
+        processed_channels = {}
+        for channel_id in channel_ids:
+            try:
+                channel_response = youtube.channels().list(
+                    part='statistics',
+                    id=channel_id
+                ).execute()
+                subscriber_count = int(channel_response['items'][0]['statistics'].get('subscriberCount', 0)) if channel_response['items'] else 0
+                processed_channels[channel_id] = {'subscriber_count': subscriber_count}
+            except Exception as e:
+                app.logger.error(f"Error fetching subscriber count for channel {channel_id}: {str(e)}")
+                processed_channels[channel_id] = {'subscriber_count': 0}
+        
+        # Step 7: Format the response
+        formatted_shorts = []
+        for vid, stats in video_stats.items():
+            channel_data = processed_channels.get(stats['channel_id'], {'subscriber_count': 0})
+            engagement_rate = (stats['likes'] + stats['comments']) / stats['views'] if stats['views'] > 0 else 0
+            formatted_short = {
+                'video_id': vid,
+                'title': stats['title'],
+                'channel_id': stats['channel_id'],
+                'channel_title': stats['channel_title'],
+                'views': stats['views'],
+                'views_formatted': format_number(stats['views']),
+                'likes': stats['likes'],
+                'likes_formatted': format_number(stats['likes']),
+                'comments': stats['comments'],
+                'comments_formatted': format_number(stats['comments']),
+                'duration': stats['duration'],
+                'duration_seconds': stats['duration_seconds'],
+                'url': f"https://www.youtube.com/watch?v={vid}",
+                'published_at': stats['published_at'],
+                'thumbnail_url': stats['thumbnail_url'],
+                'engagement_rate': round(engagement_rate, 4),
+                'language': stats['language'],
+                'subscriber_count': channel_data['subscriber_count']
+            }
+            formatted_shorts.append(formatted_short)
+        
+        # Sort by views (relevance) and limit to 15
+        formatted_shorts.sort(key=lambda x: x['views'], reverse=True)
+        formatted_shorts = formatted_shorts[:15]
+        
+        if not formatted_shorts:
+            app.logger.error("No valid Shorts after processing.")
+            return jsonify({'error': 'No similar Shorts found'}), 404
+        
+        # Return successful response
+        app.logger.info(f"Found {len(formatted_shorts)} similar Shorts for video {video_id}")
+        return jsonify({
+            'success': True,
+            'input_video_id': video_id,
+            'input_video_title': input_title,
+            'input_channel_title': input_channel_title,
+            'total_results': len(formatted_shorts),
+            'similar_shorts': formatted_shorts
+        })
+    
+    except HttpError as e:
+        app.logger.error(f"YouTube API error in similar_shorts for video {video_id}: {str(e)}")
+        return jsonify({'success': False, 'error': f'YouTube API error: {str(e)}'}), 503
+    except Exception as e:
+        app.logger.error(f"Similar shorts error: {str(e)}")
+        return jsonify({'success': False, 'error': f'An error occurred: {str(e)}'}), 500
+
 
 @app.route('/api/channel_shorts_outliers', methods=['POST'])
 def channel_shorts_outliers():

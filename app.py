@@ -1684,13 +1684,14 @@ def ideas_by_channel_id():
         # Build YouTube API client
         youtube = build('youtube', 'v3', developerKey=YOUTUBE_API_KEY)
 
-        # Verify channel exists
-        channel_request = youtube.channels().list(part='id,snippet', id=channel_id)
+        # Verify channel exists and fetch statistics
+        channel_request = youtube.channels().list(part='snippet,statistics', id=channel_id)
         channel_response = channel_request.execute()
         if not channel_response.get('items'):
             app.logger.error(f"Channel not found for ID: {channel_id}")
             return jsonify({'error': 'Channel not found'}), 404
         channel_title = channel_response['items'][0]['snippet']['title']
+        subscriber_count = int(channel_response['items'][0]['statistics'].get('subscriberCount', 0))
 
         # Fetch the last 15 videos
         search_request = youtube.search().list(
@@ -1715,39 +1716,51 @@ def ideas_by_channel_id():
         video_details_response = video_details_request.execute()
 
         videos = []
+        total_views = 0
         for item in video_details_response.get('items', []):
-            duration = item['contentDetails']['duration']
-            duration_seconds = parse_duration(duration)
-            views = int(item['statistics'].get('viewCount', 0))
-            likes = int(item['statistics'].get('likeCount', 0))
-            comments = int(item['statistics'].get('commentCount', 0))
-            engagement_rate = (likes + comments) / views if views > 0 else 0
             try:
-                pub_date = datetime.datetime.strptime(item['snippet']['publishedAt'], '%Y-%m-%dT%H:%M:%SZ')
-                video_age_days = (datetime.datetime.utcnow() - pub_date).days
-            except:
-                video_age_days = 0
+                duration = item['contentDetails']['duration']
+                duration_seconds = parse_duration(duration)
+                views = int(item['statistics'].get('viewCount', 0))
+                likes = int(item['statistics'].get('likeCount', 0))
+                comments = int(item['statistics'].get('commentCount', 0))
+                engagement_rate = (likes + comments) / views if views > 0 else 0
+                try:
+                    pub_date = datetime.datetime.strptime(item['snippet']['publishedAt'], '%Y-%m-%dT%H:%M:%SZ')
+                    video_age_days = (datetime.datetime.utcnow() - pub_date).days
+                except:
+                    video_age_days = 0
 
-            video = {
-                'video_id': item['id'],
-                'title': item['snippet']['title'],
-                'channel_id': item['snippet']['channelId'],
-                'channel_title': item['snippet']['channelTitle'],
-                'views': views,
-                'views_formatted': format_number(views),
-                'likes': likes,
-                'likes_formatted': format_number(likes),
-                'comments': comments,
-                'comments_formatted': format_number(comments),
-                'duration': duration,
-                'duration_seconds': duration_seconds,
-                'url': f"https://www.youtube.com/watch?v={item['id']}",
-                'published_at': item['snippet']['publishedAt'],
-                'thumbnail_url': item['snippet']['thumbnails']['high']['url'],
-                'engagement_rate': round(engagement_rate, 4),
-                'video_age_days': video_age_days
-            }
-            videos.append(video)
+                multiplier = engagement_rate * (views / 1000) if views > 0 else 0
+                total_views += views
+                video = {
+                    'video_id': item['id'],
+                    'title': item['snippet']['title'],
+                    'channel_id': item['snippet']['channelId'],
+                    'channel_title': item['snippet']['channelTitle'],
+                    'views': views,
+                    'views_formatted': format_number(views),
+                    'likes': likes,
+                    'likes_formatted': format_number(likes),
+                    'comments': comments,
+                    'comments_formatted': format_number(comments),
+                    'duration': duration,
+                    'duration_seconds': duration_seconds,
+                    'url': f"https://www.youtube.com/watch?v={item['id']}",
+                    'published_at': item['snippet']['publishedAt'],
+                    'thumbnail_url': item['snippet']['thumbnails']['high']['url'],
+                    'engagement_rate': round(engagement_rate, 4),
+                    'video_age_days': video_age_days,
+                    'language': item['snippet'].get('defaultLanguage', 'en'),
+                    'multiplier': round(multiplier, 4),
+                    'channel_avg_views': int(total_views / len(videos) + 1) if videos else 0,
+                    'channel_avg_views_formatted': format_number(int(total_views / len(videos) + 1)) if videos else '0',
+                    'subscriber_count': subscriber_count
+                }
+                videos.append(video)
+            except KeyError as e:
+                app.logger.error(f"Missing key {e} in video details for video ID: {item.get('id', 'unknown')}")
+                continue
 
         # Sort by published date (most recent first)
         videos.sort(key=lambda x: x['published_at'], reverse=True)
@@ -1768,7 +1781,6 @@ def ideas_by_channel_id():
     except Exception as e:
         app.logger.error(f"Ideas by channel ID error: {str(e)}")
         return jsonify({'error': f'An error occurred: {str(e)}'}), 500
-
 
 @app.route('/api/get_viral_thumbnails', methods=['POST'])
 def get_viral_thumbnails():
@@ -2601,23 +2613,38 @@ def similar_shorts():
         # Step 6: Fetch subscriber count for each channel
         channel_ids = list(set(video['channel_id'] for video in video_stats.values()))
         processed_channels = {}
+        channel_video_counts = {}  # Track number of videos per channel
+        channel_total_views = {}  # Track total views per channel
         for channel_id in channel_ids:
             try:
                 channel_response = youtube.channels().list(
                     part='statistics',
                     id=channel_id
                 ).execute()
-                subscriber_count = int(channel_response['items'][0]['statistics'].get('subscriberCount', 0)) if channel_response['items'] else 0
+                channel_data = channel_response['items'][0]['statistics'] if channel_response['items'] else {}
+                subscriber_count = int(channel_data.get('subscriberCount', 0))
                 processed_channels[channel_id] = {'subscriber_count': subscriber_count}
             except Exception as e:
                 app.logger.error(f"Error fetching subscriber count for channel {channel_id}: {str(e)}")
                 processed_channels[channel_id] = {'subscriber_count': 0}
         
-        # Step 7: Format the response
+        # Step 7: Calculate channel average views
+        for vid, stats in video_stats.items():
+            channel_id = stats['channel_id']
+            channel_video_counts[channel_id] = channel_video_counts.get(channel_id, 0) + 1
+            channel_total_views[channel_id] = channel_total_views.get(channel_id, 0) + stats['views']
+        
+        for channel_id in channel_video_counts:
+            avg_views = channel_total_views[channel_id] / channel_video_counts[channel_id] if channel_video_counts[channel_id] > 0 else 0
+            processed_channels[channel_id]['channel_avg_views'] = int(avg_views)
+            processed_channels[channel_id]['channel_avg_views_formatted'] = format_number(int(avg_views))
+        
+        # Step 8: Format the response
         formatted_shorts = []
         for vid, stats in video_stats.items():
-            channel_data = processed_channels.get(stats['channel_id'], {'subscriber_count': 0})
+            channel_data = processed_channels.get(stats['channel_id'], {'subscriber_count': 0, 'channel_avg_views': 0, 'channel_avg_views_formatted': '0'})
             engagement_rate = (stats['likes'] + stats['comments']) / stats['views'] if stats['views'] > 0 else 0
+            multiplier = engagement_rate * (stats['views'] / 1000) if stats['views'] > 0 else 0  # Example multiplier calculation
             formatted_short = {
                 'video_id': vid,
                 'title': stats['title'],
@@ -2636,6 +2663,9 @@ def similar_shorts():
                 'thumbnail_url': stats['thumbnail_url'],
                 'engagement_rate': round(engagement_rate, 4),
                 'language': stats['language'],
+                'multiplier': round(multiplier, 4),
+                'channel_avg_views': channel_data['channel_avg_views'],
+                'channel_avg_views_formatted': channel_data['channel_avg_views_formatted'],
                 'subscriber_count': channel_data['subscriber_count']
             }
             formatted_shorts.append(formatted_short)
@@ -2665,7 +2695,6 @@ def similar_shorts():
     except Exception as e:
         app.logger.error(f"Similar shorts error: {str(e)}")
         return jsonify({'success': False, 'error': f'An error occurred: {str(e)}'}), 500
-
 
 @app.route('/api/channel_shorts_outliers', methods=['POST'])
 def channel_shorts_outliers():

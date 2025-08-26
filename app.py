@@ -5,6 +5,8 @@ from googleapiclient.discovery import build
 from script_generate import generate_script
 import logging
 import json
+from youtube_api import get_viral_thumbnails
+
 import isodate
 from script_generate import generate_script_from_title
 from thumbnail_review import review_thumbnail
@@ -1783,7 +1785,7 @@ def ideas_by_channel_id():
         return jsonify({'error': f'An error occurred: {str(e)}'}), 500
 
 @app.route('/api/get_viral_thumbnails', methods=['POST'])
-def get_viral_thumbnails():
+def viral_thumbnails():
     """Fetch 10 viral long-video thumbnail URLs from YouTube based on a query."""
     try:
         data = request.get_json()
@@ -1793,76 +1795,9 @@ def get_viral_thumbnails():
         if not query:
             return jsonify({'error': 'Query is required'}), 400
 
-        if YOUTUBE_API_KEY == 'YOUR_YOUTUBE_API_KEY':
-            return jsonify({'error': 'YouTube API key not configured'}), 500
-
-        youtube = googleapiclient.discovery.build('youtube', 'v3', developerKey=YOUTUBE_API_KEY)
-
-        long_videos = []
-        next_page_token = None
-        
-        while len(long_videos) < 10:
-            # Step 1: Search for a batch of videos
-            search_request = youtube.search().list(
-                q=query,
-                part='snippet',
-                type='video',
-                order='viewCount',
-                maxResults=20, # Fetch more to have a buffer to filter
-                pageToken=next_page_token
-            )
-            search_response = search_request.execute()
-
-            if not search_response.get('items'):
-                break # No more results to process
-
-            video_ids = [item['id']['videoId'] for item in search_response['items']]
-
-            # Step 2: Get content details (including duration) for the batch of videos
-            videos_request = youtube.videos().list(
-                part="contentDetails,snippet",
-                id=",".join(video_ids)
-            )
-            videos_response = videos_request.execute()
-
-            # Filter for videos longer than 60 seconds
-            for item in videos_response.get('items', []):
-                duration_iso = item['contentDetails']['duration']
-                
-                # Handle cases where isodate returns an integer (e.g., for PT0S)
-                try:
-                    duration_object = parse_duration(duration_iso)
-                    if isinstance(duration_object, int):
-                        duration_in_seconds = float(duration_object)
-                    else:
-                        duration_in_seconds = duration_object.total_seconds()
-                except Exception as e:
-                    app.logger.error(f"Failed to parse duration '{duration_iso}': {e}")
-                    duration_in_seconds = 0 # Default to 0 seconds if parsing fails
-                
-                if duration_in_seconds > 180:
-                    long_videos.append({
-                        'title': item['snippet']['title'],
-                        'thumbnail_url': item['snippet']['thumbnails']['high']['url']
-                    })
-                    if len(long_videos) >= 10:
-                        break # Found enough long videos
-
-            next_page_token = search_response.get('nextPageToken')
-            if not next_page_token:
-                break # No next page, exit the loop
-
-        # Return the list of thumbnails
-        if not long_videos:
-            return jsonify({'error': 'No long videos found for the query'}), 404
-            
-        return jsonify({
-            'success': True,
-            'query': query,
-            'results_count': len(long_videos),
-            'thumbnails': long_videos
-        })
-
+        result = get_viral_thumbnails(query)
+        return jsonify(result)
+    
     except Exception as e:
         app.logger.error(f"Get viral thumbnails error: {str(e)}")
         return jsonify({'error': f'An error occurred: {str(e)}'}), 500

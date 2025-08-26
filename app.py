@@ -1155,21 +1155,35 @@ def trending_outliers():
 
 @app.route('/api/similar-thumbnails', methods=['POST'])
 def get_similar_thumbnails():
-    """API endpoint to get similar thumbnails for a given video ID."""
+    """API endpoint to get similar thumbnails with full video details."""
     try:
         data = request.get_json()
+        app.logger.debug(f"Received request data: {data}")
         video_id = data.get('video_id')
         if not video_id:
-            return jsonify({'error': 'Video ID is required'}), 400
-        similarity_threshold = data.get('similarity_threshold', 0.45)
+            app.logger.error("Missing video_id in request")
+            return jsonify({'success': False, 'error': 'Video ID is required'}), 400
+        similarity_threshold = float(data.get('similarity_threshold', 0.70))
         video_url = f"https://www.youtube.com/watch?v={video_id}"
-        result_data, _, error = find_similar_videos_enhanced(video_url, similarity_threshold=similarity_threshold)
+        result_data, _, error = find_similar_videos_enhanced(
+            video_url,
+            max_results=150,
+            top_similar=50,
+            similarity_threshold=similarity_threshold
+        )
         if error:
+            app.logger.error(f"Similarity analysis failed: {error}")
             return jsonify({'success': False, 'error': error}), 400
-        return jsonify({'success': True, **result_data})
+        app.logger.info(f"Returning {len(result_data['similar_videos'])} similar videos for video_id: {video_id}")
+        return jsonify({
+            'success': True,
+            'input_video': result_data['input_video'],
+            'similar_videos': result_data['similar_videos'],
+            'processing_stats': result_data['processing_stats']
+        })
     except Exception as e:
-        print(f"Error in get_similar_thumbnails: {str(e)}")
-        return jsonify({'success': False, 'error': f'An error occurred: {str(e)}'}), 500
+        app.logger.error(f"Error in get_similar_thumbnails: {str(e)}")
+        return jsonify({'success': False, 'error': f'Internal server error: {str(e)}'}), 500
 
 @app.route('/api/stats', methods=['GET'])
 def get_stats():

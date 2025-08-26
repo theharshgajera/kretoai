@@ -2645,6 +2645,80 @@ def similar_shorts():
         app.logger.error(f"Similar shorts error: {str(e)}")
         return jsonify({'success': False, 'error': f'An error occurred: {str(e)}'}), 500
 
+@app.route('/api/shorts_by_channel_id', methods=['POST'])
+def shorts_by_channel_id():
+    """Fetch the last 15 Shorts (<= 60 seconds) from a YouTube channel by channel ID."""
+    try:
+        data = request.get_json()
+        app.logger.debug(f"Received data: {data}")
+        channel_id = data.get('channel_id')
+
+        if not channel_id:
+            return jsonify({'error': 'Channel ID is required'}), 400
+        channel_id = channel_id.strip()
+        if not channel_id:
+            return jsonify({'error': 'Channel ID cannot be empty'}), 400
+
+        if YOUTUBE_API_KEY == 'YOUR_YOUTUBE_API_KEY':
+            app.logger.error("YouTube API key not configured.")
+            return jsonify({'error': 'YouTube API key not configured'}), 500
+
+        # Fetch Shorts using existing helper function
+        shorts = get_channel_shorts_details(channel_id, max_results=15)
+
+        if not shorts:
+            app.logger.error(f"No Shorts found for channel ID: {channel_id}")
+            return jsonify({'error': 'No Shorts found for the channel'}), 404
+
+        # Format response
+        formatted_shorts = []
+        total_views = sum(video['views'] for video in shorts)
+        for video in shorts:
+            formatted_short = {
+                'video_id': video['video_id'],
+                'title': video['title'],
+                'channel_id': video['channel_id'],
+                'channel_title': video['channel_title'],
+                'views': video['views'],
+                'views_formatted': format_number(video['views']),
+                'likes': video['likes'],
+                'likes_formatted': format_number(video['likes']),
+                'comments': video['comments'],
+                'comments_formatted': format_number(video['comments']),
+                'duration': video['duration'],
+                'duration_seconds': video['duration_seconds'],
+                'url': f"https://www.youtube.com/watch?v={video['video_id']}",
+                'published_at': video['published_at'],
+                'thumbnail_url': video['thumbnail_url'],
+                'engagement_rate': round((video['likes'] + video['comments']) / video['views'] if video['views'] > 0 else 0, 4),
+                'video_age_days': video.get('video_age_days', 0),
+                'language': video.get('language', 'en'),
+                'multiplier': round((video['views'] / (total_views / len(shorts))) if total_views > 0 else 0, 4),
+                'channel_avg_views': int(total_views / len(shorts)) if shorts else 0,
+                'channel_avg_views_formatted': format_number(int(total_views / len(shorts))) if shorts else '0',
+                'subscriber_count': video['subscriber_count']
+            }
+            formatted_shorts.append(formatted_short)
+
+        # Sort by published date (most recent first)
+        formatted_shorts.sort(key=lambda x: x['published_at'], reverse=True)
+
+        app.logger.info(f"Found {len(formatted_shorts)} Shorts for channel {channel_id}")
+        return jsonify({
+            'success': True,
+            'channel_id': channel_id,
+            'channel_title': shorts[0]['channel_title'] if shorts else 'Unknown',
+            'total_results': len(formatted_shorts),
+            'shorts': formatted_shorts
+        })
+
+    except HttpError as e:
+        app.logger.error(f"YouTube API error in shorts_by_channel_id for channel {channel_id}: {str(e)}")
+        return jsonify({'error': f'YouTube API error: {str(e)}'}), 503
+    except Exception as e:
+        app.logger.error(f"Shorts by channel ID error: {str(e)}")
+        return jsonify({'error': f'An error occurred: {str(e)}'}), 500
+
 @app.route('/api/channel_shorts_outliers', methods=['POST'])
 def channel_shorts_outliers():
     """Find at least 35 outlier Shorts from channels similar to the input channel, excluding the input channel."""

@@ -9,3 +9,4 @@ dotenv
 google.generativeai
 opencv-python
 tensorflow
+isodate

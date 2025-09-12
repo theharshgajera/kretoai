@@ -1204,203 +1204,230 @@ def health_check():
         'service': 'YouTube Title Generation and Outlier Detection Tool',
         'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S IST')
     })
+from flask import Flask, request, jsonify
+import googleapiclient.discovery
+import googleapiclient.errors
+import google.generativeai as genai
+from datetime import datetime
+import os
+import isodate  # pip install isodate
+
+app = Flask(__name__)
+
+# 🔑 Your API keys (set them in your environment)
+YOUTUBE_API_KEY = os.getenv("YOUTUBE_API_KEY")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+
+# Configure Gemini SDK
+genai.configure(api_key=GEMINI_API_KEY)
+
+
+def format_number(num: int) -> str:
+    """Format large numbers into human-readable strings (e.g., 1.5M)."""
+    if num >= 1_000_000:
+        return f"{num/1_000_000:.1f}M"
+    elif num >= 1_000:
+        return f"{num/1_000:.1f}K"
+    return str(num)
+
+
+def parse_duration(duration: str) -> int:
+    """Convert ISO 8601 duration (e.g., PT5M30S) into seconds."""
+    try:
+        return int(isodate.parse_duration(duration).total_seconds())
+    except Exception:
+        return 0
+def get_category_id(niche: str) -> str:
+    """
+    Map Gemini niche (text) into a YouTube videoCategoryId.
+    Fallback = 24 (Entertainment).
+    """
+    niche = niche.lower()
+
+    mapping = {
+        "music": "10",
+        "gaming": "20",
+        "news": "25",
+        "sports": "17",
+        "travel": "19",
+        "education": "27",
+        "science": "28",
+        "technology": "28",
+        "film": "1",
+        "entertainment": "24",
+        "comedy": "23",
+        "howto": "26",
+        "lifestyle": "22",
+        "people": "22",
+        "autos": "2",
+        "pets": "15",
+        "animals": "15",
+        "food": "26",
+        "finance": "27",
+        "fitness": "17"
+    }
+
+    for key, cid in mapping.items():
+        if key in niche:
+            return cid
+
+    return "24"  # default to Entertainment
+def fetch_video_details(youtube, video_ids):
+    all_videos = []
+    for i in range(0, len(video_ids), 50):
+        batch_ids = video_ids[i:i+50]
+        resp = youtube.videos().list(
+            part="snippet,statistics,contentDetails",
+            id=",".join(batch_ids)
+        ).execute()
+        all_videos.extend(resp.get('items', []))
+    return all_videos
+
 @app.route('/api/channel_outliers_by_id', methods=['POST'])
 def channel_outliers_by_id():
-    """Find at least 35 outlier videos from a channel and similar channels."""
+    """Find at least 30 outlier videos from other channels based on a channel's niche."""
     try:
         data = request.get_json()
         if not data or 'channel_id' not in data:
             return jsonify({'error': 'Channel ID is required'}), 400
+
         channel_id = data['channel_id'].strip()
         if not channel_id:
             return jsonify({'error': 'Channel ID cannot be empty'}), 400
 
-        # Verify input channel exists
-        youtube = build('youtube', 'v3', developerKey=YOUTUBE_API_KEY)
-        channel_request = youtube.channels().list(part='id,snippet', id=channel_id)
-        response = channel_request.execute()
-        if not response['items']:
+        # Initialize YouTube API
+        youtube = googleapiclient.discovery.build("youtube", "v3", developerKey=YOUTUBE_API_KEY)
+
+        # Fetch input channel details
+        channel_resp = youtube.channels().list(part='snippet,statistics', id=channel_id).execute()
+        if not channel_resp['items']:
             return jsonify({'error': 'Channel not found'}), 404
-        channel_title = response['items'][0]['snippet']['title']
 
-        # Fetch videos from input channel
-        all_videos = get_channel_videos_details(channel_id, max_results=50)
-        if not all_videos:
-            return jsonify({'error': 'No videos found for the input channel'}), 404
+        channel_info = channel_resp['items'][0]
+        channel_title = channel_info['snippet']['title']
 
-        # Find similar channels
-        similar_channels = find_similar_channels(channel_id, max_channels=10)
-        for sim_channel_id in similar_channels:
-            sim_videos = get_channel_videos_details(sim_channel_id, max_results=50)
-            all_videos.extend(sim_videos)
+        # Step 1: Use Gemini to identify niche keywords
+        model = genai.GenerativeModel("gemini-2.5-flash")
+        gemini_resp = model.generate_content(
+            f"Provide 1–3 keywords that best describe the content niche of the YouTube channel '{channel_title}' only give niche in 1-3 keywords nothing else"
+        )
+        niche_keywords = gemini_resp.text.strip()
 
-        if not all_videos:
-            return jsonify({'error': 'No videos found from input or similar channels'}), 404
+        # Step 2: Search YouTube for videos matching the niche with medium or long duration
+        search_results = youtube.search().list(
+            part="id,snippet",
+            q=niche_keywords,
+            type="video",
+            maxResults=50,
+            order="viewCount",
+            videoDuration="medium"  # Fetch videos >4min, could also call twice with "long"
+        ).execute()
 
-        # Detect outliers
+        # Extract video IDs
+        video_ids = [item['id']['videoId'] for item in search_results.get('items', [])]
+        if not video_ids:
+            return jsonify({
+                "channel_id": channel_id,
+                "channel_title": channel_title,
+                "niche": niche_keywords,
+                "outliers": []
+            })
+
+        # Step 3: Get video details
+        video_resp = youtube.videos().list(
+            part="snippet,statistics,contentDetails",
+            id=",".join(video_ids)
+        ).execute()
+
         outliers = []
-        threshold = 1.5  # Initial multiplier threshold
-        max_attempts = 3
-        attempt = 0
+        seen_channels = set([channel_title])  # exclude input channel
 
-        while len(outliers) < 35 and attempt < max_attempts:
-            outliers = []
-            # Group videos by channel
-            channel_videos = {}
-            for video in all_videos:
-                chan_id = video['channel_id']
-                if chan_id not in channel_videos:
-                    channel_videos[chan_id] = []
-                channel_videos[chan_id].append(video)
+        for item in video_resp.get('items', []):
+            vid_channel = item['snippet']['channelTitle']
+            if vid_channel in seen_channels:
+                continue
+            seen_channels.add(vid_channel)
 
-            # Calculate outliers for each channel
-            for chan_id, videos in channel_videos.items():
-                views_list = [v['views'] for v in videos if v['views'] > 0]
-                if not views_list:
+            # Parse ISO8601 duration to seconds
+            duration_str = item['contentDetails']['duration']
+            match = re.match(r"PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?", duration_str)
+            hours = int(match.group(1) or 0)
+            minutes = int(match.group(2) or 0)
+            seconds = int(match.group(3) or 0)
+            total_seconds = hours*3600 + minutes*60 + seconds
+            if total_seconds < 120:  # only include >120s
+                continue
+
+            views = int(item['statistics'].get('viewCount', 0))
+            subscribers = int(channel_resp['items'][0]['statistics'].get('subscriberCount', 1))  # fallback to 1
+            multiplier = round(views / max(subscribers, 1), 2)
+
+            outliers.append({
+                "video_id": item['id'],
+                "title": item['snippet']['title'],
+                "channel_title": vid_channel,
+                "views": views,
+                "views_formatted": f"{views/1_000_000:.1f}M" if views >= 1_000_000 else f"{views//1000}K",
+                "multiplier": multiplier,
+                "duration_seconds": total_seconds,
+                "thumbnail_url": item['snippet']['thumbnails']['high']['url'],
+                "url": f"https://www.youtube.com/watch?v={item['id']}"
+            })
+
+        # Step 4: Sort by multiplier descending and take top 30+
+        outliers.sort(key=lambda x: x['multiplier'], reverse=True)
+
+        # If less than 30 videos, fill with remaining videos ignoring multiplier
+        if len(outliers) < 30:
+            additional_needed = 30 - len(outliers)
+            for item in video_resp.get('items', []):
+                vid_channel = item['snippet']['channelTitle']
+                if any(v['channel_title'] == vid_channel for v in outliers):
                     continue
-                avg_views = sum(views_list) / len(views_list)
-                for video in videos:
-                    if video['views'] > threshold * avg_views:
-                        multiplier = video['views'] / avg_views if avg_views > 0 else 0
-                        engagement_rate = (video['likes'] + video['comments']) / video['views'] if video['views'] > 0 else 0
-                        try:
-                            pub_date = datetime.strptime(video['published_at'], '%Y-%m-%dT%H:%M:%SZ')
-                            video_age_days = (datetime.utcnow() - pub_date).days
-                        except:
-                            video_age_days = 0
-                        formatted_outlier = {
-                            'video_id': video['video_id'],
-                            'title': video['title'],
-                            'channel_id': video['channel_id'],
-                            'channel_title': video['channel_title'],
-                            'views': video['views'],
-                            'views_formatted': format_number(video['views']),
-                            'channel_avg_views': avg_views,
-                            'channel_avg_views_formatted': format_number(avg_views),
-                            'multiplier': round(multiplier, 2),
-                            'likes': video['likes'],
-                            'likes_formatted': format_number(video['likes']),
-                            'comments': video['comments'],
-                            'comments_formatted': format_number(video['comments']),
-                            'duration': video['duration'],
-                            'duration_seconds': video['duration_seconds'],
-                            'url': f"https://www.youtube.com/watch?v={video['video_id']}",
-                            'published_at': video['published_at'],
-                            'thumbnail_url': video['thumbnail_url'],
-                            'engagement_rate': round(engagement_rate, 4),
-                            'video_age_days': video_age_days
-                        }
-                        outliers.append(formatted_outlier)
 
-            # Sort by multiplier
-            outliers.sort(key=lambda x: x['multiplier'], reverse=True)
-            if len(outliers) > 50:
-                outliers = outliers[:50]
-
-            # Adjust threshold if needed
-            attempt += 1
-            if len(outliers) < 35 and attempt < max_attempts:
-                threshold -= 0.2  # Decrease threshold to include more videos
-                app.logger.debug(f"Attempt {attempt}: Found {len(outliers)} outliers, lowering threshold to {threshold}")
-
-        # Fallback: Fetch additional related videos if still under 35
-        if len(outliers) < 35:
-            top_videos = get_top_videos(channel_id, n=5)
-            for video in top_videos:
-                rel_vids = get_related_videos(video['video_id'], m=25)
-                video_ids = [v['video_id'] for v in rel_vids]
-                if video_ids:
-                    video_details_request = youtube.videos().list(part='snippet,statistics,contentDetails', id=','.join(video_ids))
-                    video_details_response = video_details_request.execute()
-                    for item in video_details_response['items']:
-                        duration = item['contentDetails']['duration']
-                        duration_seconds = parse_duration(duration)
-                        if duration_seconds > 60:  # Exclude Shorts
-                            all_videos.append({
-                                'video_id': item['id'],
-                                'title': item['snippet']['title'],
-                                'channel_id': item['snippet']['channelId'],
-                                'channel_title': item['snippet']['channelTitle'],
-                                'published_at': item['snippet']['publishedAt'],
-                                'thumbnail_url': item['snippet']['thumbnails']['high']['url'],
-                                'views': int(item['statistics'].get('viewCount', 0)),
-                                'likes': int(item['statistics'].get('likeCount', 0)),
-                                'comments': int(item['statistics'].get('commentCount', 0)),
-                                'duration': duration,
-                                'duration_seconds': duration_seconds
-                            })
-
-            # Re-run outlier detection with the same threshold
-            channel_videos = {}
-            for video in all_videos:
-                chan_id = video['channel_id']
-                if chan_id not in channel_videos:
-                    channel_videos[chan_id] = []
-                channel_videos[chan_id].append(video)
-
-            outliers = []
-            for chan_id, videos in channel_videos.items():
-                views_list = [v['views'] for v in videos if v['views'] > 0]
-                if not views_list:
+                # Duration check only
+                duration_str = item['contentDetails']['duration']
+                match = re.match(r"PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?", duration_str)
+                hours = int(match.group(1) or 0)
+                minutes = int(match.group(2) or 0)
+                seconds = int(match.group(3) or 0)
+                total_seconds = hours*3600 + minutes*60 + seconds
+                if total_seconds < 120:
                     continue
-                avg_views = sum(views_list) / len(views_list)
-                for video in videos:
-                    if video['views'] > threshold * avg_views:
-                        multiplier = video['views'] / avg_views if avg_views > 0 else 0
-                        engagement_rate = (video['likes'] + video['comments']) / video['views'] if video['views'] > 0 else 0
-                        try:
-                            pub_date = datetime.strptime(video['published_at'], '%Y-%m-%dT%H:%M:%SZ')
-                            video_age_days = (datetime.utcnow() - pub_date).days
-                        except:
-                            video_age_days = 0
-                        formatted_outlier = {
-                            'video_id': video['video_id'],
-                            'title': video['title'],
-                            'channel_id': video['channel_id'],
-                            'channel_title': video['channel_title'],
-                            'views': video['views'],
-                            'views_formatted': format_number(video['views']),
-                            'channel_avg_views': avg_views,
-                            'channel_avg_views_formatted': format_number(avg_views),
-                            'multiplier': round(multiplier, 2),
-                            'likes': video['likes'],
-                            'likes_formatted': format_number(video['likes']),
-                            'comments': video['comments'],
-                            'comments_formatted': format_number(video['comments']),
-                            'duration': video['duration'],
-                            'duration_seconds': video['duration_seconds'],
-                            'url': f"https://www.youtube.com/watch?v={video['video_id']}",
-                            'published_at': video['published_at'],
-                            'thumbnail_url': video['thumbnail_url'],
-                            'engagement_rate': round(engagement_rate, 4),
-                            'video_age_days': video_age_days
-                        }
-                        outliers.append(formatted_outlier)
 
-            outliers.sort(key=lambda x: x['multiplier'], reverse=True)
-            if len(outliers) > 50:
-                outliers = outliers[:50]
+                views = int(item['statistics'].get('viewCount', 0))
+                subscribers = int(channel_resp['items'][0]['statistics'].get('subscriberCount', 1))
+                multiplier = round(views / max(subscribers, 1), 2)
 
-        app.logger.info(f"Found {len(outliers)} outliers for channel {channel_id} with threshold {threshold}")
+                outliers.append({
+                    "video_id": item['id'],
+                    "title": item['snippet']['title'],
+                    "channel_title": vid_channel,
+                    "views": views,
+                    "views_formatted": f"{views/1_000_000:.1f}M" if views >= 1_000_000 else f"{views//1000}K",
+                    "multiplier": multiplier,
+                    "duration_seconds": total_seconds,
+                    "thumbnail_url": item['snippet']['thumbnails']['high']['url'],
+                    "url": f"https://www.youtube.com/watch?v={item['id']}"
+                })
+
+                if len(outliers) >= 30:
+                    break
+
         return jsonify({
-            'success': True,
-            'channel_id': channel_id,
-            'channel_title': channel_title,
-            'total_results': len(outliers),
-            'outliers': outliers
+            "success": True,
+            "total_results": len(outliers),
+            "channel_id": channel_id,
+            "channel_title": channel_title,
+            "niche": niche_keywords,
+            "outliers": outliers
         })
 
-    except HttpError as e:
-        app.logger.error(f"YouTube API error in channel_outliers_by_id for channel {channel_id}: {str(e)}")
-        return jsonify({'success': False, 'error': f'YouTube API error: {str(e)}'}), 503
     except Exception as e:
-        app.logger.error(f"Channel outliers by ID error: {str(e)}")
-        return jsonify({'success': False, 'error': f'An error occurred: {str(e)}'}), 500
+        app.logger.error(f"Channel outliers error: {str(e)}")
+        return jsonify({'error': str(e)}), 500
 
-        
-from uuid import uuid4
-import json
-from googleapiclient.errors import HttpError
+
 
 @app.route('/api/generate_titles', methods=['POST'])
 def generate_titles():
@@ -1420,44 +1447,48 @@ def generate_titles():
         
         # Initialize base prompt from provided guidelines
         base_prompt = """
-Generate 5 viral YouTube video title options that maximize click-through rate (CTR) and align with the video's content, adhering to the following guidelines:
-1. **Core Purpose**: Create a title that serves as a compelling headline, accurately reflecting the video’s main hook or payoff to confirm viewer expectations and boost watch time. Ensure it helps YouTube’s algorithm recommend the video to the right audience by including relevant keywords.
-2. **Length**: Keep the title under 70 characters for visibility across devices (absolute max 100 characters, with key words front-loaded for Suggested Videos where only 40-50 characters may show).
-3. **Human + Algorithm Balance**: Prioritize human appeal with emotional pull (curiosity, desire, or ethical fear) while including 1-2 relevant keywords for YouTube’s metadata to categorize the video’s topic accurately.
-4. **Title Modes**: Choose one of three modes based on the video’s discovery path:
-   - **Searchable**: Use clear keywords and outcomes for tutorials or evergreen topics (e.g., "How to Start a YouTube Channel in 2025").
-   - **Browse/Intriguing**: Spark curiosity for recommendation feeds, paired with a bold thumbnail (e.g., "This Camera is Worse… and That’s Why I Bought It").
-   - **Hybrid**: Blend keywords with intrigue for both search and browse traffic (e.g., "How to Make $100 a Day… Without a Job").
-5. **Emotional Drivers**: Incorporate at least one of the three click-worthy emotions:
-   - Curiosity: Open an information gap (e.g., "How did they do that?").
-   - Desire: Promise a specific outcome or status (e.g., "faster, richer, calmer").
-   - Fear: Highlight loss avoidance ethically (e.g., "Don’t waste time, avoid this mistake").
-   - Combine Curiosity + Desire for sustainable appeal or Curiosity + Fear for stronger impact (use sparingly and ethically).
-6. **Proven Formats**: Use one of these high-performing title structures, adapting to the video’s topic and niche:
-   - How-To: "How to [Do X] in [Timeframe]"
-   - List: "The [Number] Mistakes Every [Audience] Makes"
-   - Unexpected: "Why I [Did Something Unexpected]"
-   - Urgency: "Do THIS Before [Event/Deadline]"
-   - Experiment: "I Tried [Thing] So You Don’t Have To"
-   - Result/Proof: "How I Made $X in [Timeframe]"
-   - Question: "Is This the End of [Topic]?"
-   - Before/After: "From 0 to [Goal] in [Timeframe]"
-   - Challenge: "I Tried [Action] for [Timeframe] – Here’s What Happened"
-   - Audience Callout: "If You’re a [Specific Audience], Watch This"
-7. **Power Words**: Include 1-2 words from these buckets to boost appeal:
-   - Authority: Pro, Expert, Insider, Proven, Blueprint
-   - Urgency: Today, Now, Before You…, Last Chance
-   - Exclusivity: Secret, Hidden, Little-Known, Behind-the-Scenes
-   - Niche-Specific: For finance (millionaire, passive income), fitness (shredded, fat-burning), creators (algorithm, CTR, hook)
-8. **Accuracy & Honesty**: Ensure the title is 100% true to the video’s content to avoid misleading viewers, which hurts retention and rankings. The title must deliver on its promise, matching the video’s hook moment so viewers feel "This is exactly what I clicked for."
-9. **Thumbnail Chemistry**: Craft the title to complement the thumbnail. Divide labor: if the thumbnail teases (e.g., shocking visual), the title clarifies the promise, or vice versa. Avoid repeating thumbnail text unless the concept is exceptionally strong.
-10. **Research-Driven**: Base the title on research:
-    - Analyze top-performing videos for the video’s topic by searching core keywords on YouTube. Identify repeating title patterns with high views across channels.
-    - Review your own past high-performing titles for reusable structures, swapping nouns/verbs to fit the new video.
-    - Study outlier videos from competitors or similar niches (e.g., talking head, vlog, faceless) with above-average views, adapting their title frameworks.
-11. **Niche & Audience**: Tailor the title to the video’s niche (e.g., education, entertainment, finance, fitness) and target audience, using specific language or callouts (e.g., "If You’re an Introvert, Watch This").
-12. **Hook Strength Test**: Ensure the title passes the test: "Would someone who clicked feel the video delivered exactly what was promised?" Rework if there’s any risk of feeling misled.
-13. **Input Parameters**: Use the provided video topic, niche, target audience, and main hook/payoff (if available). If no hook is provided, infer a plausible hook based on the topic and niche.
+Generate 5 viral YouTube video title options that maximize click-through rate (CTR) and align with the video's content, adhering to the following comprehensive guidelines for creating high-performing titles. **Critical Instruction**: Strictly avoid using special symbols such as !, @, #, $, %, ^, &, *, or any other non-alphanumeric characters except spaces, commas, periods, question marks, and hyphens. Titles must be clean, professional, and use only alphanumeric characters, spaces, commas, periods, question marks, and hyphens to ensure compatibility and readability.
+
+### Foundation of a Viral Title
+- **Role and Importance**: The title acts as the headline or 'billboard' in the crowded YouTube feed, appearing alongside the thumbnail. Its primary jobs are to help YouTube recommend the content to the right audience through metadata (title, description, tags), accurately confirm what the viewer will get to encourage continued watching, and boost reach even for small channels. A single title change can revive underperforming videos. Titles directly impact CTR, impressions, and watch time. In education niches, clear titles may outperform flashy thumbnails; in entertainment, thumbnails lead but titles frame the story. Always prioritize writing for humans first, as algorithms reward what people click and watch.
+- **How YouTube Processes Titles**: YouTube uses the title as part of metadata to understand the video's topic via keywords. Balance human appeal (emotional pull for clicks) with algorithmic needs (1-2 relevant keywords for accurate categorization).
+- **Core Qualities for High-CTR Titles**: Keep titles short and easy to read, ideally under 70 characters (absolute max 100, with key words front-loaded since only 40-50 characters may show in Suggested Videos). Ensure accuracy and honesty to avoid misleading viewers, which harms retention and rankings—no clickbait that doesn't deliver. Drive emotions like curiosity, fear, excitement, urgency, or shock. Provide a clear benefit or hook, telling viewers what they'll gain or learn.
+- **Psychological Drivers**: Leverage three click-worthy emotions: Curiosity (opens an information gap, e.g., 'How did they do that'), Desire (promises an outcome or status, e.g., 'faster, richer, calmer'), Fear (helps avoid loss or mistakes, e.g., 'don’t waste time, avoid this mistake'). Combine Curiosity + Desire for sustainable appeal or Curiosity + Fear for stronger ethical impact. Ensure the video's intro (script) confirms and exceeds title expectations for 'click confirmation.'
+
+### Core Title Frameworks
+- **Title Modes Based on Discovery Path**: Select one of three modes fitting the video's path:
+  - **Searchable**: Clear keywords and outcomes for tutorials or evergreen topics (e.g., 'How to Start a YouTube Channel in 2025').
+  - **Browse/Intriguing**: Sparks curiosity for recommendation feeds, paired with bold thumbnails (e.g., 'This Camera is Worse and That’s Why I Bought It').
+  - **Hybrid**: Blends keywords with intrigue for both search and browse (e.g., 'How to Make 100 Dollars a Day Without a Job').
+- **Power Words for Appeal**: Incorporate 1-2 words from these categories to enhance pull:
+  - Authority: Pro, Expert, Insider, Proven, Blueprint.
+  - Urgency: Today, Now, Before You, Last Chance.
+  - Exclusivity: Secret, Hidden, Little-Known, Behind-the-Scenes.
+  - Niche-Specific: For finance (millionaire, passive income), fitness (shredded, fat-burning), creators (algorithm, CTR, hook).
+  - Avoid dull words that reduce appeal.
+- **Proven High-Performing Formats**: Adapt one of these for each 5 titles diifferen structures to the video’s topic and niche:
+  - How-To: 'How to Do X in Timeframe'.
+  - List: 'Number Mistakes Every Audience Makes'.
+  - Unexpected: 'Why I Did Something Unexpected'.
+  - Urgency: 'Do This Before Event or Deadline'.
+  - Experiment: 'I Tried Thing So You Don’t Have To'.
+  - Result/Proof: 'How I Made X Dollars in Timeframe'.
+  - Question: 'Is This the End of Topic'.
+  - Before/After: 'From 0 to Goal in Timeframe'.
+  - Challenge: 'I Tried Action for Timeframe - Here’s What Happened'.
+  - Audience Callout: 'If You’re a Specific Audience, Watch This'.
+  - Open a Loop: 'I Flew 7292 Miles to Eat Here'.
+  - Additional List: 'Best 10 Ways to Grow on YouTube'.
+
+### Process for Writing Viral Titles
+Follow this step-by-step research and creation flow:
+1. **Start with Video Content**: Review the script or edited video first. Identify the main payoff or hook moment to ensure the title matches the content exactly. Viewers should feel 'Yes, this is exactly what I clicked for.'
+2. **Research Before Writing**: Based on your knowledge of YouTube trends, infer popular title structures and keywords for the given topic. Identify high-performing patterns typically used for similar topics, niches, or audiences (e.g., tutorials, vlogs, or challenges). Consider common title frameworks used by successful videos in the niche. If available, draw inspiration from past high-performing titles, adapting their structures by swapping nouns or verbs.
+3. **Tweak and Adapt**: Adjust successful title formats to fit the video’s unique angle, ensuring it aligns with active searches while adding curiosity for browse recommendations.
+4. **Title & Thumbnail Chemistry**: Ensure title and thumbnail work together—divide labor: one teases (e.g., shocking visual), the other clarifies the promise. Avoid repeating text unless the concept is exceptionally strong. For intriguing titles, pair with visual proof in thumbnails (e.g., surprising face with text).
+5. **Final Pass for Accuracy & Strength**: Confirm 100% accuracy to the video—no misleading elements that kill retention. Adhere to length: Ideal 50-70 characters, max 100, front-load key words. Test hook strength: 'Would someone who clicked feel the video delivered exactly what was promised?' Rework if there’s any risk of misleading.
+
+Tailor all titles to the video’s niche (e.g., education, entertainment, finance, fitness) and target audience using specific language or callouts. **Reiterated Instruction**: Ensure titles contain no special symbols (e.g., !, @, #, $, %, ^, &, *); use only alphanumeric characters, spaces, commas, periods, question marks, and hyphens.
 """
         
         # Add topic and research data if provided
@@ -1534,6 +1565,7 @@ Generate 5 viral YouTube video title options that maximize click-through rate (C
     except Exception as e:
         app.logger.error(f"Generate titles error: {str(e)}")
         return jsonify({'error': f'An error occurred: {str(e)}'}), 500
+
 @app.route('/api/generate_thumbnail', methods=['POST'])
 def generate_thumbnail():
     """
@@ -2167,8 +2199,8 @@ def refine_title():
         action = data['action'].strip().lower()
         previous_virality_score = int(data['previous_virality_score'])
         if not title or action not in ['shorter', 'longer'] or previous_virality_score < 0 or previous_virality_score > 100:
-            return jsonify({'error': 'Invalid input: title cannot be empty, action must be "shorter" or "longer", and previous_virality_score must be between 0 and 100'}), 400
-        
+            return jsonify({'error': 'Invalid input: title cannot be empty, action must be "shorter" or "longer", and previous_virality_score must be between 0 and 100, make sure to avoid using special characters or excessive punctuation also make sure emotion of sentence remain same.'}), 400
+
         # Prepare prompt for Gemini, including the previous virality score
         prompt = (
             f"Refine the YouTube video title: '{title}'. "

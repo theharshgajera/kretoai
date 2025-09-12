@@ -8,6 +8,7 @@ load_dotenv()
 
 YOUTUBE_API_KEY = os.getenv('YOUTUBE_API_KEY')
 
+
 def extract_video_id(url):
     """Extracts the video ID from a YouTube URL."""
     patterns = [
@@ -20,6 +21,7 @@ def extract_video_id(url):
         if match:
             return match.group(1)
     raise ValueError("Invalid YouTube URL format")
+
 
 def get_video_info(video_id):
     """Fetches title and description for a YouTube video ID."""
@@ -34,16 +36,18 @@ def get_video_info(video_id):
     except Exception as e:
         raise ValueError(f"Failed to get video details: {str(e)}")
 
+
 def generate_script(data):
     """Generates a professional video script tailored for a YouTube creator using the standardized JSON format with groups."""
     # Extract required fields with defaults
     text = data.get("text", "")
     duration = float(data.get("duration", 5))  # Default to 5 minutes if not provided
     groups = data.get("groups", [])
-    wpm = 145  # Default words per minute
-    creator_name = "YourChannelName"  # Default creator name
-    audience = "beginners"  # Default audience
-    language = "en"  # Default language
+    wpm = data.get("wpm", 145)  # Default words per minute
+    creator_name = data.get("creator_name", "YourChannelName")
+    audience = data.get("audience", "beginners")
+    language = data.get("language", "en")
+    extra_context = data.get("extra_context", "")
 
     # Calculate target word count
     target_word_count = int(duration * wpm)
@@ -119,27 +123,63 @@ def generate_script(data):
                     except ValueError as e:
                         print(f"Warning: Invalid default content video link {link}: {str(e)}")
 
-    # Construct detailed prompt for a pro content writer with language specification
-    style_text = "\n\n".join(style_info) if style_info else "No style videos provided"
-    content_text = "\n\n".join(content_info) if content_info else "No content videos provided"
-    prompt = (
+    # Build context dynamically
+    context_parts = []
+
+    context_parts.append(
         f"You are a professional content writer crafting a video script for a YouTube creator named {creator_name}, "
-        f"targeting an audience of {audience}. The script is based on the initial text: '{text_content}'. "
-        f"It should be approximately {target_word_count} words long, suitable for a {duration}-minute video at a speaking rate of {wpm} words per minute. "
-        f"Generate the script in {language} language, reflecting the creator's unique style, tone, and personality as seen in the following videos:\n{style_text}\n\n"
-        f"Draw content inspiration and context from these related videos:\n{content_text}\n\n"
-        f"Incorporate YouTube SEO best practices, including keyword-rich phrases related to '{text_content}' in {language}, a strong hook within the first 10 seconds, "
-        f"calls-to-action (e.g., 'like', 'subscribe', 'comment' translated to {language}), and timestamps for sections. Structure the script with an introduction, main content, "
-        f"and conclusion. Use engaging storytelling, relatable examples, and a conversational tone to retain viewer interest. Ensure the script is optimized "
-        f"for watch time and encourages engagement in {language}."
+        f"targeting an audience of {audience}."
+    )
+    context_parts.append(
+    f"Important: The final output must be written completely in {language}."
     )
 
-    # Call Gemini API with consistent style
-    model = genai.GenerativeModel('gemini-2.5-flash')  # Updated model name
-    response = model.generate_content(prompt)
+    context_parts.append(
+        f"The script is based on the initial text: '{text_content}'. "
+        f"It should be approximately {target_word_count} words long, "
+        f"suitable for a {duration}-minute video at a speaking rate of {wpm} words per minute."
+    )
+
+    context_parts.append(f"Generate the script strictly in {language} language.")
+
+    # Style and content inspirations
+    style_text = "\n\n".join(style_info) if style_info else "No style videos provided"
+    content_text = "\n\n".join(content_info) if content_info else "No content videos provided"
+
+    context_parts.append(
+        f"Reflect the creator's unique style, tone, and personality as seen in the following videos:\n{style_text}"
+    )
+
+    context_parts.append(
+        f"Draw content inspiration and context from these related videos:\n{content_text}"
+    )
+
+    # SEO + Engagement guidelines
+    context_parts.append(
+        f"Incorporate YouTube SEO best practices, including keyword-rich phrases related to '{text_content}' in {language}, "
+        f"a strong hook within the first 10 seconds, calls-to-action (e.g., 'like', 'subscribe', 'comment' translated to {language}), "
+        f"and timestamps for sections."
+    )
+
+    context_parts.append(
+        "Structure the script with an introduction, main content, and conclusion. "
+        "Use engaging storytelling, relatable examples, and a conversational tone to retain viewer interest. "
+        f"Ensure the script is optimized for watch time and encourages engagement in {language}."
+    )
+
+    if extra_context:
+        context_parts.append(f"Additional context: {extra_context}")
+
+    # Final context string
+    context = "\n\n".join(context_parts)
+
+    # Call Gemini API
+    model = genai.GenerativeModel('gemini-2.0-flash')
+    response = model.generate_content(context)
     script = response.text
 
     return script
+
 
 def generate_script_from_title(title, duration, wpm=145, creator_name="YourChannelName", audience="beginners", language="en"):
     """Generate a professional video script based on the provided title and duration. Provide ONLY the raw script content with no introductory text, explanations, or formatting notes. The output should begin immediately with the script's first line of dialogue or action. Do not include any meta-commentary, section headers, or production notes - only the pure script content that would be used for filming."""
@@ -147,7 +187,11 @@ def generate_script_from_title(title, duration, wpm=145, creator_name="YourChann
     data = {
         "text": title,
         "duration": duration,
-        "groups": []
+        "groups": [],
+        "wpm": wpm,
+        "creator_name": creator_name,
+        "audience": audience,
+        "language": language
     }
     # Call the generate_script function with the standardized data
     script = generate_script(data)

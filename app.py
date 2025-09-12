@@ -2845,7 +2845,7 @@ def channel_shorts_outliers():
         channel_title = channel_resp['items'][0]['snippet']['title']
 
         # Step 1: Identify niche using Gemini
-        model = genai.GenerativeModel("gemini-2.5-flash")
+        model = genai.GenerativeModel("gemini-2.0-flash")
         gemini_resp = model.generate_content(
             f"Provide 1–3 keywords that best describe the content niche of the YouTube channel '{channel_title}' only give niche in 1-3 keywords nothing else"
         )

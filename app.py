@@ -1307,7 +1307,7 @@ def channel_outliers_by_id():
         channel_title = channel_info['snippet']['title']
 
         # Step 1: Use Gemini to identify niche keywords
-        model = genai.GenerativeModel("gemini-2.5-flash")
+        model = genai.GenerativeModel("gemini-2.0-flash")
         gemini_resp = model.generate_content(
             f"Provide 1–3 keywords that best describe the content niche of the YouTube channel '{channel_title}' only give niche in 1-3 keywords nothing else"
         )
@@ -1679,7 +1679,7 @@ def generate_thumbnail_from_title():
             return jsonify({'error': 'Title is required'}), 400
 
         # Step 1: Generate a thumbnail prompt using Gemini
-        prompt_client = genai.GenerativeModel('gemini-2.5-flash')
+        prompt_client = genai.GenerativeModel('gemini-2.0-flash')
         prompt_request = (
             f"Based on the video title '{title}', create a detailed prompt for generating a YouTube thumbnail. "
             f"The prompt should describe a vibrant, eye-catching image optimized for clickability with bold colors and clear text. "

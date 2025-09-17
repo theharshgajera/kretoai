@@ -1566,6 +1566,102 @@ Tailor all titles to the video’s niche (e.g., education, entertainment, financ
         app.logger.error(f"Generate titles error: {str(e)}")
         return jsonify({'error': f'An error occurred: {str(e)}'}), 500
 
+@app.route('/api/generate_ideas', methods=['POST'])
+def generate_ideas():
+    """Generate 20 similar viral YouTube video ideas based on provided title."""
+    try:
+        data = request.get_json()
+        app.logger.debug(f"Received data: {data}")
+        title = data.get('title')
+        
+        # Check if title is provided
+        if not title:
+            return jsonify({'error': 'Title is required'}), 400
+        
+        # Initialize base prompt for idea generation
+        base_prompt = """
+Generate exactly 20 similar viral YouTube video idea options based on the provided input title. These ideas should be variations, expansions, or related angles on the core theme, designed to maximize click-through rate (CTR) while aligning with potential video content. Present each idea as a concise, title-like phrase that could serve as a video concept or actual title. **Critical Instruction**: Strictly avoid using special symbols such as !, @, #, $, %, ^, &, *, or any other non-alphanumeric characters except spaces, commas, periods, question marks, and hyphens. Ideas must be clean, professional, and use only alphanumeric characters, spaces, commas, periods, question marks, and hyphens to ensure compatibility and readability.
+
+### Foundation for Generating Similar Ideas
+- **Role and Importance**: These ideas act as brainstorming tools for creators, helping to expand on a successful or core concept by exploring different angles, depths, or related subtopics. They should inspire new videos that build on the original theme, boosting channel growth through series or related content. Ideas directly impact potential CTR, impressions, and watch time by suggesting hooks that resonate with audiences. Prioritize human appeal first, as algorithms reward engaging content.
+- **How to Generate Ideas**: Use the input title as the seed. Identify the core theme (e.g., 'making money on Etsy' involves e-commerce, side hustles, creative selling). Then, vary by adding twists like timelines, challenges, hacks, case studies, or audience-specific adaptations. Balance keyword relevance for search with emotional hooks for recommendations.
+- **Core Qualities for Viral Ideas**: Keep ideas short and punchy, ideally under 70 characters. Ensure they are honest and deliverable to maintain viewer trust. Drive emotions like curiosity, aspiration, urgency, or surprise. Provide clear value, such as skills, secrets, or results.
+- **Psychological Drivers**: Leverage curiosity (e.g., 'hidden ways'), desire (e.g., 'achieve riches'), fear (e.g., 'avoid failures'). Combine them to create compelling variations on the original idea.
+
+### Core Frameworks for Similar Ideas
+- **Idea Variation Modes**: Base ideas on the original's discovery path, but diversify:
+  - Searchable Variations: Keyword-focused tweaks (e.g., add 'beginner' or 'advanced').
+  - Intriguing Twists: Add curiosity elements (e.g., 'what I wish I knew').
+  - Hybrid Expansions: Blend with new angles (e.g., 'in 2025' or 'without experience').
+- **Power Words for Appeal**: Incorporate 1-2 words to enhance variations:
+  - Authority: Ultimate, Master, Proven.
+  - Urgency: Fast, Quick, Instant.
+  - Exclusivity: Secret, Underrated, Insider.
+  - Niche-Specific: Adapt to the theme (e.g., for e-commerce: passive, scalable, profitable).
+- **Proven Formats for Idea Variations**: Use these structures, adapting to the input theme:
+  - How-To Expansion: 'How to Achieve Bigger Outcome in Theme'.
+  - List Variation: 'Number Hacks for Theme Success'.
+  - Unexpected Angle: 'Why Theme is Changing Forever'.
+  - Urgency Twist: 'Master Theme Before It's Too Late'.
+  - Experiment Idea: 'I Tested Theme Method - Results'.
+  - Result-Focused: 'From Zero to Milestone in Theme'.
+  - Question Variation: 'Can You Succeed in Theme Without X'.
+  - Before/After: 'Transform Your Theme Game in Timeframe'.
+  - Challenge: 'Theme Challenge for Beginners'.
+  - Audience Callout: 'Theme Tips for Specific Group'.
+  - Open Loop: 'The One Thing Missing from Your Theme Strategy'.
+  - Additional: 'Best Alternatives to Original Theme'.
+
+### Process for Generating Similar Ideas
+Follow this step-by-step flow:
+1. **Start with Input Title**: Analyze the provided title. Extract the core theme, key elements, and unique angles.
+2. **Generate Variations**: Create variations by modifying elements like scope, depth, or focus. Use popular structures and keywords inferred from the theme.
+3. **Diversify and Adapt**: Ensure the 20 ideas cover a range of formats (at least 5 different structures). Make them similar yet distinct, expanding on the original without copying it directly.
+4. **Idea & Content Chemistry**: Ideas should pair well with thumbnails and scripts—suggest hooks that can be visually teased.
+5. **Final Pass for Relevance & Strength**: Ensure ideas are 100% aligned with the theme. Adhere to length: Ideal 50-70 characters. Test: 'Does this idea build on the original while offering fresh value?'
+
+**Reiterated Instruction**: Ensure ideas contain no special symbols (e.g., !, @, #, $, %, ^, &, *); use only alphanumeric characters, spaces, commas, periods, question marks, and hyphens.
+
+Given the input title: '{title}'.
+
+Return the response in valid JSON format with the following structure:
+{{ 'ideas': ['string', ...] }}
+Return exactly 20 ideas, each as a string in the 'ideas' array, with no additional fields like virality scores, tags, or descriptions.
+"""
+        
+        # Generate ideas using the AI model
+        client = genai.GenerativeModel('gemini-2.0-flash')
+        response = client.generate_content(base_prompt)
+        gemini_response = response.text
+        
+        # Clean and parse the response
+        if gemini_response.startswith('```json\n') and gemini_response.endswith('\n```'):
+            gemini_response = gemini_response[7:-4]
+        try:
+            gemini_response = json.loads(gemini_response)
+        except json.JSONDecodeError as e:
+            app.logger.error(f"Invalid JSON response from AI model: {str(e)}")
+            return jsonify({'error': 'Failed to parse AI response'}), 500
+        
+        # Validate response structure
+        if not isinstance(gemini_response, dict) or 'ideas' not in gemini_response:
+            app.logger.error("Invalid response structure from AI model")
+            return jsonify({'error': 'Invalid response structure from AI model'}), 500
+        
+        # Ensure exactly 20 ideas
+        if len(gemini_response['ideas']) != 20:
+            app.logger.warning(f"Expected 20 ideas, got {len(gemini_response['ideas'])}")
+            return jsonify({'error': 'Expected exactly 20 ideas'}), 500
+        
+        app.logger.info(f"Generated 20 ideas for title: {title}")
+        return jsonify(gemini_response)
+    
+    except Exception as e:
+        app.logger.error(f"Generate ideas error: {str(e)}")
+        return jsonify({'error': f'An error occurred: {str(e)}'}), 500
+
+
+
 @app.route('/api/generate_thumbnail', methods=['POST'])
 def generate_thumbnail():
     """

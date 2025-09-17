@@ -1414,6 +1414,7 @@ def channel_outliers_by_id():
             for v in top_videos + latest_videos:
                 duration = parse_duration(v["contentDetails"]["duration"])
                 views = int(v["statistics"].get("viewCount", 0))
+                multiplier = round(views / comp_subs, 2) if comp_subs > 0 else 0
 
                 all_videos.append({
                     "video_id": v["id"],
@@ -1423,6 +1424,7 @@ def channel_outliers_by_id():
                     "views": views,
                     "views_formatted": format_number(views),
                     "duration_seconds": duration,
+                    "multiplier": multiplier,
                     "thumbnail_url": v["snippet"]["thumbnails"]["high"]["url"],
                     "url": f"https://www.youtube.com/watch?v={v['id']}"
                 })

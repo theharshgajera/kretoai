@@ -1283,151 +1283,165 @@ def fetch_video_details(youtube, video_ids):
         all_videos.extend(resp.get('items', []))
     return all_videos
 
-@app.route('/api/channel_outliers_by_id', methods=['POST'])
+
+
+
+
+
+@app.route("/api/channel_outliers_by_id", methods=["POST"])
 def channel_outliers_by_id():
-    """Find at least 30 outlier videos from other channels based on a channel's niche."""
     try:
         data = request.get_json()
-        if not data or 'channel_id' not in data:
-            return jsonify({'error': 'Channel ID is required'}), 400
-
-        channel_id = data['channel_id'].strip()
+        channel_id = data.get("channel_id", "").strip()
         if not channel_id:
-            return jsonify({'error': 'Channel ID cannot be empty'}), 400
+            return jsonify({"error": "Channel ID is required"}), 400
 
-        # Initialize YouTube API
         youtube = googleapiclient.discovery.build("youtube", "v3", developerKey=YOUTUBE_API_KEY)
 
-        # Fetch input channel details
-        channel_resp = youtube.channels().list(part='snippet,statistics', id=channel_id).execute()
-        if not channel_resp['items']:
-            return jsonify({'error': 'Channel not found'}), 404
-
-        channel_info = channel_resp['items'][0]
-        channel_title = channel_info['snippet']['title']
-
-        # Step 1: Use Gemini to identify niche keywords
-        model = genai.GenerativeModel("gemini-2.0-flash")
-        gemini_resp = model.generate_content(
-            f"Provide 1–3 keywords that best describe the content niche of the YouTube channel '{channel_title}' only give niche in 1-3 keywords nothing else"
-        )
-        niche_keywords = gemini_resp.text.strip()
-
-        # Step 2: Search YouTube for videos matching the niche with medium or long duration
-        search_results = youtube.search().list(
-            part="id,snippet",
-            q=niche_keywords,
-            type="video",
-            maxResults=50,
-            order="viewCount",
-            videoDuration="medium"  # Fetch videos >4min, could also call twice with "long"
-        ).execute()
-
-        # Extract video IDs
-        video_ids = [item['id']['videoId'] for item in search_results.get('items', [])]
-        if not video_ids:
-            return jsonify({
-                "channel_id": channel_id,
-                "channel_title": channel_title,
-                "niche": niche_keywords,
-                "outliers": []
-            })
-
-        # Step 3: Get video details
-        video_resp = youtube.videos().list(
+        # 1. Fetch channel info (include contentDetails for uploads playlist)
+        channel_resp = youtube.channels().list(
             part="snippet,statistics,contentDetails",
-            id=",".join(video_ids)
+            id=channel_id
         ).execute()
 
-        outliers = []
-        seen_channels = set([channel_title])  # exclude input channel
+        if not channel_resp["items"]:
+            return jsonify({"error": "Channel not found"}), 404
 
-        for item in video_resp.get('items', []):
-            vid_channel = item['snippet']['channelTitle']
-            if vid_channel in seen_channels:
+        channel_info = channel_resp["items"][0]
+        channel_title = channel_info["snippet"]["title"]
+        subs_count = int(channel_info["statistics"].get("subscriberCount", 1))
+        uploads_playlist = channel_info["contentDetails"]["relatedPlaylists"]["uploads"]
+
+        # 2. Get last 10 uploads, filter medium/long → take 5
+        videos_resp = youtube.playlistItems().list(
+            part="contentDetails,snippet",
+            playlistId=uploads_playlist,
+            maxResults=10
+        ).execute()
+
+        candidate_videos = []
+        for item in videos_resp.get("items", []):
+            vid_id = item["contentDetails"]["videoId"]
+            vid_details = youtube.videos().list(
+                part="contentDetails,snippet",
+                id=vid_id
+            ).execute()
+
+            if not vid_details["items"]:
                 continue
-            seen_channels.add(vid_channel)
 
-            # Parse ISO8601 duration to seconds
-            duration_str = item['contentDetails']['duration']
-            match = re.match(r"PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?", duration_str)
-            hours = int(match.group(1) or 0)
-            minutes = int(match.group(2) or 0)
-            seconds = int(match.group(3) or 0)
-            total_seconds = hours*3600 + minutes*60 + seconds
-            if total_seconds < 120:  # only include >120s
-                continue
-
-            views = int(item['statistics'].get('viewCount', 0))
-            subscribers = int(channel_resp['items'][0]['statistics'].get('subscriberCount', 1))  # fallback to 1
-            multiplier = round(views / max(subscribers, 1), 2)
-
-            outliers.append({
-                "video_id": item['id'],
-                "title": item['snippet']['title'],
-                "channel_title": vid_channel,
-                "views": views,
-                "views_formatted": f"{views/1_000_000:.1f}M" if views >= 1_000_000 else f"{views//1000}K",
-                "multiplier": multiplier,
-                "duration_seconds": total_seconds,
-                "thumbnail_url": item['snippet']['thumbnails']['high']['url'],
-                "url": f"https://www.youtube.com/watch?v={item['id']}"
-            })
-
-        # Step 4: Sort by multiplier descending and take top 30+
-        outliers.sort(key=lambda x: x['multiplier'], reverse=True)
-
-        # If less than 30 videos, fill with remaining videos ignoring multiplier
-        if len(outliers) < 30:
-            additional_needed = 30 - len(outliers)
-            for item in video_resp.get('items', []):
-                vid_channel = item['snippet']['channelTitle']
-                if any(v['channel_title'] == vid_channel for v in outliers):
-                    continue
-
-                # Duration check only
-                duration_str = item['contentDetails']['duration']
-                match = re.match(r"PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?", duration_str)
-                hours = int(match.group(1) or 0)
-                minutes = int(match.group(2) or 0)
-                seconds = int(match.group(3) or 0)
-                total_seconds = hours*3600 + minutes*60 + seconds
-                if total_seconds < 120:
-                    continue
-
-                views = int(item['statistics'].get('viewCount', 0))
-                subscribers = int(channel_resp['items'][0]['statistics'].get('subscriberCount', 1))
-                multiplier = round(views / max(subscribers, 1), 2)
-
-                outliers.append({
-                    "video_id": item['id'],
-                    "title": item['snippet']['title'],
-                    "channel_title": vid_channel,
-                    "views": views,
-                    "views_formatted": f"{views/1_000_000:.1f}M" if views >= 1_000_000 else f"{views//1000}K",
-                    "multiplier": multiplier,
-                    "duration_seconds": total_seconds,
-                    "thumbnail_url": item['snippet']['thumbnails']['high']['url'],
-                    "url": f"https://www.youtube.com/watch?v={item['id']}"
+            v = vid_details["items"][0]
+            duration = parse_duration(v["contentDetails"]["duration"])
+            if duration >= 240:  # medium/long only
+                candidate_videos.append({
+                    "id": vid_id,
+                    "title": v["snippet"]["title"]
                 })
 
-                if len(outliers) >= 30:
+            if len(candidate_videos) >= 5:
+                break
+
+        if not candidate_videos:
+            return jsonify({"error": "No medium/long videos found for this channel"}), 404
+
+        # 3. Collect competitor channels from search results
+        competitor_channels = {}
+        for video in candidate_videos:
+            search_resp = youtube.search().list(
+                part="snippet",
+                q=video["title"],
+                type="video",
+                maxResults=20,
+                relevanceLanguage="en"  # adjust as needed
+            ).execute()
+
+            for item in search_resp.get("items", []):
+                ch_id = item["snippet"]["channelId"]
+                ch_title = item["snippet"]["channelTitle"]
+
+                if ch_id != channel_id and ch_id not in competitor_channels:
+                    competitor_channels[ch_id] = ch_title
+
+                if len(competitor_channels) >= 20:
                     break
+            if len(competitor_channels) >= 20:
+                break
+
+        competitors = list(competitor_channels.items())[:20]
+
+        # 4. For each competitor, get top 5 by views + latest 5 with ratio > 1
+        all_videos = []
+        for comp_id, comp_title in competitors:
+            comp_resp = youtube.channels().list(
+                part="statistics,contentDetails",
+                id=comp_id
+            ).execute()
+
+            if not comp_resp["items"]:
+                continue
+
+            comp_info = comp_resp["items"][0]
+            comp_subs = int(comp_info["statistics"].get("subscriberCount", 1))
+            comp_uploads = comp_info["contentDetails"]["relatedPlaylists"]["uploads"]
+
+            # Fetch up to 50 videos to sort/filter
+            comp_uploads_resp = youtube.playlistItems().list(
+                part="contentDetails",
+                playlistId=comp_uploads,
+                maxResults=50
+            ).execute()
+
+            comp_video_ids = [v["contentDetails"]["videoId"] for v in comp_uploads_resp.get("items", [])]
+            comp_videos = fetch_video_details(youtube, comp_video_ids)
+
+            # Sort by views → Top 5
+            top_videos = sorted(
+                comp_videos,
+                key=lambda x: int(x["statistics"].get("viewCount", 0)),
+                reverse=True
+            )[:5]
+
+            # Latest 5 (ratio > 1)
+            latest_videos = []
+            for v in comp_videos[:10]:  # just take first 10 uploads
+                views = int(v["statistics"].get("viewCount", 0))
+                if comp_subs > 0 and (views / comp_subs) > 1:
+                    latest_videos.append(v)
+                if len(latest_videos) >= 5:
+                    break
+
+            # Format videos
+            for v in top_videos + latest_videos:
+                duration = parse_duration(v["contentDetails"]["duration"])
+                views = int(v["statistics"].get("viewCount", 0))
+
+                all_videos.append({
+                    "video_id": v["id"],
+                    "title": v["snippet"]["title"],
+                    "channel_id": comp_id,
+                    "channel_title": comp_title,
+                    "views": views,
+                    "views_formatted": format_number(views),
+                    "duration_seconds": duration,
+                    "thumbnail_url": v["snippet"]["thumbnails"]["high"]["url"],
+                    "url": f"https://www.youtube.com/watch?v={v['id']}"
+                })
+
+            if len(all_videos) >= 200:
+                break
 
         return jsonify({
             "success": True,
-            "total_results": len(outliers),
             "channel_id": channel_id,
             "channel_title": channel_title,
-            "niche": niche_keywords,
-            "outliers": outliers
+            "competitors": [{"id": cid, "title": ctitle} for cid, ctitle in competitors],
+            "total_videos": len(all_videos),
+            "videos": all_videos[:200]
         })
 
     except Exception as e:
         app.logger.error(f"Channel outliers error: {str(e)}")
-        return jsonify({'error': str(e)}), 500
-
-
+        return jsonify({"error": str(e)}), 500
 
 @app.route('/api/generate_titles', methods=['POST'])
 def generate_titles():

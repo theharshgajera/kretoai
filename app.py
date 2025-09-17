@@ -2862,216 +2862,174 @@ def similar_shorts():
 
 @app.route('/api/shorts_by_channel_id', methods=['POST'])
 def shorts_by_channel_id():
-    """Fetch the last 15 Shorts (<= 60 seconds) from a YouTube channel by channel ID."""
-    try:
-        data = request.get_json()
-        app.logger.debug(f"Received data: {data}")
-        channel_id = data.get('channel_id')
-
-        if not channel_id:
-            return jsonify({'error': 'Channel ID is required'}), 400
-        channel_id = channel_id.strip()
-        if not channel_id:
-            return jsonify({'error': 'Channel ID cannot be empty'}), 400
-
-        if YOUTUBE_API_KEY == 'YOUR_YOUTUBE_API_KEY':
-            app.logger.error("YouTube API key not configured.")
-            return jsonify({'error': 'YouTube API key not configured'}), 500
-
-        # Fetch Shorts using existing helper function
-        shorts = get_channel_shorts_details(channel_id, max_results=15)
-
-        if not shorts:
-            app.logger.error(f"No Shorts found for channel ID: {channel_id}")
-            return jsonify({'error': 'No Shorts found for the channel'}), 404
-
-        # Format response
-        formatted_shorts = []
-        total_views = sum(video['views'] for video in shorts)
-        for video in shorts:
-            formatted_short = {
-                'video_id': video['video_id'],
-                'title': video['title'],
-                'channel_id': video['channel_id'],
-                'channel_title': video['channel_title'],
-                'views': video['views'],
-                'views_formatted': format_number(video['views']),
-                'likes': video['likes'],
-                'likes_formatted': format_number(video['likes']),
-                'comments': video['comments'],
-                'comments_formatted': format_number(video['comments']),
-                'duration': video['duration'],
-                'duration_seconds': video['duration_seconds'],
-                'url': f"https://www.youtube.com/watch?v={video['video_id']}",
-                'published_at': video['published_at'],
-                'thumbnail_url': video['thumbnail_url'],
-                'engagement_rate': round((video['likes'] + video['comments']) / video['views'] if video['views'] > 0 else 0, 4),
-                'video_age_days': video.get('video_age_days', 0),
-                'language': video.get('language', 'en'),
-                'multiplier': round((video['views'] / (total_views / len(shorts))) if total_views > 0 else 0, 4),
-                'channel_avg_views': int(total_views / len(shorts)) if shorts else 0,
-                'channel_avg_views_formatted': format_number(int(total_views / len(shorts))) if shorts else '0',
-                'subscriber_count': video['subscriber_count']
-            }
-            formatted_shorts.append(formatted_short)
-
-        # Sort by published date (most recent first)
-        formatted_shorts.sort(key=lambda x: x['published_at'], reverse=True)
-
-        app.logger.info(f"Found {len(formatted_shorts)} Shorts for channel {channel_id}")
-        return jsonify({
-            'success': True,
-            'channel_id': channel_id,
-            'channel_title': shorts[0]['channel_title'] if shorts else 'Unknown',
-            'total_results': len(formatted_shorts),
-            'shorts': formatted_shorts
-        })
-
-    except HttpError as e:
-        app.logger.error(f"YouTube API error in shorts_by_channel_id for channel {channel_id}: {str(e)}")
-        return jsonify({'error': f'YouTube API error: {str(e)}'}), 503
-    except Exception as e:
-        app.logger.error(f"Shorts by channel ID error: {str(e)}")
-        return jsonify({'error': f'An error occurred: {str(e)}'}), 500
-
-@app.route('/api/channel_shorts_outliers', methods=['POST'])
-def channel_shorts_outliers():
-    """Find at least 30 outlier Shorts from other channels based on a channel's niche."""
+    """Find competitors using last 5 Shorts of input channel, then fetch 10 Shorts (5 latest + 5 popular) per competitor."""
     try:
         data = request.get_json()
         if not data or 'channel_id' not in data:
             return jsonify({'error': 'Channel ID is required'}), 400
+
         channel_id = data['channel_id'].strip()
         if not channel_id:
             return jsonify({'error': 'Channel ID cannot be empty'}), 400
 
-        # Initialize YouTube API
         youtube = build('youtube', 'v3', developerKey=YOUTUBE_API_KEY)
 
-        # Fetch input channel details
-        channel_resp = youtube.channels().list(part='snippet,statistics', id=channel_id).execute()
-        if not channel_resp['items']:
-            return jsonify({'error': 'Channel not found'}), 404
-        channel_title = channel_resp['items'][0]['snippet']['title']
-
-        # Step 1: Identify niche using Gemini
-        model = genai.GenerativeModel("gemini-2.0-flash")
-        gemini_resp = model.generate_content(
-            f"Provide 1–3 keywords that best describe the content niche of the YouTube channel '{channel_title}' only give niche in 1-3 keywords nothing else"
-        )
-        niche_keywords = gemini_resp.text.strip()
-
-        # Step 2: Search for Shorts in the niche
-        search_results = youtube.search().list(
-            part="id,snippet",
-            q=niche_keywords,
-            type="video",
-            maxResults=50,
-            order="viewCount",
-            videoDuration="short"  # Shorts ≤ 60s
-        ).execute()
-
-        video_ids = [item['id']['videoId'] for item in search_results.get('items', [])]
-        if not video_ids:
-            return jsonify({
-                "channel_id": channel_id,
-                "channel_title": channel_title,
-                "niche": niche_keywords,
-                "outliers": []
-            })
-
-        # Step 3: Fetch video details
-        video_resp = youtube.videos().list(
+        # STEP 1: Get input channel details
+        channel_resp = youtube.channels().list(
             part="snippet,statistics,contentDetails",
-            id=",".join(video_ids)
+            id=channel_id
+        ).execute()
+        if not channel_resp.get("items"):
+            return jsonify({'error': 'Channel not found'}), 404
+
+        channel_title = channel_resp['items'][0]['snippet']['title']
+        uploads_playlist = channel_resp['items'][0]['contentDetails']['relatedPlaylists']['uploads']
+
+        # STEP 2: Get last 5 Shorts from input channel
+        playlist_items = youtube.playlistItems().list(
+            part="snippet,contentDetails",
+            playlistId=uploads_playlist,
+            maxResults=15
         ).execute()
 
-        outliers = []
-        seen_channels = set([channel_title])  # exclude input channel
+        input_shorts = []
+        for item in playlist_items.get("items", []):
+            video_id = item["contentDetails"]["videoId"]
 
-        for item in video_resp.get('items', []):
-            vid_channel = item['snippet']['channelTitle']
-            if vid_channel in seen_channels:
+            video_resp = youtube.videos().list(
+                part="snippet,contentDetails,statistics",
+                id=video_id
+            ).execute()
+            if not video_resp.get("items"):
                 continue
-            seen_channels.add(vid_channel)
+            vid = video_resp["items"][0]
 
-            # Parse duration
-            duration_str = item['contentDetails']['duration']
+            # check if it's a Short (<=60s)
+            duration_str = vid['contentDetails']['duration']
             match = re.match(r"PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?", duration_str)
             hours = int(match.group(1) or 0)
             minutes = int(match.group(2) or 0)
             seconds = int(match.group(3) or 0)
-            total_seconds = hours*3600 + minutes*60 + seconds
-            if total_seconds > 60:  # enforce Shorts duration
-                continue
+            total_seconds = hours * 3600 + minutes * 60 + seconds
+            if total_seconds <= 60:
+                input_shorts.append(vid)
 
-            views = int(item['statistics'].get('viewCount', 0))
-            subscribers = int(channel_resp['items'][0]['statistics'].get('subscriberCount', 1))
-            multiplier = round(views / max(subscribers, 1), 2)
+            if len(input_shorts) >= 5:
+                break
 
-            outliers.append({
-                "video_id": item['id'],
-                "title": item['snippet']['title'],
-                "channel_title": vid_channel,
-                "views": views,
-                "views_formatted": f"{views/1_000_000:.1f}M" if views >= 1_000_000 else f"{views//1000}K",
-                "multiplier": multiplier,
-                "duration_seconds": total_seconds,
-                "thumbnail_url": item['snippet']['thumbnails']['high']['url'],
-                "url": f"https://www.youtube.com/watch?v={item['id']}"
-            })
+        if not input_shorts:
+            return jsonify({'error': 'No Shorts found for input channel'}), 404
 
-        # Step 4: Sort by multiplier
-        outliers.sort(key=lambda x: x['multiplier'], reverse=True)
+        # STEP 3: Search competitors using titles of input Shorts
+        competitor_channels = {}
+        for short in input_shorts:
+            query = short["snippet"]["title"]
+            search_results = youtube.search().list(
+                part="snippet",
+                q=query,
+                type="video",
+                maxResults=20,
+                videoDuration="short"
+            ).execute()
 
-        # If less than 30, fill with remaining Shorts ignoring multiplier
-        if len(outliers) < 30:
-            for item in video_resp.get('items', []):
-                vid_channel = item['snippet']['channelTitle']
-                if any(v['channel_title'] == vid_channel for v in outliers):
+            for item in search_results.get("items", []):
+                comp_cid = item["snippet"]["channelId"]
+                comp_ctitle = item["snippet"]["channelTitle"]
+
+                if comp_cid == channel_id or comp_ctitle == channel_title:
                     continue
 
-                # Duration check only
+                if comp_cid not in competitor_channels:
+                    competitor_channels[comp_cid] = comp_ctitle
+
+                if len(competitor_channels) >= 20:
+                    break
+            if len(competitor_channels) >= 20:
+                break
+
+        competitors_data = []
+
+        # STEP 4: For each competitor channel, fetch 10 Shorts
+        for comp_id, comp_title in competitor_channels.items():
+            # Get latest Shorts
+            latest_search = youtube.search().list(
+                part="id,snippet",
+                channelId=comp_id,
+                type="video",
+                maxResults=10,
+                order="date",
+                videoDuration="short"
+            ).execute()
+            latest_ids = [v["id"]["videoId"] for v in latest_search.get("items", [])]
+
+            # Get most popular Shorts
+            popular_search = youtube.search().list(
+                part="id,snippet",
+                channelId=comp_id,
+                type="video",
+                maxResults=10,
+                order="viewCount",
+                videoDuration="short"
+            ).execute()
+            popular_ids = [v["id"]["videoId"] for v in popular_search.get("items", [])]
+
+            video_ids = list(set(latest_ids[:5] + popular_ids[:5]))
+            if not video_ids:
+                continue
+
+            video_resp = youtube.videos().list(
+                part="snippet,statistics,contentDetails",
+                id=",".join(video_ids)
+            ).execute()
+
+            shorts = []
+            for item in video_resp.get("items", []):
+                # duration filter
                 duration_str = item['contentDetails']['duration']
                 match = re.match(r"PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?", duration_str)
                 hours = int(match.group(1) or 0)
                 minutes = int(match.group(2) or 0)
                 seconds = int(match.group(3) or 0)
-                total_seconds = hours*3600 + minutes*60 + seconds
+                total_seconds = hours * 3600 + minutes * 60 + seconds
                 if total_seconds > 60:
                     continue
 
                 views = int(item['statistics'].get('viewCount', 0))
-                subscribers = int(channel_resp['items'][0]['statistics'].get('subscriberCount', 1))
-                multiplier = round(views / max(subscribers, 1), 2)
+                likes = int(item['statistics'].get('likeCount', 0)) if "likeCount" in item["statistics"] else 0
+                comments = int(item['statistics'].get('commentCount', 0)) if "commentCount" in item["statistics"] else 0
+                engagement_rate = round((likes + comments) / views, 4) if views > 0 else 0
 
-                outliers.append({
+                shorts.append({
                     "video_id": item['id'],
                     "title": item['snippet']['title'],
-                    "channel_title": vid_channel,
                     "views": views,
-                    "views_formatted": f"{views/1_000_000:.1f}M" if views >= 1_000_000 else f"{views//1000}K",
-                    "multiplier": multiplier,
+                    "likes": likes,
+                    "comments": comments,
+                    "engagement_rate": engagement_rate,
                     "duration_seconds": total_seconds,
+                    "published_at": item['snippet']['publishedAt'],
                     "thumbnail_url": item['snippet']['thumbnails']['high']['url'],
                     "url": f"https://www.youtube.com/watch?v={item['id']}"
                 })
 
-                if len(outliers) >= 30:
-                    break
+            competitors_data.append({
+                "channel_id": comp_id,
+                "channel_title": comp_title,
+                "shorts": shorts[:10]
+            })
 
         return jsonify({
             "success": True,
-            "total_results": len(outliers),
-            "channel_id": channel_id,
-            "channel_title": channel_title,
-            "niche": niche_keywords,
-            "outliers": outliers
+            "input_channel": {"id": channel_id, "title": channel_title},
+            "competitors_count": len(competitors_data),
+            "competitors": competitors_data
         })
 
     except Exception as e:
-        app.logger.error(f"Channel Shorts outliers error: {str(e)}")
+        app.logger.error(f"Shorts competitors error: {str(e)}")
         return jsonify({'success': False, 'error': str(e)}), 500
+
+
 
 @app.route('/api/generate-script-from-title', methods=['POST'])
 def generate_script_from_title_endpoint():

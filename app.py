@@ -2953,6 +2953,11 @@ def shorts_by_channel_id():
 
         # STEP 4: For each competitor channel, fetch 10 Shorts
         for comp_id, comp_title in competitor_channels.items():
+            comp_channel_resp = youtube.channels().list(
+            part="statistics",
+            id=comp_id
+            ).execute()
+            subs_count = int(comp_channel_resp['items'][0]['statistics'].get('subscriberCount', 0))
             # Get latest Shorts
             latest_search = youtube.search().list(
                 part="id,snippet",
@@ -2962,6 +2967,8 @@ def shorts_by_channel_id():
                 order="date",
                 videoDuration="short"
             ).execute()
+            subs_count = int(comp_channel_resp['items'][0]['statistics'].get('subscriberCount', 0))
+
             latest_ids = [v["id"]["videoId"] for v in latest_search.get("items", [])]
 
             # Get most popular Shorts
@@ -3007,6 +3014,7 @@ def shorts_by_channel_id():
                     "views": views,
                     "likes": likes,
                     "comments": comments,
+                    "multiplier": round(views / subs_count, 1) if subs_count > 0 else 0,
                     "engagement_rate": engagement_rate,
                     "duration_seconds": total_seconds,
                     "published_at": item['snippet']['publishedAt'],

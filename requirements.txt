@@ -10,3 +10,7 @@ google.generativeai
 opencv-python
 tensorflow
 isodate
+youtube-transcript-api
+PyPDF2
+python-docx
+pymupdf

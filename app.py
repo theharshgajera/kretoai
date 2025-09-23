@@ -1,12 +1,15 @@
-from flask import Flask, render_template, request, jsonify
+from flask import Flask, render_template, request, jsonify, session
 from flask_cors import CORS
 import google.generativeai as genai
 from googleapiclient.discovery import build
 from script_generate import generate_script
 import logging
+from isodate import parse_duration
+from uuid import uuid4
 import json
 from youtube_api import get_viral_thumbnails
-
+from youtube_transcript_api import YouTubeTranscriptApi
+from youtube_transcript_api._errors import TranscriptsDisabled, NoTranscriptFound, VideoUnavailable
 import isodate
 from script_generate import generate_script_from_title
 from thumbnail_review import review_thumbnail
@@ -27,7 +30,18 @@ from sklearn.metrics.pairwise import cosine_similarity
 from dotenv import load_dotenv
 import random
 from collections import defaultdict
-
+import uuid
+from datetime import datetime
+from collections import defaultdict
+import threading
+from urllib.parse import urlparse, parse_qs
+import logging
+import PyPDF2
+import docx
+from werkzeug.utils import secure_filename
+import tempfile
+import fitz  # PyMuPDF for better PDF handling
+from pathlib import Path
 load_dotenv()
 
 # Initialize Flask app
@@ -1321,7 +1335,7 @@ def channel_outliers_by_id():
         videos_resp = youtube.playlistItems().list(
             part="contentDetails,snippet",
             playlistId=uploads_playlist,
-            maxResults=10
+            maxResults=20
         ).execute()
 
         candidate_videos = []
@@ -1353,7 +1367,7 @@ def channel_outliers_by_id():
                 part="snippet",
                 q=video["title"],
                 type="video",
-                maxResults=20,
+                maxResults=50,
                 relevanceLanguage="en",
                 videoDuration="medium"  # filter medium/long
             ).execute()
@@ -1374,7 +1388,7 @@ def channel_outliers_by_id():
             competitor_counts.items(),
             key=lambda kv: kv[1]["count"],
             reverse=True
-        )[:20]
+        )[:50]
 
         # 4. For each competitor, fetch top + latest videos with avg views
         all_videos = []
@@ -1471,9 +1485,178 @@ def channel_outliers_by_id():
     except Exception as e:
         app.logger.error(f"Channel outliers error: {str(e)}")
         return jsonify({"error": str(e)}), 500
+    
+@app.route("/api/comp_analysis", methods=["POST"])
+def comp_analysis():
+    try:
+        data = request.get_json()
+        channel_id = data.get("channel_id", "").strip()
+        if not channel_id:
+            return jsonify({"error": "Channel ID is required"}), 400
 
+        youtube = googleapiclient.discovery.build("youtube", "v3", developerKey=YOUTUBE_API_KEY)
 
+        # 1. Fetch channel info
+        channel_resp = youtube.channels().list(
+            part="snippet,statistics,contentDetails",
+            id=channel_id
+        ).execute()
 
+        if not channel_resp["items"]:
+            return jsonify({"error": "Channel not found"}), 404
+
+        channel_info = channel_resp["items"][0]
+        channel_title = channel_info["snippet"]["title"]
+        subs_count = int(channel_info["statistics"].get("subscriberCount", 1))
+        uploads_playlist = channel_info["contentDetails"]["relatedPlaylists"]["uploads"]
+
+        # 2. Get last 10 uploads, filter medium/long → take 10
+        videos_resp = youtube.playlistItems().list(
+            part="contentDetails,snippet",
+            playlistId=uploads_playlist,
+            maxResults=20
+        ).execute()
+
+        candidate_videos = []
+        for item in videos_resp.get("items", []):
+            vid_id = item["contentDetails"]["videoId"]
+            vid_details = youtube.videos().list(
+                part="contentDetails,snippet,statistics",
+                id=vid_id
+            ).execute()
+
+            if not vid_details["items"]:
+                continue
+
+            v = vid_details["items"][0]
+            duration = parse_duration(v["contentDetails"]["duration"])
+            if duration >= 240:  # medium/long only
+                candidate_videos.append({
+                    "id": vid_id,
+                    "title": v["snippet"]["title"]
+                })
+
+        if not candidate_videos:
+            return jsonify({"error": "No medium/long videos found for this channel"}), 404
+
+        # 3. Collect competitor channels with frequency count
+        competitor_counts = {}
+        for video in candidate_videos:
+            search_resp = youtube.search().list(
+                part="snippet",
+                q=video["title"],
+                type="video",
+                maxResults=50,
+                relevanceLanguage="en",
+                videoDuration="medium"  # filter medium/long
+            ).execute()
+
+            for item in search_resp.get("items", []):
+                ch_id = item["snippet"]["channelId"]
+                ch_title = item["snippet"]["channelTitle"]
+
+                if ch_id == channel_id:
+                    continue
+
+                if ch_id not in competitor_counts:
+                    competitor_counts[ch_id] = {"title": ch_title, "count": 0}
+                competitor_counts[ch_id]["count"] += 1
+
+        # sort competitors by frequency (descending) and take top 20
+        competitors = sorted(
+            competitor_counts.items(),
+            key=lambda kv: kv[1]["count"],
+            reverse=True
+        )[:50]
+
+        # 4. For each competitor, fetch latest 4 videos with avg views
+        all_videos = []
+        competitors_meta = []
+        for comp_id, comp_data in competitors:
+            comp_resp = youtube.channels().list(
+                part="statistics,contentDetails",
+                id=comp_id
+            ).execute()
+
+            if not comp_resp.get("items"):
+                continue
+
+            comp_info = comp_resp["items"][0]
+            comp_title = comp_data["title"]
+            comp_subs = int(comp_info["statistics"].get("subscriberCount", 1))
+            comp_uploads = comp_info["contentDetails"]["relatedPlaylists"]["uploads"]
+
+            # Fetch up to 50 recent uploads
+            comp_uploads_resp = youtube.playlistItems().list(
+                part="contentDetails",
+                playlistId=comp_uploads,
+                maxResults=50
+            ).execute()
+
+            comp_video_ids = [v["contentDetails"]["videoId"] for v in comp_uploads_resp.get("items", [])]
+            comp_videos = fetch_video_details(youtube, comp_video_ids)
+
+            if not comp_videos:
+                continue
+
+            # calculate avg recent views
+            avg_recent_views = sum(
+                int(v["statistics"].get("viewCount", 0)) for v in comp_videos
+            ) / len(comp_videos)
+
+            # Latest 4 (with ratio > 1)
+            latest_videos = []
+            for v in comp_videos[:4]:  # last 4 uploads
+                views = int(v["statistics"].get("viewCount", 0))
+                if avg_recent_views > 0 and (views / avg_recent_views) > 1:
+                    latest_videos.append(v)
+                if len(latest_videos) >= 4:
+                    break
+
+            # Add competitor metadata
+            competitors_meta.append({
+                "id": comp_id,
+                "title": comp_title,
+                "subscriber_count": comp_subs,
+                "avg_recent_views": round(avg_recent_views, 2),
+                "frequency": comp_data.get("count", 0)
+            })
+
+            # Add formatted video data
+            for v in latest_videos:
+                duration = parse_duration(v["contentDetails"]["duration"])
+                views = int(v["statistics"].get("viewCount", 0))
+                multiplier = round(views / avg_recent_views, 2) if avg_recent_views > 0 else 0
+
+                all_videos.append({
+                    "video_id": v["id"],
+                    "title": v["snippet"]["title"],
+                    "channel_id": comp_id,
+                    "channel_title": comp_title,
+                    "views": views,
+                    "views_formatted": format_number(views),
+                    "duration_seconds": duration,
+                    "multiplier": multiplier,
+                    "avg_recent_views": round(avg_recent_views, 2),
+                    "thumbnail_url": v["snippet"]["thumbnails"]["high"]["url"],
+                    "url": f"https://www.youtube.com/watch?v={v['id']}"
+                })
+
+            if len(all_videos) >= 200:
+                break
+
+        return jsonify({
+            "success": True,
+            "channel_id": channel_id,
+            "channel_title": channel_title,
+            "competitors": competitors_meta,
+            "total_videos": len(all_videos),
+            "videos": all_videos[:200]
+        })
+
+    except Exception as e:
+        app.logger.error(f"Channel outliers error: {str(e)}")
+        return jsonify({"error": str(e)}), 500
 @app.route('/api/generate_titles', methods=['POST'])
 def generate_titles():
     """Generate viral YouTube titles based on provided topic, prompt, or script."""
@@ -2175,159 +2358,114 @@ def format_number(num):
     else:
         return str(num)
 
+
 @app.route('/api/similar_videos', methods=['POST'])
 def similar_videos():
-    """Fetch up to 15 similar videos for a given video ID using a title-based search."""
+    """Fetch similar YouTube videos based on input video ID, filtered by duration category."""
     try:
-        # Validate input
         data = request.get_json()
-        if not data or 'video_id' not in data:
-            return jsonify({'error': 'Video ID is required'}), 400
-        
-        video_id = data['video_id'].strip()
+        video_id = data.get('video_id', '').strip()
         if not video_id:
-            return jsonify({'error': 'Video ID cannot be empty'}), 400
-        
-        # Initialize YouTube API client
-        youtube = build('youtube', 'v3', developerKey=YOUTUBE_API_KEY)
-        
-        # Step 1: Fetch input video details
-        video_response = youtube.videos().list(
-            part='snippet',
-            id=video_id
-        ).execute()
-        
-        if not video_response['items']:
+            return jsonify({'error': 'Video ID is required'}), 400
+
+        # --------------------------
+        # 1. Fetch input video details (title and duration) using YouTube Data API
+        # --------------------------
+        youtube_url = 'https://youtube.googleapis.com/youtube/v3/videos'
+        params = {
+            'part': 'snippet,contentDetails',
+            'id': video_id,
+            'key': YOUTUBE_API_KEY
+        }
+        video_resp = requests.get(youtube_url, params=params)
+        video_resp.raise_for_status()
+        video_data = video_resp.json()
+
+        if not video_data.get('items'):
             return jsonify({'error': 'Video not found'}), 404
+
+        video_item = video_data['items'][0]
+        original_title = video_item['snippet']['title']
+        duration_iso = video_item['contentDetails']['duration']  # e.g., PT5M30S
+
+        # Parse ISO 8601 duration to seconds
+        def parse_duration(iso_duration):
+            duration = isodate.parse_duration(iso_duration)
+            return int(duration.total_seconds())
+
+        original_duration = parse_duration(duration_iso)
+
+        # Determine duration category
+        if original_duration < 240:  # Less than 4 minutes
+            duration_category = 'short'
+        elif original_duration <= 1200:  # 4–20 minutes
+            duration_category = 'medium'
+        else:  # Over 20 minutes
+            duration_category = 'long'
+
+        # --------------------------
+        # 2. Simplify title using Gemini-2.0-Flash
+        # --------------------------
+        client = genai.GenerativeModel('gemini-2.0-flash')
+        prompt = f"Take this YouTube video title and make a very short, simple keyword phrase (3-6 words) suitable for searching similar videos. Focus on the core theme and avoid special characters except spaces, commas, periods, question marks, and hyphens:\n\nTitle: {original_title}\n\nShort search phrase:"
         
-        input_video = video_response['items'][0]
-        input_title = input_video['snippet']['title']
-        input_channel_id = input_video['snippet']['channelId']
-        input_channel_title = input_video['snippet']['channelTitle']
-        
-        # Step 2: Generate search query from the title
-        query = ' '.join([word for word in input_title.split() if len(word) > 3 and word.lower() not in ['the', 'and', 'video']])
-        if not query:
-            return jsonify({'error': 'No valid search query generated from title'}), 404
-        
-        # Step 3: Search for similar videos
-        search_response = youtube.search().list(
-            part='snippet',
-            q=query,
-            type='video',
-            maxResults=25,  # Fetch extra results to allow filtering
-            order='relevance'
-        ).execute()
-        
-        if not search_response.get('items', []):
-            return jsonify({'error': 'No similar videos found'}), 404
-        
-        # Step 4: Filter results
-        related_videos = []
-        video_ids = []
-        seen_video_ids = {video_id}  # Track seen IDs to avoid duplicates
-        for item in search_response['items']:
-            rel_video_id = item['id']['videoId']
-            rel_channel_id = item['snippet']['channelId']
-            # Exclude input video and same-channel videos
-            if rel_video_id not in seen_video_ids and rel_channel_id != input_channel_id:
-                seen_video_ids.add(rel_video_id)
-                video_ids.append(rel_video_id)
-                related_videos.append({
-                    'video_id': rel_video_id,
-                    'title': item['snippet']['title'],
-                    'channel_id': rel_channel_id,  # Store channel_id
-                    'channel_title': item['snippet']['channelTitle'],
-                    'published_at': item['snippet']['publishedAt'],
-                    'thumbnail_url': item['snippet']['thumbnails']['high']['url'],
-                    'language': item['snippet'].get('defaultLanguage', 'en')
+        gemini_response = client.generate_content(prompt)
+        search_phrase = gemini_response.text.strip()
+        if not search_phrase:
+            return jsonify({'error': 'Failed to generate search phrase'}), 500
+
+        # --------------------------
+        # 3. Search similar videos using YouTube Data API with duration filter
+        # --------------------------
+        search_url = 'https://youtube.googleapis.com/youtube/v3/search'
+        search_params = {
+            'part': 'snippet',
+            'q': search_phrase,
+            'type': 'video',
+            'videoDuration': duration_category,  # short, medium, or long
+            'maxResults': 20,
+            'relevanceLanguage': 'en',
+            'key': YOUTUBE_API_KEY
+        }
+        search_resp = requests.get(search_url, params=search_params)
+        search_resp.raise_for_status()
+        search_data = search_resp.json()
+
+        videos = []
+        for item in search_data.get('items', []):
+            video_id = item['id'].get('videoId')
+            snippet = item.get('snippet', {})
+            if video_id:
+                videos.append({
+                    'video_id': video_id,
+                    'title': snippet.get('title'),
+                    'channel_title': snippet.get('channelTitle'),
+                    'thumbnail_url': snippet.get('thumbnails', {}).get('high', {}).get('url'),
+                    'url': f'https://www.youtube.com/watch?v={video_id}'
                 })
-        
-        if not related_videos:
-            return jsonify({'error': 'No similar videos found from different channels'}), 404
-        
-        # Step 5: Fetch additional details for videos
-        details_response = youtube.videos().list(
-            part='statistics,contentDetails',
-            id=','.join(video_ids[:25])  # Limit to 25 IDs per API call
-        ).execute()
-        
-        video_stats = {}
-        for item in details_response.get('items', []):
-            vid = item['id']
-            video_stats[vid] = {
-                'views': int(item['statistics'].get('viewCount', 0)),
-                'likes': int(item['statistics'].get('likeCount', 0)),
-                'comments': int(item['statistics'].get('commentCount', 0)),
-                'duration': item['contentDetails']['duration']
-            }
-        
-        # Step 6: Fetch channel stats for average views and subscribers
-        channel_ids = list(set(video['channel_id'] for video in related_videos))
-        processed_channels = {}
-        for channel_id in channel_ids:
-            avg_views, subscriber_count = calculate_channel_average_views(channel_id)
-            processed_channels[channel_id] = {
-                'average_views': avg_views,
-                'subscriber_count': subscriber_count
-            }
-        
-        # Step 7: Format the response
-        formatted_videos = []
-        for video in related_videos[:15]:  # Limit to 15 similar videos
-            vid = video['video_id']
-            if vid in video_stats:
-                stats = video_stats[vid]
-                channel_data = processed_channels.get(video['channel_id'], {'average_views': 0, 'subscriber_count': 0})
-                channel_avg = channel_data['average_views']
-                multiplier = stats['views'] / channel_avg if channel_avg > 0 else 0
-                duration_seconds = parse_duration(stats['duration'])
-                engagement_rate = (stats['likes'] + stats['comments']) / stats['views'] if stats['views'] > 0 else 0
-                formatted_video = {
-                    'video_id': vid,
-                    'title': video['title'],
-                    'channel_id': video['channel_id'],  # Added
-                    'channel_title': video['channel_title'],
-                    'views': stats['views'],
-                    'views_formatted': format_number(stats['views']),
-                    'likes': stats['likes'],
-                    'likes_formatted': format_number(stats['likes']),
-                    'comments': stats['comments'],
-                    'comments_formatted': format_number(stats['comments']),
-                    'duration': stats['duration'],
-                    'duration_seconds': duration_seconds,
-                    'url': f"https://www.youtube.com/watch?v={vid}",
-                    'published_at': video['published_at'],
-                    'thumbnail_url': video['thumbnail_url'],
-                    'engagement_rate': round(engagement_rate, 4),
-                    'language': video['language'],
-                    'multiplier': round(multiplier, 2),  # Added
-                    'channel_avg_views': channel_avg,  # Added
-                    'channel_avg_views_formatted': format_number(channel_avg),  # Added
-                    'subscriber_count': channel_data['subscriber_count']  # Added
-                }
-                formatted_videos.append(formatted_video)
-        
-        if not formatted_videos:
-            return jsonify({'error': 'No valid similar videos after processing'}), 404
-        
-        # Return successful response
+
+        # Log if no videos found
+        if not videos:
+            app.logger.warning(f"No videos found for search phrase: {search_phrase}, duration: {duration_category}")
+
+        # --------------------------
+        # 4. Return JSON
+        # --------------------------
         return jsonify({
             'success': True,
-            'input_video_id': video_id,
-            'input_video_title': input_title,
-            'input_channel_title': input_channel_title,
-            'total_results': len(formatted_videos),
-            'similar_videos': formatted_videos
+            'original_title': original_title,
+            'original_duration': original_duration,
+            'duration_category': duration_category,
+            'search_phrase': search_phrase,
+            'videos': videos
         })
-    
-    except HttpError as e:
-        # Handle YouTube API-specific errors (e.g., quota exceeded)
-        return jsonify({'success': False, 'error': f'YouTube API error: {str(e)}'}), 503
-    except Exception as e:
-        # Handle unexpected errors
-        return jsonify({'success': False, 'error': f'An error occurred: {str(e)}'}), 500
 
+    except requests.exceptions.RequestException as e:
+        app.logger.error(f"YouTube API error: {str(e)}")
+        return jsonify({'error': f'YouTube API error: {str(e)}'}), 503
+    except Exception as e:
+        app.logger.error(f"Similar videos error: {str(e)}")
+        return jsonify({'error': f'An error occurred: {str(e)}'}), 500
 @app.route('/api/refine_title', methods=['POST'])
 def refine_title():
     """Refine a YouTube title by making it shorter or longer and adjust virality score."""

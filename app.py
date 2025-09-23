@@ -1529,7 +1529,7 @@ def comp_analysis():
                 continue
 
             v = vid_details["items"][0]
-            duration = parse_duration(v["contentDetails"]["duration"])
+            duration = parse_duration(v.get("contentDetails", {}).get("duration", ""))
             if duration >= 240:  # medium/long only
                 candidate_videos.append({
                     "id": vid_id,
@@ -1570,8 +1570,7 @@ def comp_analysis():
         )[:50]
 
         # 4. For each competitor, fetch latest 4 videos with avg views
-        all_videos = []
-        competitors_meta = []
+        competitors_data = []
         for comp_id, comp_data in competitors:
             comp_resp = youtube.channels().list(
                 part="statistics,contentDetails",
@@ -1586,11 +1585,11 @@ def comp_analysis():
             comp_subs = int(comp_info["statistics"].get("subscriberCount", 1))
             comp_uploads = comp_info["contentDetails"]["relatedPlaylists"]["uploads"]
 
-            # Fetch up to 50 recent uploads
+            # Fetch up to 5 recent uploads
             comp_uploads_resp = youtube.playlistItems().list(
                 part="contentDetails",
                 playlistId=comp_uploads,
-                maxResults=50
+                maxResults=5
             ).execute()
 
             comp_video_ids = [v["contentDetails"]["videoId"] for v in comp_uploads_resp.get("items", [])]
@@ -1604,31 +1603,17 @@ def comp_analysis():
                 int(v["statistics"].get("viewCount", 0)) for v in comp_videos
             ) / len(comp_videos)
 
-            # Latest 4 (with ratio > 1)
-            latest_videos = []
-            for v in comp_videos[:4]:  # last 4 uploads
-                views = int(v["statistics"].get("viewCount", 0))
-                if avg_recent_views > 0 and (views / avg_recent_views) > 1:
-                    latest_videos.append(v)
-                if len(latest_videos) >= 4:
-                    break
+            # Latest 4 videos (no filtering)
+            latest_videos = comp_videos[:4]  # take the 4 most recent videos
 
-            # Add competitor metadata
-            competitors_meta.append({
-                "id": comp_id,
-                "title": comp_title,
-                "subscriber_count": comp_subs,
-                "avg_recent_views": round(avg_recent_views, 2),
-                "frequency": comp_data.get("count", 0)
-            })
-
-            # Add formatted video data
+            # Prepare video data for this competitor
+            video_data = []
             for v in latest_videos:
-                duration = parse_duration(v["contentDetails"]["duration"])
+                duration = parse_duration(v.get("contentDetails", {}).get("duration", ""))
                 views = int(v["statistics"].get("viewCount", 0))
                 multiplier = round(views / avg_recent_views, 2) if avg_recent_views > 0 else 0
 
-                all_videos.append({
+                video_data.append({
                     "video_id": v["id"],
                     "title": v["snippet"]["title"],
                     "channel_id": comp_id,
@@ -1642,16 +1627,24 @@ def comp_analysis():
                     "url": f"https://www.youtube.com/watch?v={v['id']}"
                 })
 
-            if len(all_videos) >= 200:
+            # Add competitor with its videos
+            competitors_data.append({
+                "id": comp_id,
+                "title": comp_title,
+                "subscriber_count": comp_subs,
+                "avg_recent_views": round(avg_recent_views, 2),
+                "frequency": comp_data.get("count", 0),
+                "videos": video_data
+            })
+
+            if len(competitors_data) * 4 >= 200:  # Approximate check for total videos
                 break
 
         return jsonify({
             "success": True,
             "channel_id": channel_id,
             "channel_title": channel_title,
-            "competitors": competitors_meta,
-            "total_videos": len(all_videos),
-            "videos": all_videos[:200]
+            "competitors": competitors_data
         })
 
     except Exception as e:

@@ -1485,7 +1485,150 @@ def channel_outliers_by_id():
     except Exception as e:
         app.logger.error(f"Channel outliers error: {str(e)}")
         return jsonify({"error": str(e)}), 500
-    
+@app.route("/api/video_outliers", methods=["POST"])
+def video_outliers():
+    try:
+        data = request.get_json()
+        channel_ids = data.get("channel_ids", [])
+        if not channel_ids:
+            return jsonify({"error": "Channel IDs list is required"}), 400
+
+        youtube = googleapiclient.discovery.build("youtube", "v3", developerKey=YOUTUBE_API_KEY)
+
+        # Store videos for each channel separately
+        channel_videos = []
+        for ch_id in channel_ids:
+            # Fetch channel info for title
+            ch_resp = youtube.channels().list(
+                part="snippet",
+                id=ch_id
+            ).execute()
+
+            if not ch_resp.get("items"):
+                continue
+
+            ch_info = ch_resp["items"][0]
+            ch_title = ch_info["snippet"]["title"]
+
+            # Fetch up to 50 recent medium duration videos
+            search_resp = youtube.search().list(
+                part="snippet",
+                channelId=ch_id,
+                type="video",
+                order="date",
+                videoDuration="medium",
+                maxResults=50
+            ).execute()
+
+            video_ids = [item["id"]["videoId"] for item in search_resp.get("items", [])]
+            if not video_ids:
+                continue
+
+            comp_videos = fetch_video_details(youtube, video_ids)
+            if not comp_videos:
+                continue
+
+            # Calculate avg recent views from these medium videos
+            avg_recent_views = sum(
+                int(v["statistics"].get("viewCount", 0)) for v in comp_videos
+            ) / len(comp_videos)
+
+            # Top 5 by views from recent medium videos (popular)
+            popular_videos = sorted(
+                comp_videos,
+                key=lambda x: int(x["statistics"].get("viewCount", 0)),
+                reverse=True
+            )[:5]
+
+            # Latest 5 (with ratio > 1) from first 10 recent (trending)
+            trending_videos = []
+            for v in comp_videos[:10]:  # first 10 most recent
+                views = int(v["statistics"].get("viewCount", 0))
+                if avg_recent_views > 0 and (views / avg_recent_views) > 1:
+                    trending_videos.append(v)
+                if len(trending_videos) >= 5:
+                    break
+
+            # Store formatted video data for this channel
+            channel_data = {
+                "channel_id": ch_id,
+                "channel_title": ch_title,
+                "avg_recent_views": round(avg_recent_views, 2),
+                "trending": [],
+                "popular": []
+            }
+
+            # Format trending videos
+            for v in trending_videos:
+                duration_str = v.get("contentDetails", {}).get("duration", "")
+                duration = parse_duration(duration_str)
+                views = int(v["statistics"].get("viewCount", 0))
+                multiplier = round(views / avg_recent_views, 2) if avg_recent_views > 0 else 0
+
+                channel_data["trending"].append({
+                    "video_id": v["id"],
+                    "title": v["snippet"]["title"],
+                    "channel_id": ch_id,
+                    "channel_title": ch_title,
+                    "views": views,
+                    "views_formatted": format_number(views),
+                    "duration_seconds": duration,
+                    "multiplier": multiplier,
+                    "avg_recent_views": round(avg_recent_views, 2),
+                    "thumbnail_url": v["snippet"]["thumbnails"]["high"]["url"],
+                    "url": f"https://www.youtube.com/watch?v={v['id']}"
+                })
+
+            # Format popular videos
+            for v in popular_videos:
+                duration_str = v.get("contentDetails", {}).get("duration", "")
+                duration = parse_duration(duration_str)
+                views = int(v["statistics"].get("viewCount", 0))
+                multiplier = round(views / avg_recent_views, 2) if avg_recent_views > 0 else 0
+
+                channel_data["popular"].append({
+                    "video_id": v["id"],
+                    "title": v["snippet"]["title"],
+                    "channel_id": ch_id,
+                    "channel_title": ch_title,
+                    "views": views,
+                    "views_formatted": format_number(views),
+                    "duration_seconds": duration,
+                    "multiplier": multiplier,
+                    "avg_recent_views": round(avg_recent_views, 2),
+                    "thumbnail_url": v["snippet"]["thumbnails"]["high"]["url"],
+                    "url": f"https://www.youtube.com/watch?v={v['id']}"
+                })
+
+            channel_videos.append(channel_data)
+
+        # Interleave videos: 1st channel trending, 2nd channel popular, 3rd channel trending, etc.
+        all_videos = []
+        num_channels = len(channel_videos)
+        max_videos_per_type = 5  # Max videos per category (trending or popular)
+        
+        for i in range(max_videos_per_type):
+            for j, channel in enumerate(channel_videos):
+                # Add trending videos for odd-indexed channels (0-based index)
+                if j % 2 == 0 and i < len(channel["trending"]):
+                    all_videos.append(channel["trending"][i])
+                # Add popular videos for even-indexed channels
+                elif j % 2 == 1 and i < len(channel["popular"]):
+                    all_videos.append(channel["popular"][i])
+                if len(all_videos) >= 200:
+                    break
+            if len(all_videos) >= 200:
+                break
+
+        return jsonify({
+            "success": True,
+            "total_videos": len(all_videos),
+            "videos": all_videos[:200]
+        })
+
+    except Exception as e:
+        app.logger.error(f"Video outliers error: {str(e)}")
+        return jsonify({"error": str(e)}), 500
 @app.route("/api/comp_analysis", methods=["POST"])
 def comp_analysis():
     try:

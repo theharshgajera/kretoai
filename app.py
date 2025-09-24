@@ -3,6 +3,7 @@ from flask_cors import CORS
 import google.generativeai as genai
 from googleapiclient.discovery import build
 from script_generate import generate_script
+from script import extract_video_id, fetch_transcript, extract_text_from_file, generate_script
 import logging
 from isodate import parse_duration
 from uuid import uuid4
@@ -46,6 +47,8 @@ load_dotenv()
 
 # Initialize Flask app
 app = Flask(__name__)
+
+
 CORS(app)  # Enable CORS for front-end requests
 
 # Configure logging
@@ -62,9 +65,796 @@ genai.configure(api_key=GEMINI_API_KEY)
 
 # In-memory storage for search history (no caching for videos or channels)
 search_history = []
+ALLOWED_EXTENSIONS = {'txt', 'pdf', 'doc', 'docx'}
+MAX_CONTENT_LENGTH = 50 * 1024 * 1024
 
+app.config['MAX_CONTENT_LENGTH'] = MAX_CONTENT_LENGTH
+
+user_data = defaultdict(lambda: {
+    'folders': {
+        'inspiration': {'videos': [], 'documents': []},
+        'self': {'videos': []}
+    },
+    'processing_status': {},
+    'analysis_cache': {},
+    'current_script': None,
+    'insights_cache': {}
+})
 # --- Helper Functions ---
+user_data = defaultdict(lambda: {
+    'folders': {
+        'inspiration': {'videos': [], 'documents': []},
+        'self': {'videos': []}
+    },
+    'processing_status': {},
+    'analysis_cache': {},
+    'current_script': None,
+    'insights_cache': {}
+})
 
+class DocumentProcessor:
+    def __init__(self):
+        self.max_chars = 100000
+    
+    def allowed_file(self, filename):
+        return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+    
+    def download_file(self, url):
+        try:
+            response = requests.get(url, timeout=10)
+            if response.status_code != 200:
+                return None, f"Failed to download file: HTTP {response.status_code}"
+            return BytesIO(response.content), None
+        except Exception as e:
+            return None, f"Error downloading file: {str(e)}"
+    
+    def extract_text_from_pdf(self, file_content):
+        text = ""
+        try:
+            doc = fitz.open(stream=file_content, filetype="pdf")
+            for page_num in range(doc.page_count):
+                page = doc[page_num]
+                text += page.get_text()
+            doc.close()
+            
+            if len(text.strip()) > 50:
+                return text, None
+        except Exception as e:
+            logger.warning(f"PyMuPDF extraction failed: {e}")
+        
+        try:
+            pdf_reader = PyPDF2.PdfReader(file_content)
+            for page in pdf_reader.pages:
+                text += page.extract_text()
+        except Exception as e:
+            logger.error(f"PyPDF2 extraction failed: {e}")
+            return None, f"PDF extraction failed: {str(e)}"
+        
+        return text if len(text.strip()) > 50 else None, None if len(text.strip()) > 50 else "No meaningful text extracted"
+    
+    def extract_text_from_docx(self, file_content):
+        try:
+            doc = docx.Document(file_content)
+            text = []
+            
+            for paragraph in doc.paragraphs:
+                if paragraph.text.strip():
+                    text.append(paragraph.text)
+            
+            for table in doc.tables:
+                for row in table.rows:
+                    for cell in row.cells:
+                        if cell.text.strip():
+                            text.append(cell.text)
+            
+            return '\n'.join(text), None
+        except Exception as e:
+            logger.error(f"DOCX extraction failed: {e}")
+            return None, f"DOCX extraction failed: {str(e)}"
+    
+    def extract_text_from_doc(self, file_content):
+        try:
+            doc = docx.Document(file_content)
+            text = []
+            for paragraph in doc.paragraphs:
+                if paragraph.text.strip():
+                    text.append(paragraph.text)
+            return '\n'.join(text), None
+        except Exception as e:
+            logger.warning(f"DOC extraction failed: {e}")
+            return None, f"DOC extraction failed: {str(e)}"
+    
+    def extract_text_from_txt(self, file_content):
+        encodings = ['utf-8', 'utf-16', 'latin-1', 'cp1252']
+        
+        for encoding in encodings:
+            try:
+                file_content.seek(0)
+                return file_content.read().decode(encoding), None
+            except UnicodeDecodeError:
+                continue
+            except Exception as e:
+                logger.error(f"TXT extraction failed: {e}")
+                return None, f"TXT extraction failed: {str(e)}"
+        
+        return None, "Failed to decode text file"
+    
+    def process_document(self, url, filename):
+        file_ext = filename.rsplit('.', 1)[1].lower() if '.' in filename else ''
+        
+        if not self.allowed_file(filename):
+            return {"error": "Unsupported file format", "text": None, "stats": None}
+        
+        file_content, download_error = self.download_file(url)
+        if download_error:
+            return {"error": download_error, "text": None, "stats": None}
+        
+        extraction_methods = {
+            'pdf': self.extract_text_from_pdf,
+            'docx': self.extract_text_from_docx,
+            'doc': self.extract_text_from_doc,
+            'txt': self.extract_text_from_txt
+        }
+        
+        extract_method = extraction_methods.get(file_ext)
+        if not extract_method:
+            return {"error": "Unsupported file format", "text": None, "stats": None}
+        
+        try:
+            text, error = extract_method(file_content)
+            
+            if error or not text or len(text.strip()) < 50:
+                return {"error": error or "Could not extract meaningful text from document", "text": None, "stats": None}
+            
+            if len(text) > self.max_chars:
+                text = text[:self.max_chars] + "\n\n[Document truncated for processing...]"
+            
+            stats = self._calculate_document_stats(text, filename)
+            
+            return {
+                "error": None,
+                "text": text,
+                "stats": stats,
+                "filename": filename,
+                "file_type": file_ext
+            }
+            
+        except Exception as e:
+            logger.error(f"Document processing error: {e}")
+            return {"error": f"Error processing document: {str(e)}", "text": None, "stats": None}
+    
+    def _calculate_document_stats(self, text, filename):
+        if not text:
+            return {
+                'char_count': 0,
+                'word_count': 0,
+                'page_estimate': 0,
+                'read_time': 0
+            }
+        
+        char_count = len(text)
+        word_count = len(text.split())
+        page_estimate = max(1, word_count // 250)
+        read_time = max(1, word_count // 200)
+        
+        return {
+            'char_count': char_count,
+            'word_count': word_count,
+            'page_estimate': page_estimate,
+            'read_time': read_time,
+            'filename': filename
+        }
+
+class VideoProcessor:
+    def __init__(self):
+        self.rate_limit_delay = 2
+        self.last_api_call = 0
+    
+    def extract_video_id(self, youtube_url):
+        patterns = [
+            r'(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/embed\/)([^&\n?#]+)',
+            r'youtube\.com\/watch\?.*v=([^&\n?#]+)'
+        ]
+        
+        for pattern in patterns:
+            match = re.search(pattern, youtube_url)
+            if match:
+                return match.group(1)
+        return None
+    
+    def validate_youtube_url(self, url):
+        youtube_domains = ['youtube.com', 'youtu.be', 'www.youtube.com']
+        try:
+            parsed_url = urlparse(url)
+            return any(domain in parsed_url.netloc for domain in youtube_domains)
+        except:
+            return False
+    
+    def rate_limit_wait(self):
+        current_time = time.time()
+        time_since_last_call = current_time - self.last_api_call
+        if time_since_last_call < self.rate_limit_delay:
+            sleep_time = self.rate_limit_delay - time_since_last_call
+            time.sleep(sleep_time)
+        self.last_api_call = time.time()
+    
+    def extract_transcript_details(self, youtube_video_url, max_retries=3, retry_delay=2):
+        self.rate_limit_wait()
+        
+        video_id = self.extract_video_id(youtube_video_url)
+        if not video_id:
+            return {"error": "Invalid YouTube URL format", "transcript": None, "stats": None}
+        
+        for attempt in range(max_retries):
+            try:
+                if attempt > 0:
+                    wait_time = retry_delay * (attempt + 1)
+                    logger.info(f"Retrying transcript extraction in {wait_time} seconds... (Attempt {attempt + 1}/{max_retries})")
+                    time.sleep(wait_time)
+                
+                ytt_api = YouTubeTranscriptApi()
+                
+                try:
+                    fetched_transcript = ytt_api.fetch(video_id, languages=['en', 'en-US', 'en-GB'])
+                    transcript_text = " ".join([snippet.text for snippet in fetched_transcript])
+                    
+                    if len(transcript_text.strip()) >= 50:
+                        stats = self._calculate_transcript_stats(transcript_text)
+                        logger.info(f"Direct fetch successful - {stats['char_count']} characters")
+                        return {"error": None, "transcript": transcript_text, "stats": stats}
+                        
+                except NoTranscriptFound:
+                    logger.info("Direct fetch failed, trying transcript list method")
+                    pass
+                
+                try:
+                    transcript_list = ytt_api.list(video_id)
+                    
+                    transcript = None
+                    try:
+                        transcript = transcript_list.find_transcript(['en', 'en-US', 'en-GB'])
+                        logger.info("Found English transcript")
+                    except NoTranscriptFound:
+                        try:
+                            transcript = transcript_list.find_manually_created_transcript(['en', 'en-US', 'en-GB'])
+                            logger.info("Found manually created English transcript")
+                        except NoTranscriptFound:
+                            try:
+                                transcript = transcript_list.find_generated_transcript(['en', 'en-US', 'en-GB'])
+                                logger.info("Found auto-generated English transcript")
+                            except NoTranscriptFound:
+                                available_transcripts = list(transcript_list)
+                                if available_transcripts:
+                                    transcript = available_transcripts[0]
+                                    logger.info(f"Using first available transcript: {transcript.language}")
+                                else:
+                                    return {"error": "No transcripts available for this video", "transcript": None, "stats": None}
+                    
+                    if not transcript:
+                        return {"error": "No suitable transcript found", "transcript": None, "stats": None}
+                    
+                    fetched_transcript = transcript.fetch()
+                    transcript_text = " ".join([snippet.text for snippet in fetched_transcript])
+                    
+                    if len(transcript_text.strip()) < 50:
+                        return {"error": "Transcript too short or incomplete", "transcript": None, "stats": None}
+                    
+                    stats = self._calculate_transcript_stats(transcript_text)
+                    logger.info(f"Transcript extraction successful - {stats['char_count']} characters, {stats['word_count']} words")
+                    return {"error": None, "transcript": transcript_text, "stats": stats}
+                    
+                except Exception as inner_e:
+                    logger.error(f"Inner exception during transcript list processing: {str(inner_e)}")
+                    if attempt == max_retries - 1:
+                        return {"error": f"Could not access transcript list - {str(inner_e)}", "transcript": None, "stats": None}
+                    continue
+
+            except VideoUnavailable:
+                return {"error": "Video is unavailable, private, or doesn't exist", "transcript": None, "stats": None}
+            except TranscriptsDisabled:
+                return {"error": "Transcripts are disabled for this video", "transcript": None, "stats": None}
+            except Exception as e:
+                error_msg = str(e).lower()
+                logger.error(f"Attempt {attempt + 1} failed: {str(e)}")
+                
+                if "quota" in error_msg or "rate" in error_msg or "429" in error_msg:
+                    if attempt < max_retries - 1:
+                        logger.warning(f"Rate limit hit. Waiting {retry_delay * (attempt + 2)} seconds before retry...")
+                        continue
+                    else:
+                        return {"error": "API rate limit exceeded. Please try again in a few minutes", "transcript": None, "stats": None}
+                elif "403" in error_msg or "forbidden" in error_msg:
+                    return {"error": "Access forbidden. Video might be private or restricted", "transcript": None, "stats": None}
+                elif "404" in error_msg:
+                    return {"error": "Video not found. Please check the URL", "transcript": None, "stats": None}
+                elif "blocked" in error_msg or "ipblocked" in error_msg:
+                    return {"error": "IP address blocked by YouTube. Try using a VPN or proxy", "transcript": None, "stats": None}
+                elif attempt == max_retries - 1:
+                    return {"error": f"Error fetching transcript after {max_retries} attempts: {str(e)}", "transcript": None, "stats": None}
+        
+        return {"error": "Failed to fetch transcript after multiple attempts", "transcript": None, "stats": None}
+    
+    def _calculate_transcript_stats(self, transcript_text):
+        if not transcript_text:
+            return {
+                'char_count': 0,
+                'word_count': 0,
+                'estimated_duration': 0,
+                'estimated_read_time': 0
+            }
+        
+        char_count = len(transcript_text)
+        word_count = len(transcript_text.split())
+        estimated_duration = max(1, word_count // 150)
+        estimated_read_time = max(1, word_count // 200)
+        
+        return {
+            'char_count': char_count,
+            'word_count': word_count,
+            'estimated_duration': estimated_duration,
+            'estimated_read_time': estimated_read_time
+        }
+
+class EnhancedScriptGenerator:
+    def __init__(self):
+        self.style_analysis_prompt = """
+You are an expert YouTube content analyst. Analyze the following transcripts from the creator's personal videos in the 'self' folder to create a comprehensive style profile.
+
+Focus on identifying:
+
+**VOICE & TONE CHARACTERISTICS:**
+- Speaking style (conversational, formal, energetic, calm, etc.)
+- Emotional tone and energy levels
+- Use of humor, sarcasm, or specific personality traits
+- Level of enthusiasm and passion
+- Pacing and rhythm patterns
+        
+**LANGUAGE PATTERNS:**
+- Vocabulary complexity and word choices
+- Sentence structure preferences (short/long, simple/complex)
+- Catchphrases, repeated expressions, or signature sayings
+- Use of technical jargon vs. simple explanations
+- Storytelling approach and narrative style
+- Transition phrases and connection words
+        
+**CONTENT STRUCTURE & FLOW:**
+- How they introduce topics and hook viewers
+- Transition techniques between sections
+- How they build up to main points
+- Conclusion and call-to-action styles
+- Use of examples, analogies, and explanations
+- Information presentation patterns
+        
+**ENGAGEMENT TECHNIQUES:**
+- How they ask questions to audience
+- Interactive elements and audience engagement
+- Use of personal stories and experiences
+- How they handle complex topics
+- Teaching and explanation methodology
+- Retention strategies used
+        
+**UNIQUE CREATOR CHARACTERISTICS:**
+- What makes this creator distinctive
+- Their unique perspective or angle
+- Personal brand elements
+- Values and beliefs that come through
+- Specific expertise areas and how they showcase them
+- Content themes and recurring topics
+
+**KEY INSIGHTS FOR SCRIPT GENERATION:**
+- Most effective hooks and openings used
+- Common content structures that work well
+- Signature explanations or teaching methods
+- Audience connection techniques
+- Call-to-action patterns
+
+Provide a detailed, actionable style profile that captures the creator's authentic voice for script generation.
+
+**Creator's Personal Video Transcripts (Self Folder):**
+        """
+        
+        self.inspiration_analysis_prompt = """
+You are an expert content strategist and topic analyst. Analyze these inspiration video transcripts and documents from the 'inspiration' folder to extract valuable insights and identify key topics with detailed breakdowns.
+
+Extract and organize:
+
+**CORE TOPICS & DETAILED INSIGHTS:**
+- Main subject matters with specific subtopics
+- Key points and arguments presented
+- Data, statistics, and factual claims
+- Expert opinions and industry insights
+- Trending discussions and current debates
+- Evergreen vs. timely content themes
+        
+**CONTENT IDEAS & CREATIVE ANGLES:**
+- Unique perspectives and fresh takes on topics
+- Creative approaches to common subjects
+- Unexplored angles or missing viewpoints
+- Potential spin-offs and related topics
+- Cross-topic connection opportunities
+- Controversial or debate-worthy points
+        
+**STORYTELLING & PRESENTATION TECHNIQUES:**
+- Narrative structures and story arcs used
+- How complex topics are simplified
+- Types of examples and case studies used
+- Visual or conceptual metaphors
+- Emotional appeals and connection methods
+- Pacing and information delivery patterns
+        
+**VALUABLE INSIGHTS & ACTIONABLE INFORMATION:**
+- Specific tips, tricks, and how-to steps
+- Common problems and detailed solution approaches
+- Industry best practices mentioned
+- Tools, resources, and recommendations
+- Success stories and failure case studies
+- Expert advice and professional insights
+        
+**TOPIC-SPECIFIC MAIN POINTS BREAKDOWN:**
+For each major topic discussed, provide:
+- Core concept explanation
+- Key supporting arguments
+- Practical applications mentioned
+- Common misconceptions addressed
+- Advanced concepts introduced
+- Related subtopics worth exploring
+        
+**CONTENT GAPS & OPPORTUNITIES:**
+- Topics that could be expanded upon
+- Alternative viewpoints not covered
+- Beginner vs. advanced treatment opportunities
+- Updated information or fresh perspectives needed
+- Underexplored subtopics with potential
+
+Provide a comprehensive analysis that captures both the content insights and the presentation methods for creating informed, original content.
+
+**Inspiration Content (Videos and Documents):**
+        """
+
+        self.enhanced_script_template = """
+You are an expert YouTube script writer creating a professional, engaging script based on comprehensive content analysis including the creator's style and topic insights from inspiration content.
+
+**CREATOR'S AUTHENTIC STYLE PROFILE (Self Folder):**
+{style_profile}
+
+**TOPIC INSIGHTS FROM INSPIRATION CONTENT (Inspiration Folder):**
+{inspiration_summary}
+
+**USER'S SPECIFIC REQUEST:**
+{user_prompt}
+
+**ENHANCED SCRIPT GENERATION INSTRUCTIONS:**
+
+Create a complete, production-ready YouTube script that:
+
+1. **MAINTAINS AUTHENTIC VOICE:** Use the creator's natural speaking style, vocabulary, and personality traits identified in the style profile from the 'self' folder.
+
+2. **LEVERAGES INSPIRATION INSIGHTS:**
+   - Include trending discussions and current debates from inspiration content
+   - Use successful presentation techniques identified
+   - Apply proven engagement strategies
+   - Reference industry insights and expert opinions from inspiration videos and documents
+
+3. **FOLLOWS PROFESSIONAL STRUCTURE:**
+   - **Hook (0-15 seconds):** Attention-grabbing opening with specific value promise
+   - **Introduction (15-45 seconds):** Topic setup with authority establishment
+   - **Main Content Sections:** Well-structured body with clear progression
+   - **Practical Applications:** Include actionable takeaways
+   - **Conclusion:** Strong summary with clear next steps
+
+4. **ENSURES COMPREHENSIVE COVERAGE:**
+   - Address the topic from multiple angles identified in inspiration content
+   - Include both foundational and advanced concepts appropriately
+   - Provide practical examples and real-world applications
+   - Reference credible sources and expert insights
+   - Balance theory with actionable advice
+
+5. **MAINTAINS ENGAGEMENT:**
+   - Use the creator's proven engagement techniques
+   - Include questions, interactions, and retention hooks
+   - Apply storytelling methods that resonate
+   - Incorporate appropriate humor or personality elements
+
+**OUTPUT FORMAT:**
+
+# [COMPELLING VIDEO TITLE]
+
+## CONTENT FOUNDATION
+**Inspiration Insights:** [Key insights being leveraged from inspiration folder]
+**Topic Relevance:** [Why this matters now based on inspiration analysis]
+**Creator Angle:** [Unique perspective based on style profile]
+
+## HOOK (0-15 seconds)
+[Attention-grabbing opening with authority and promise]
+**[Production Note: Tone, visual, and delivery guidance]**
+
+## INTRODUCTION (15-45 seconds)  
+[Authority establishment with inspiration-backed credibility]
+**[Expert Insight: Specific fact or data from inspiration content]**
+
+## MAIN CONTENT
+
+### Section 1: [Title] (Timing: X:XX - X:XX)
+[Inspiration-informed content with creator's authentic delivery]
+**[Authority Point: Specific expert knowledge from inspiration content]**
+**[Actionable Takeaway: Practical application]**
+**[Production Note: Visual aids, emphasis cues]**
+
+### Section 2: [Title] (Timing: X:XX - X:XX)
+[Continue with comprehensive, well-researched content]
+**[Expert Validation: Supporting evidence from inspiration content]**
+**[Real-World Application: How viewers implement this]**
+
+[Continue for all main sections...]
+
+## CONCLUSION (Last 30-60 seconds)
+[Strong summary with inspiration-backed authority and clear next steps]
+**[Final Authority Statement: Key expert insight that reinforces value]**
+
+---
+        
+**PRODUCTION NOTES:**
+- Visual timeline and supporting materials needed
+- Key emphasis points for authority and credibility
+- Inspiration references and source citations
+- Graphics, data visualization opportunities
+- Expert quote overlays or callouts
+        
+**AUTHORITY & CREDIBILITY ELEMENTS:**
+- Inspiration insights strategically integrated
+- Expert knowledge naturally woven throughout
+- Factual backing for all major claims
+- Credible source references where appropriate
+- Balance of accessible explanation with authoritative depth
+
+Generate the complete script now, ensuring it authentically matches the creator's style while delivering authoritative, inspiration-informed content on the requested topic.
+        """
+    
+    def analyze_creator_style(self, personal_transcripts):
+        combined_transcripts = "\n\n---VIDEO SEPARATOR---\n\n".join(personal_transcripts)
+        
+        max_chars = 50000
+        if len(combined_transcripts) > max_chars:
+            chunk_size = max_chars // 3
+            start_chunk = combined_transcripts[:chunk_size]
+            middle_start = len(combined_transcripts) // 2 - chunk_size // 2
+            middle_chunk = combined_transcripts[middle_start:middle_start + chunk_size]
+            end_chunk = combined_transcripts[-chunk_size:]
+            combined_transcripts = f"{start_chunk}\n\n[...CONTENT CONTINUES...]\n\n{middle_chunk}\n\n[...CONTENT CONTINUES...]\n\n{end_chunk}"
+        
+        try:
+            model = genai.GenerativeModel("gemini-2.0-flash")
+            response = model.generate_content(
+                self.style_analysis_prompt + combined_transcripts,
+                generation_config=genai.types.GenerationConfig(
+                    temperature=0.1,
+                    max_output_tokens=3000
+                )
+            )
+            
+            if response.text:
+                return response.text
+            else:
+                return "Could not analyze creator style - empty response"
+                
+        except Exception as e:
+            logger.error(f"Error analyzing creator style: {str(e)}")
+            return f"Error analyzing creator style: {str(e)}"
+    
+    def analyze_inspiration_content(self, inspiration_content):
+        combined_content = "\n\n---CONTENT SEPARATOR---\n\n".join(inspiration_content)
+        
+        max_chars = 50000
+        if len(combined_content) > max_chars:
+            chunk_size = max_chars // len(inspiration_content) if len(inspiration_content) > 1 else max_chars
+            sampled_content = []
+            for content in inspiration_content:
+                if len(content) > chunk_size:
+                    half_chunk = chunk_size // 2
+                    sampled = content[:half_chunk] + "\n[...CONTENT CONTINUES...]\n" + content[-half_chunk:]
+                    sampled_content.append(sampled)
+                else:
+                    sampled_content.append(content)
+            combined_content = "\n\n---CONTENT SEPARATOR---\n\n".join(sampled_content)
+        
+        try:
+            model = genai.GenerativeModel("gemini-2.0-flash")
+            response = model.generate_content(
+                self.inspiration_analysis_prompt + combined_content,
+                generation_config=genai.types.GenerationConfig(
+                    temperature=0.2,
+                    max_output_tokens=3000
+                )
+            )
+            
+            if response.text:
+                return response.text
+            else:
+                return "Could not analyze inspiration content - empty response"
+                
+        except Exception as e:
+            logger.error(f"Error analyzing inspiration content: {str(e)}")
+            return f"Error analyzing inspiration content: {str(e)}"
+    
+    def generate_enhanced_script(self, style_profile, inspiration_summary, user_prompt):
+        enhanced_prompt = self.enhanced_script_template.format(
+            style_profile=style_profile,
+            inspiration_summary=inspiration_summary,
+            user_prompt=user_prompt
+        )
+        
+        try:
+            model = genai.GenerativeModel("gemini-2.0-flash")
+            response = model.generate_content(
+                enhanced_prompt,
+                generation_config=genai.types.GenerationConfig(
+                    temperature=0.7,
+                    max_output_tokens=4000
+                )
+            )
+            
+            if response.text:
+                return response.text
+            else:
+                return "Error: Could not generate script - empty response"
+                
+        except Exception as e:
+            logger.error(f"Error generating enhanced script: {str(e)}")
+            return f"Error generating script: {str(e)}"
+
+document_processor = DocumentProcessor()
+video_processor = VideoProcessor()
+script_generator = EnhancedScriptGenerator()
+
+
+@app.route('/api/generate-complete-script', methods=['POST'])
+def generate_complete_script():
+    data = request.json or {}
+    user_id = data.get('user_id', str(uuid.uuid4()))  # Use provided user_id or generate a new one
+    personal_videos = data.get('personal_videos', [])
+    inspiration_videos = data.get('inspiration_videos', [])
+    inspiration_documents = data.get('inspiration_documents', [])
+    prompt = data.get('prompt', '').strip()
+    
+    if not prompt:
+        return jsonify({'error': 'Prompt is required'}), 400
+    
+    try:
+        processed_documents = []
+        processed_personal = []
+        processed_inspiration = []
+        errors = []
+        
+        if inspiration_documents:
+            logger.info(f"Processing {len(inspiration_documents)} documents from URLs...")
+            for doc in inspiration_documents:
+                url = doc.get('url', '')
+                filename = doc.get('filename', urlparse(url).path.split('/')[-1] or 'document')
+                if url and document_processor.allowed_file(filename):
+                    result = document_processor.process_document(url, filename)
+                    if result['error']:
+                        errors.append(f"Document {filename}: {result['error']}")
+                    else:
+                        processed_documents.append({
+                            'url': url,
+                            'filename': filename,
+                            'text': result['text'],
+                            'stats': result['stats']
+                        })
+                        user_data[user_id]['folders']['inspiration']['documents'].append({
+                            'url': url,
+                            'filename': filename,
+                            'stats': result['stats'],
+                            'timestamp': datetime.now().isoformat()
+                        })
+        
+        if personal_videos:
+            logger.info(f"Processing {len(personal_videos)} personal videos...")
+            for url in personal_videos:
+                if url and video_processor.validate_youtube_url(url):
+                    result = video_processor.extract_transcript_details(url)
+                    if result['error']:
+                        errors.append(f"Personal video {url}: {result['error']}")
+                    else:
+                        processed_personal.append({
+                            'url': url,
+                            'transcript': result['transcript'],
+                            'stats': result['stats']
+                        })
+                        user_data[user_id]['folders']['self']['videos'].append({
+                            'url': url,
+                            'stats': result['stats'],
+                            'timestamp': datetime.now().isoformat()
+                        })
+        
+        if inspiration_videos:
+            logger.info(f"Processing {len(inspiration_videos)} inspiration videos...")
+            for url in inspiration_videos:
+                if url and video_processor.validate_youtube_url(url):
+                    result = video_processor.extract_transcript_details(url)
+                    if result['error']:
+                        errors.append(f"Inspiration video {url}: {result['error']}")
+                    else:
+                        processed_inspiration.append({
+                            'url': url,
+                            'transcript': result['transcript'],
+                            'stats': result['stats']
+                        })
+                        user_data[user_id]['folders']['inspiration']['videos'].append({
+                            'url': url,
+                            'stats': result['stats'],
+                            'timestamp': datetime.now().isoformat()
+                        })
+        
+        if not processed_documents and not processed_personal and not processed_inspiration:
+            return jsonify({'error': 'No valid content provided for analysis'}), 400
+        
+        logger.info("Analyzing all content...")
+        
+        style_profile = "Professional, engaging YouTube style with clear explanations and good pacing."
+        if processed_personal:
+            personal_transcripts = [v['transcript'] for v in processed_personal]
+            try:
+                style_profile = script_generator.analyze_creator_style(personal_transcripts)
+            except Exception as e:
+                logger.error(f"Style analysis error: {str(e)}")
+                errors.append(f"Style analysis failed: {str(e)}")
+        
+        inspiration_summary = "Creating original content based on user request and best practices."
+        inspiration_content = [v['transcript'] for v in processed_inspiration] + [d['text'] for d in processed_documents]
+        if inspiration_content:
+            try:
+                inspiration_summary = script_generator.analyze_inspiration_content(inspiration_content)
+            except Exception as e:
+                logger.error(f"Inspiration analysis error: {str(e)}")
+                errors.append(f"Inspiration analysis failed: {str(e)}")
+        
+        logger.info("Generating final script...")
+        try:
+            script = script_generator.generate_enhanced_script(
+                style_profile,
+                inspiration_summary,
+                prompt
+            )
+        except Exception as e:
+            logger.error(f"Script generation error: {str(e)}")
+            return jsonify({'error': f'Script generation failed: {str(e)}'}), 500
+        
+        user_data[user_id]['current_script'] = {
+            'content': script,
+            'style_profile': style_profile,
+            'inspiration_summary': inspiration_summary,
+            'original_prompt': prompt,
+            'timestamp': datetime.now().isoformat()
+        }
+        
+        stats = {
+            'personal_videos': len(processed_personal),
+            'inspiration_videos': len(processed_inspiration),
+            'inspiration_documents': len(processed_documents),
+            'total_sources': len(processed_personal) + len(processed_inspiration) + len(processed_documents),
+            'errors_count': len(errors)
+        }
+        
+        logger.info("Complete script generation finished successfully")
+        
+        return jsonify({
+            'success': True,
+            'script': script,
+            'user_id': user_id,
+            'stats': stats,
+            'processed_content': {
+                'self_videos': len(processed_personal),
+                'inspiration_videos': len(processed_inspiration),
+                'inspiration_documents': len(processed_documents)
+            },
+            'errors': errors if errors else None,
+            'analysis_quality': 'premium' if (processed_personal and (processed_inspiration or processed_documents)) else 'optimal' if any([processed_personal, processed_inspiration, processed_documents]) else 'basic'
+        })
+        
+    except Exception as e:
+        logger.error(f"Complete script generation error: {str(e)}")
+        return jsonify({'error': f'Complete script generation failed: {str(e)}'}), 500
 def check_internet(host="youtube.googleapis.com", port=443, timeout=5):
     try:
         socket.create_connection((host, port), timeout=timeout)
@@ -1629,6 +2419,9 @@ def video_outliers():
     except Exception as e:
         app.logger.error(f"Video outliers error: {str(e)}")
         return jsonify({"error": str(e)}), 500
+    
+
+
 @app.route("/api/comp_analysis", methods=["POST"])
 def comp_analysis():
     try:
@@ -2493,6 +3286,73 @@ def format_number(num):
         return f"{num/1000:.1f}K"
     else:
         return str(num)
+
+@app.route("/api/script_generation", methods=["POST"])
+def script_generation():
+    try:
+        # Parse request JSON
+        personal_videos = request.json.get("personal_videos", [])
+        inspiration_videos = request.json.get("inspiration_videos", [])
+        prompt = request.json.get("prompt", "").strip()
+        minutes = int(request.json.get("minutes", 0))
+
+        if not prompt:
+            return jsonify({"error": "Prompt is required"}), 400
+        if minutes <= 0:
+            return jsonify({"error": "Video length in minutes is required"}), 400
+
+        # Calculate target words
+        target_words = minutes * 140
+
+        # 1. Collect transcripts from personal videos
+        personal_texts = []
+        for url in personal_videos:
+            vid_id = extract_video_id(url)
+            if vid_id:
+                text = fetch_transcript(vid_id)
+                if text:
+                    personal_texts.append(text)
+
+        # 2. Collect transcripts from inspiration videos
+        inspiration_texts = []
+        for url in inspiration_videos:
+            vid_id = extract_video_id(url)
+            if vid_id:
+                text = fetch_transcript(vid_id)
+                if text:
+                    inspiration_texts.append(text)
+
+        # 3. Collect docs content (if uploaded)
+        docs_texts = []
+        if "files" in request.files:
+            for f in request.files.getlist("files"):
+                extracted = extract_text_from_file(f)
+                if extracted:
+                    docs_texts.append(extracted)
+
+        # 4. Merge everything
+        merged_context = {
+            "personal_samples": personal_texts,
+            "inspiration_samples": inspiration_texts,
+            "docs_samples": docs_texts,
+            "user_prompt": prompt,
+            "target_words": target_words,
+            "minutes": minutes
+        }
+
+        # 5. Generate script via Gemini
+        script_output = generate_script(merged_context)
+
+        return jsonify({
+            "success": True,
+            "script": script_output,
+            "target_words": target_words,
+            "minutes": minutes
+        })
+
+    except Exception as e:
+        app.logger.error(f"Script generation error: {str(e)}")
+        return jsonify({"error": str(e)}), 500
 
 
 @app.route('/api/similar_videos', methods=['POST'])

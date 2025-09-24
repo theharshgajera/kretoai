@@ -6,6 +6,8 @@ from script_generate import generate_script
 from script import extract_video_id, fetch_transcript, extract_text_from_file, generate_script
 import logging
 from isodate import parse_duration
+from datetime import datetime
+
 from uuid import uuid4
 import json
 from youtube_api import get_viral_thumbnails
@@ -2285,10 +2287,8 @@ def video_outliers():
 
         youtube = googleapiclient.discovery.build("youtube", "v3", developerKey=YOUTUBE_API_KEY)
 
-        # Store videos for each channel separately
         channel_videos = []
         for ch_id in channel_ids:
-            # Fetch channel info for title
             ch_resp = youtube.channels().list(
                 part="snippet",
                 id=ch_id
@@ -2300,7 +2300,6 @@ def video_outliers():
             ch_info = ch_resp["items"][0]
             ch_title = ch_info["snippet"]["title"]
 
-            # Fetch up to 50 recent medium duration videos
             search_resp = youtube.search().list(
                 part="snippet",
                 channelId=ch_id,
@@ -2318,46 +2317,65 @@ def video_outliers():
             if not comp_videos:
                 continue
 
-            # Calculate avg recent views from these medium videos
+            # average recent views (numeric)
             avg_recent_views = sum(
                 int(v["statistics"].get("viewCount", 0)) for v in comp_videos
             ) / len(comp_videos)
 
-            # Top 5 by views from recent medium videos (popular)
             popular_videos = sorted(
                 comp_videos,
                 key=lambda x: int(x["statistics"].get("viewCount", 0)),
                 reverse=True
             )[:5]
 
-            # Latest 5 (with ratio > 1) from first 10 recent (trending)
             trending_videos = []
-            for v in comp_videos[:10]:  # first 10 most recent
+            for v in comp_videos[:10]:
                 views = int(v["statistics"].get("viewCount", 0))
                 if avg_recent_views > 0 and (views / avg_recent_views) > 1:
                     trending_videos.append(v)
                 if len(trending_videos) >= 5:
                     break
 
-            # Store formatted video data for this channel
             channel_data = {
                 "channel_id": ch_id,
                 "channel_title": ch_title,
                 "avg_recent_views": round(avg_recent_views, 2),
+                "avg_recent_views_formatted": format_number(round(avg_recent_views, 0)),
                 "trending": [],
                 "popular": []
             }
 
-            # Format trending videos
-            for v in trending_videos:
+            # helper to extract language + published date safely and format video dict
+            def format_video(v):
                 duration_str = v.get("contentDetails", {}).get("duration", "")
                 duration = parse_duration(duration_str)
                 views = int(v["statistics"].get("viewCount", 0))
                 multiplier = round(views / avg_recent_views, 2) if avg_recent_views > 0 else 0
 
-                channel_data["trending"].append({
+                # language: try a few likely places
+                snippet = v.get("snippet", {}) or {}
+                language = snippet.get("defaultAudioLanguage") or snippet.get("defaultLanguage") or snippet.get("language") or None
+
+                # published date (ISO) and a friendly YYYY-MM-DD fallback
+                published_at = snippet.get("publishedAt")
+                published_date_friendly = None
+                if published_at:
+                    try:
+                        # support both "2020-01-01T12:34:56Z" and millisecond variant
+                        if published_at.endswith("Z"):
+                            try:
+                                dt = datetime.strptime(published_at, "%Y-%m-%dT%H:%M:%SZ")
+                            except ValueError:
+                                dt = datetime.strptime(published_at, "%Y-%m-%dT%H:%M:%S.%fZ")
+                        else:
+                            dt = datetime.fromisoformat(published_at)
+                        published_date_friendly = dt.strftime("%Y-%m-%d")
+                    except Exception:
+                        published_date_friendly = published_at
+
+                return {
                     "video_id": v["id"],
-                    "title": v["snippet"]["title"],
+                    "title": snippet.get("title"),
                     "channel_id": ch_id,
                     "channel_title": ch_title,
                     "views": views,
@@ -2365,44 +2383,27 @@ def video_outliers():
                     "duration_seconds": duration,
                     "multiplier": multiplier,
                     "avg_recent_views": round(avg_recent_views, 2),
-                    "thumbnail_url": v["snippet"]["thumbnails"]["high"]["url"],
-                    "url": f"https://www.youtube.com/watch?v={v['id']}"
-                })
+                    "channel_avg_views_formatted": format_number(round(avg_recent_views, 0)),
+                    "thumbnail_url": snippet.get("thumbnails", {}).get("high", {}).get("url"),
+                    "url": f"https://www.youtube.com/watch?v={v['id']}",
+                    "language": language,
+                    "published_date": published_at,                 # ISO timestamp from API
+                    "published_date_friendly": published_date_friendly  # YYYY-MM-DD (or fallback)
+                }
 
-            # Format popular videos
-            for v in popular_videos:
-                duration_str = v.get("contentDetails", {}).get("duration", "")
-                duration = parse_duration(duration_str)
-                views = int(v["statistics"].get("viewCount", 0))
-                multiplier = round(views / avg_recent_views, 2) if avg_recent_views > 0 else 0
-
-                channel_data["popular"].append({
-                    "video_id": v["id"],
-                    "title": v["snippet"]["title"],
-                    "channel_id": ch_id,
-                    "channel_title": ch_title,
-                    "views": views,
-                    "views_formatted": format_number(views),
-                    "duration_seconds": duration,
-                    "multiplier": multiplier,
-                    "avg_recent_views": round(avg_recent_views, 2),
-                    "thumbnail_url": v["snippet"]["thumbnails"]["high"]["url"],
-                    "url": f"https://www.youtube.com/watch?v={v['id']}"
-                })
+            channel_data["trending"] = [format_video(v) for v in trending_videos]
+            channel_data["popular"] = [format_video(v) for v in popular_videos]
 
             channel_videos.append(channel_data)
 
-        # Interleave videos: 1st channel trending, 2nd channel popular, 3rd channel trending, etc.
+        # Interleave videos: trending/popular alternating across channels
         all_videos = []
-        num_channels = len(channel_videos)
-        max_videos_per_type = 5  # Max videos per category (trending or popular)
-        
+        max_videos_per_type = 5
+
         for i in range(max_videos_per_type):
             for j, channel in enumerate(channel_videos):
-                # Add trending videos for odd-indexed channels (0-based index)
                 if j % 2 == 0 and i < len(channel["trending"]):
                     all_videos.append(channel["trending"][i])
-                # Add popular videos for even-indexed channels
                 elif j % 2 == 1 and i < len(channel["popular"]):
                     all_videos.append(channel["popular"][i])
                 if len(all_videos) >= 200:
@@ -2419,7 +2420,6 @@ def video_outliers():
     except Exception as e:
         app.logger.error(f"Video outliers error: {str(e)}")
         return jsonify({"error": str(e)}), 500
-    
 
 
 @app.route("/api/comp_analysis", methods=["POST"])
@@ -2432,7 +2432,7 @@ def comp_analysis():
 
         youtube = googleapiclient.discovery.build("youtube", "v3", developerKey=YOUTUBE_API_KEY)
 
-        # 1. Fetch channel info
+        # 1. Fetch channel info (with snippet for thumbnail)
         channel_resp = youtube.channels().list(
             part="snippet,statistics,contentDetails",
             id=channel_id
@@ -2443,6 +2443,7 @@ def comp_analysis():
 
         channel_info = channel_resp["items"][0]
         channel_title = channel_info["snippet"]["title"]
+        channel_thumbnail = channel_info["snippet"]["thumbnails"]["high"]["url"]
         subs_count = int(channel_info["statistics"].get("subscriberCount", 1))
         uploads_playlist = channel_info["contentDetails"]["relatedPlaylists"]["uploads"]
 
@@ -2498,18 +2499,18 @@ def comp_analysis():
                     competitor_counts[ch_id] = {"title": ch_title, "count": 0}
                 competitor_counts[ch_id]["count"] += 1
 
-        # sort competitors by frequency (descending) and take top 20
+        # sort competitors by frequency (descending) and take top 50
         competitors = sorted(
             competitor_counts.items(),
             key=lambda kv: kv[1]["count"],
             reverse=True
         )[:50]
 
-        # 4. For each competitor, fetch latest 4 videos with avg views
+        # 4. For each competitor, fetch latest 4 videos with avg views + channel thumbnail
         competitors_data = []
         for comp_id, comp_data in competitors:
             comp_resp = youtube.channels().list(
-                part="statistics,contentDetails",
+                part="snippet,statistics,contentDetails",  # added snippet
                 id=comp_id
             ).execute()
 
@@ -2520,6 +2521,7 @@ def comp_analysis():
             comp_title = comp_data["title"]
             comp_subs = int(comp_info["statistics"].get("subscriberCount", 1))
             comp_uploads = comp_info["contentDetails"]["relatedPlaylists"]["uploads"]
+            comp_thumbnail = comp_info["snippet"]["thumbnails"]["high"]["url"]
 
             # Fetch up to 5 recent uploads
             comp_uploads_resp = youtube.playlistItems().list(
@@ -2570,6 +2572,7 @@ def comp_analysis():
                 "subscriber_count": comp_subs,
                 "avg_recent_views": round(avg_recent_views, 2),
                 "frequency": comp_data.get("count", 0),
+                "thumbnail_url": comp_thumbnail,  # ✅ channel thumbnail
                 "videos": video_data
             })
 
@@ -2580,12 +2583,14 @@ def comp_analysis():
             "success": True,
             "channel_id": channel_id,
             "channel_title": channel_title,
+            "channel_thumbnail": channel_thumbnail,  # ✅ main channel thumbnail
             "competitors": competitors_data
         })
 
     except Exception as e:
         app.logger.error(f"Channel outliers error: {str(e)}")
         return jsonify({"error": str(e)}), 500
+
 @app.route('/api/generate_titles', methods=['POST'])
 def generate_titles():
     """Generate viral YouTube titles based on provided topic, prompt, or script."""

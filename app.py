@@ -2290,7 +2290,7 @@ def video_outliers():
         channel_videos = []
         for ch_id in channel_ids:
             ch_resp = youtube.channels().list(
-                part="snippet",
+                part="snippet,statistics",   # ✅ include statistics
                 id=ch_id
             ).execute()
 
@@ -2299,6 +2299,7 @@ def video_outliers():
 
             ch_info = ch_resp["items"][0]
             ch_title = ch_info["snippet"]["title"]
+            subs_count = int(ch_info["statistics"].get("subscriberCount", 1))  # ✅ subscriber count
 
             search_resp = youtube.search().list(
                 part="snippet",
@@ -2317,7 +2318,6 @@ def video_outliers():
             if not comp_videos:
                 continue
 
-            # average recent views (numeric)
             avg_recent_views = sum(
                 int(v["statistics"].get("viewCount", 0)) for v in comp_videos
             ) / len(comp_videos)
@@ -2339,29 +2339,26 @@ def video_outliers():
             channel_data = {
                 "channel_id": ch_id,
                 "channel_title": ch_title,
+                "subscriber_count": subs_count,   # ✅ include at channel level too
                 "avg_recent_views": round(avg_recent_views, 2),
                 "avg_recent_views_formatted": format_number(round(avg_recent_views, 0)),
                 "trending": [],
                 "popular": []
             }
 
-            # helper to extract language + published date safely and format video dict
             def format_video(v):
                 duration_str = v.get("contentDetails", {}).get("duration", "")
                 duration = parse_duration(duration_str)
                 views = int(v["statistics"].get("viewCount", 0))
                 multiplier = round(views / avg_recent_views, 2) if avg_recent_views > 0 else 0
 
-                # language: try a few likely places
                 snippet = v.get("snippet", {}) or {}
                 language = snippet.get("defaultAudioLanguage") or snippet.get("defaultLanguage") or snippet.get("language") or None
 
-                # published date (ISO) and a friendly YYYY-MM-DD fallback
                 published_at = snippet.get("publishedAt")
                 published_date_friendly = None
                 if published_at:
                     try:
-                        # support both "2020-01-01T12:34:56Z" and millisecond variant
                         if published_at.endswith("Z"):
                             try:
                                 dt = datetime.strptime(published_at, "%Y-%m-%dT%H:%M:%SZ")
@@ -2378,6 +2375,7 @@ def video_outliers():
                     "title": snippet.get("title"),
                     "channel_id": ch_id,
                     "channel_title": ch_title,
+                    "subscriber_count": subs_count,   # ✅ add here
                     "views": views,
                     "views_formatted": format_number(views),
                     "duration_seconds": duration,
@@ -2387,8 +2385,8 @@ def video_outliers():
                     "thumbnail_url": snippet.get("thumbnails", {}).get("high", {}).get("url"),
                     "url": f"https://www.youtube.com/watch?v={v['id']}",
                     "language": language,
-                    "published_date": published_at,                 # ISO timestamp from API
-                    "published_date_friendly": published_date_friendly  # YYYY-MM-DD (or fallback)
+                    "published_date": published_at,
+                    "published_date_friendly": published_date_friendly
                 }
 
             channel_data["trending"] = [format_video(v) for v in trending_videos]

@@ -2508,7 +2508,7 @@ def comp_analysis():
         competitors_data = []
         for comp_id, comp_data in competitors:
             comp_resp = youtube.channels().list(
-                part="snippet,statistics,contentDetails",  # added snippet
+                part="snippet,statistics,contentDetails",
                 id=comp_id
             ).execute()
 
@@ -2519,7 +2519,7 @@ def comp_analysis():
             comp_title = comp_data["title"]
             comp_subs = int(comp_info["statistics"].get("subscriberCount", 1))
             comp_uploads = comp_info["contentDetails"]["relatedPlaylists"]["uploads"]
-            comp_thumbnail = comp_info["snippet"]["thumbnails"]["high"]["url"]
+            comp_thumbnail = comp_info["snippet"]["thumbnails"]["high"]["url"]  # ✅ profile picture
 
             # Fetch up to 5 recent uploads
             comp_uploads_resp = youtube.playlistItems().list(
@@ -2540,7 +2540,7 @@ def comp_analysis():
             ) / len(comp_videos)
 
             # Latest 4 videos (no filtering)
-            latest_videos = comp_videos[:4]  # take the 4 most recent videos
+            latest_videos = comp_videos[:4]
 
             # Prepare video data for this competitor
             video_data = []
@@ -2570,24 +2570,25 @@ def comp_analysis():
                 "subscriber_count": comp_subs,
                 "avg_recent_views": round(avg_recent_views, 2),
                 "frequency": comp_data.get("count", 0),
-                "thumbnail_url": comp_thumbnail,  # ✅ channel thumbnail
+                "thumbnail_url": comp_thumbnail,  # ✅ competitor profile picture
                 "videos": video_data
             })
 
-            if len(competitors_data) * 4 >= 200:  # Approximate check for total videos
+            if len(competitors_data) * 4 >= 200:
                 break
 
         return jsonify({
             "success": True,
             "channel_id": channel_id,
             "channel_title": channel_title,
-            "channel_thumbnail": channel_thumbnail,  # ✅ main channel thumbnail
+            "channel_thumbnail": channel_thumbnail,  # ✅ input channel thumbnail
             "competitors": competitors_data
         })
 
     except Exception as e:
         app.logger.error(f"Channel outliers error: {str(e)}")
         return jsonify({"error": str(e)}), 500
+
 
 @app.route('/api/generate_titles', methods=['POST'])
 def generate_titles():

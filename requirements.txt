@@ -14,3 +14,4 @@ youtube-transcript-api
 PyPDF2
 python-docx
 pymupdf
+yt-dlp

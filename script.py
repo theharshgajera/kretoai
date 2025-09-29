@@ -674,25 +674,29 @@ class EnhancedScriptGenerator:
         **USER'S SPECIFIC REQUEST:**
         {user_prompt}
 
+        **TARGET DURATION:** {target_duration}
+
         **ENHANCED SCRIPT GENERATION INSTRUCTIONS:**
 
         Create a complete, production-ready YouTube script that:
 
         1. **MAINTAINS AUTHENTIC VOICE:** Use the creator's natural speaking style, vocabulary, and personality traits identified in the style profile.
 
-        2. **INTEGRATES DOCUMENT KNOWLEDGE STRATEGICALLY:**
+        2. **ADHERES TO TARGET DURATION:** {duration_instruction}
+
+        3. **INTEGRATES DOCUMENT KNOWLEDGE STRATEGICALLY:**
            - Use document insights as authoritative foundation
            - Incorporate specific data, facts, and expert knowledge
            - Reference key concepts and methodologies from documents
            - Build upon documented best practices and proven approaches
            
-        3. **LEVERAGES INSPIRATION INSIGHTS:**
+        4. **LEVERAGES INSPIRATION INSIGHTS:**
            - Include trending discussions and current debates
            - Use successful presentation techniques identified
            - Apply proven engagement strategies
            - Reference industry insights and expert opinions
 
-        4. **FOLLOWS PROFESSIONAL STRUCTURE:**
+        5. **FOLLOWS PROFESSIONAL STRUCTURE:**
            - **Hook (0-15 seconds):** Attention-grabbing opening with specific value promise
            - **Introduction (15-45 seconds):** Topic setup with authority establishment
            - **Main Content Sections:** Well-structured body with clear progression
@@ -700,14 +704,14 @@ class EnhancedScriptGenerator:
            - **Practical Applications:** Include actionable takeaways
            - **Conclusion:** Strong summary with clear next steps
 
-        5. **ENSURES COMPREHENSIVE COVERAGE:**
+        6. **ENSURES COMPREHENSIVE COVERAGE:**
            - Address the topic from multiple angles identified in documents
            - Include both foundational and advanced concepts appropriately
            - Provide practical examples and real-world applications
            - Reference credible sources and expert insights
            - Balance theory with actionable advice
 
-        6. **MAINTAINS ENGAGEMENT:**
+        7. **MAINTAINS ENGAGEMENT:**
            - Use the creator's proven engagement techniques
            - Include questions, interactions, and retention hooks
            - Apply storytelling methods that resonate
@@ -916,14 +920,24 @@ class EnhancedScriptGenerator:
             logger.error(f"Error analyzing documents: {str(e)}")
             return f"Error analyzing documents: {str(e)}"
     
-    def generate_enhanced_script(self, style_profile, inspiration_summary, document_insights, user_prompt):
+    def generate_enhanced_script(self, style_profile, inspiration_summary, document_insights, user_prompt, target_minutes=None):
         """Generate script with all available knowledge sources"""
+        
+        # Handle duration instructions
+        if target_minutes:
+            target_duration = f"Approximately {target_minutes} minutes"
+            duration_instruction = f"Structure the script to fit approximately {target_minutes} minutes of video content (roughly {target_minutes * 150} words, assuming 150 words per minute speaking pace). Adjust content density and pacing accordingly."
+        else:
+            target_duration = "No specific duration requirement"
+            duration_instruction = "Create a comprehensive script with appropriate length for the topic, typically 8-12 minutes for in-depth content."
         
         enhanced_prompt = self.enhanced_script_template.format(
             style_profile=style_profile,
             inspiration_summary=inspiration_summary,
             document_insights=document_insights,
-            user_prompt=user_prompt
+            user_prompt=user_prompt,
+            target_duration=target_duration,
+            duration_instruction=duration_instruction
         )
         
         try:

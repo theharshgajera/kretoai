@@ -2511,22 +2511,21 @@ def format_number(num):
 
 @app.route('/api/generate-complete-script', methods=['POST'])
 def generate_complete_script():
-    """Enhanced all-in-one endpoint: upload documents, process videos (YouTube + local), analyze, and generate script"""
-    user_id = request.remote_addr  # Use IP as user_id since no session
+    """Enhanced all-in-one endpoint: ALL inputs optional - upload documents, process videos (YouTube + local), analyze, and generate script"""
+    user_id = request.remote_addr
     
     try:
         # Handle both JSON and multipart form data
         if request.content_type and 'multipart/form-data' in request.content_type:
-            # Extract form data
             data = {
                 'personal_videos': request.form.getlist('personal_videos[]'),
                 'inspiration_videos': request.form.getlist('inspiration_videos[]'),
-                'prompt': request.form.get('prompt', '').strip()
+                'prompt': request.form.get('prompt', '').strip(),
+                'minutes': request.form.get('minutes', type=int)  # NEW: video duration target
             }
             documents = request.files.getlist('documents[]')
             video_files = request.files.getlist('video_files[]')
         else:
-            # JSON data
             data = request.json or {}
             documents = []
             video_files = []
@@ -2534,9 +2533,11 @@ def generate_complete_script():
         personal_videos = data.get('personal_videos', [])
         inspiration_videos = data.get('inspiration_videos', [])
         prompt = data.get('prompt', '').strip()
+        target_minutes = data.get('minutes')  # NEW: optional duration target
         
+        # CHANGED: Prompt now optional - will generate generic script if missing
         if not prompt:
-            return jsonify({'error': 'Prompt is required'}), 400
+            prompt = "Create an engaging, informative YouTube video script on a topic of general interest."
         
         # Initialize results
         processed_documents = []
@@ -2544,7 +2545,7 @@ def generate_complete_script():
         processed_inspiration = []
         errors = []
         
-        # Process documents if uploaded
+        # Process documents if uploaded (OPTIONAL)
         if documents:
             logger.info(f"Processing {len(documents)} documents...")
             for file in documents:
@@ -2556,7 +2557,6 @@ def generate_complete_script():
                         
                         result = document_processor.process_document(file_path, filename)
                         
-                        # Clean up temp file
                         try:
                             os.remove(file_path)
                         except:
@@ -2573,7 +2573,7 @@ def generate_complete_script():
                     except Exception as e:
                         errors.append(f"Document {file.filename}: {str(e)}")
         
-        # Process uploaded video files
+        # Process uploaded video files (OPTIONAL)
         if video_files:
             logger.info(f"Processing {len(video_files)} uploaded video files...")
             for video_file in video_files:
@@ -2585,7 +2585,6 @@ def generate_complete_script():
                         
                         result = video_processor.process_video_content(video_path, 'local')
                         
-                        # Clean up temp file
                         try:
                             os.remove(video_path)
                         except:
@@ -2603,7 +2602,7 @@ def generate_complete_script():
                     except Exception as e:
                         errors.append(f"Video {video_file.filename}: {str(e)}")
         
-        # Process personal YouTube videos
+        # Process personal YouTube videos (OPTIONAL)
         if personal_videos:
             logger.info(f"Processing {len(personal_videos)} personal videos...")
             for url in personal_videos:
@@ -2620,7 +2619,7 @@ def generate_complete_script():
                             'type': 'youtube'
                         })
         
-        # Process inspiration YouTube videos
+        # Process inspiration YouTube videos (OPTIONAL)
         if inspiration_videos:
             logger.info(f"Processing {len(inspiration_videos)} inspiration videos...")
             for url in inspiration_videos:
@@ -2637,15 +2636,11 @@ def generate_complete_script():
                             'type': 'youtube'
                         })
         
-        # Check if we have any content
-        if not processed_documents and not processed_personal and not processed_inspiration:
-            return jsonify({'error': 'No valid content provided for analysis'}), 400
-        
-        # Analyze content
+        # CHANGED: No error if no content - will use defaults
         logger.info("Analyzing all content...")
         
-        # Style analysis
-        style_profile = "Professional, engaging YouTube style with clear explanations and good pacing."
+        # Style analysis (use default if no personal videos)
+        style_profile = "Professional, engaging YouTube style with clear explanations, good pacing, and viewer-friendly language."
         if processed_personal:
             personal_transcripts = [v['transcript'] for v in processed_personal]
             try:
@@ -2654,8 +2649,8 @@ def generate_complete_script():
                 logger.error(f"Style analysis error: {str(e)}")
                 errors.append(f"Style analysis failed: {str(e)}")
         
-        # Inspiration analysis
-        inspiration_summary = "Creating original content based on user request and best practices."
+        # Inspiration analysis (use default if no inspiration)
+        inspiration_summary = "Creating original, engaging content based on best YouTube practices and viewer engagement strategies."
         if processed_inspiration:
             inspiration_transcripts = [v['transcript'] for v in processed_inspiration]
             try:
@@ -2664,8 +2659,8 @@ def generate_complete_script():
                 logger.error(f"Inspiration analysis error: {str(e)}")
                 errors.append(f"Inspiration analysis failed: {str(e)}")
         
-        # Document analysis
-        document_insights = "No document knowledge provided. Using general expertise and research."
+        # Document analysis (use default if no documents)
+        document_insights = "Using general knowledge and industry best practices to create informative content."
         if processed_documents:
             document_texts = [d['text'] for d in processed_documents]
             try:
@@ -2673,6 +2668,10 @@ def generate_complete_script():
             except Exception as e:
                 logger.error(f"Document analysis error: {str(e)}")
                 errors.append(f"Document analysis failed: {str(e)}")
+        
+        # NEW: Add duration context to prompt if specified
+        if target_minutes:
+            prompt = f"{prompt}\n\n[Target video duration: approximately {target_minutes} minutes]"
         
         # Generate script
         logger.info("Generating final script...")
@@ -2695,6 +2694,7 @@ def generate_complete_script():
             'topic_insights': inspiration_summary,
             'document_insights': document_insights,
             'original_prompt': prompt,
+            'target_minutes': target_minutes,  # NEW: store duration
             'timestamp': datetime.now().isoformat()
         }
         
@@ -2712,7 +2712,8 @@ def generate_complete_script():
             'documents': len(processed_documents),
             'total_sources': len(processed_personal) + len(processed_inspiration) + len(processed_documents),
             'errors_count': len(errors),
-            'video_files_processed': len([v for v in processed_inspiration if v.get('type') == 'local_video'])
+            'video_files_processed': len([v for v in processed_inspiration if v.get('type') == 'local_video']),
+            'target_duration': target_minutes  # NEW: include in stats
         }
         
         logger.info("Complete script generation finished successfully")
@@ -2729,7 +2730,15 @@ def generate_complete_script():
                 'video_files': len([v for v in processed_inspiration if v.get('type') == 'local_video'])
             },
             'errors': errors if errors else None,
-            'analysis_quality': 'premium' if (processed_personal and processed_inspiration and processed_documents) else 'optimal' if any([processed_personal, processed_inspiration, processed_documents]) else 'basic'
+            'analysis_quality': 'premium' if (processed_personal and processed_inspiration and processed_documents) else 'optimal' if any([processed_personal, processed_inspiration, processed_documents]) else 'basic',
+            'inputs_provided': {  # NEW: show what was provided
+                'prompt': bool(data.get('prompt')),
+                'personal_videos': len(personal_videos),
+                'inspiration_videos': len(inspiration_videos),
+                'documents': len(documents),
+                'video_files': len(video_files),
+                'duration_specified': target_minutes is not None
+            }
         })
         
     except Exception as e:

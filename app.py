@@ -2509,8 +2509,8 @@ def format_number(num):
     
 # app.py
 
-@app.route('/api/generate-complete-script', methods=['POST'])
-def generate_complete_script():
+@app.route('/api/script_generation', methods=['POST'])
+def script_generation():
     """Enhanced all-in-one endpoint: ALL inputs optional - upload documents, process videos (YouTube + local), analyze, and generate script"""
     user_id = request.remote_addr
     

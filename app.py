@@ -6,6 +6,15 @@ from sklearn import logger
 import logging
 from isodate import parse_duration
 from datetime import datetime
+from script import (
+    DocumentProcessor, 
+    VideoProcessor, 
+    EnhancedScriptGenerator,
+    user_data,  # Import the user_data from script.py
+    UPLOAD_FOLDER,
+    ALLOWED_EXTENSIONS,
+    MAX_CONTENT_LENGTH
+)
 from uuid import uuid4
 import json
 from youtube_api import get_viral_thumbnails
@@ -1647,6 +1656,150 @@ def video_outliers():
         app.logger.error(f"Video outliers error: {str(e)}")
         return jsonify({"error": str(e)}), 500
 
+@app.route("/api/shorts_videos", methods=["POST"])
+def shorts_videos():
+    try:
+        data = request.get_json()
+        channel_ids = data.get("channel_ids", [])
+        if not channel_ids:
+            return jsonify({"error": "Channel IDs list is required"}), 400
+
+        youtube = googleapiclient.discovery.build("youtube", "v3", developerKey=YOUTUBE_API_KEY)
+
+        channel_videos = []
+
+        for ch_id in channel_ids:
+            # Fetch channel info
+            ch_resp = youtube.channels().list(
+                part="snippet,statistics",
+                id=ch_id
+            ).execute()
+
+            if not ch_resp.get("items"):
+                continue
+
+            ch_info = ch_resp["items"][0]
+            ch_title = ch_info["snippet"]["title"]
+            subs_count = int(ch_info["statistics"].get("subscriberCount", 1))
+
+            # Fetch Shorts only (under 60s)
+            search_resp = youtube.search().list(
+                part="snippet",
+                channelId=ch_id,
+                type="video",
+                order="date",
+                videoDuration="short",
+                maxResults=50
+            ).execute()
+
+            video_ids = [item["id"]["videoId"] for item in search_resp.get("items", [])]
+            if not video_ids:
+                continue
+
+            comp_videos = fetch_video_details(youtube, video_ids)
+            if not comp_videos:
+                continue
+
+            avg_recent_views = sum(
+                int(v["statistics"].get("viewCount", 0)) for v in comp_videos
+            ) / len(comp_videos)
+
+            # Top 10 popular Shorts
+            popular_videos = sorted(
+                comp_videos,
+                key=lambda x: int(x["statistics"].get("viewCount", 0)),
+                reverse=True
+            )[:10]
+
+            # Trending Shorts: top 10 above average
+            trending_videos = []
+            for v in comp_videos[:20]:  # look at first 20 recent videos
+                views = int(v["statistics"].get("viewCount", 0))
+                if avg_recent_views > 0 and (views / avg_recent_views) > 1:
+                    trending_videos.append(v)
+                if len(trending_videos) >= 10:
+                    break
+
+            def format_video(v):
+                duration_str = v.get("contentDetails", {}).get("duration", "")
+                duration = parse_duration(duration_str)
+                views = int(v["statistics"].get("viewCount", 0))
+                multiplier = round(views / avg_recent_views, 2) if avg_recent_views > 0 else 0
+
+                snippet = v.get("snippet", {}) or {}
+                language = snippet.get("defaultAudioLanguage") or snippet.get("defaultLanguage") or snippet.get("language") or None
+
+                published_at = snippet.get("publishedAt")
+                published_date_friendly = None
+                if published_at:
+                    try:
+                        if published_at.endswith("Z"):
+                            try:
+                                dt = datetime.strptime(published_at, "%Y-%m-%dT%H:%M:%SZ")
+                            except ValueError:
+                                dt = datetime.strptime(published_at, "%Y-%m-%dT%H:%M:%S.%fZ")
+                        else:
+                            dt = datetime.fromisoformat(published_at)
+                        published_date_friendly = dt.strftime("%Y-%m-%d")
+                    except Exception:
+                        published_date_friendly = published_at
+
+                return {
+                    "video_id": v["id"],
+                    "title": snippet.get("title"),
+                    "channel_id": ch_id,
+                    "channel_title": ch_title,
+                    "subscriber_count": subs_count,
+                    "views": views,
+                    "views_formatted": format_number(views),
+                    "duration_seconds": duration,
+                    "multiplier": multiplier,
+                    "avg_recent_views": round(avg_recent_views, 2),
+                    "channel_avg_views_formatted": format_number(round(avg_recent_views, 0)),
+                    "thumbnail_url": snippet.get("thumbnails", {}).get("high", {}).get("url"),
+                    "url": f"https://www.youtube.com/watch?v={v['id']}",
+                    "language": language,
+                    "published_date": published_at,
+                    "published_date_friendly": published_date_friendly
+                }
+
+            channel_data = {
+                "channel_id": ch_id,
+                "channel_title": ch_title,
+                "subscriber_count": subs_count,
+                "avg_recent_views": round(avg_recent_views, 2),
+                "avg_recent_views_formatted": format_number(round(avg_recent_views, 0)),
+                "trending": [format_video(v) for v in trending_videos],
+                "popular": [format_video(v) for v in popular_videos]
+            }
+
+            channel_videos.append(channel_data)
+
+        # Interleave trending/popular Shorts across channels
+        all_videos = []
+        max_videos_per_type = 10  # now 10
+
+        for i in range(max_videos_per_type):
+            for j, channel in enumerate(channel_videos):
+                if j % 2 == 0 and i < len(channel["trending"]):
+                    all_videos.append(channel["trending"][i])
+                elif j % 2 == 1 and i < len(channel["popular"]):
+                    all_videos.append(channel["popular"][i])
+                if len(all_videos) >= 200:
+                    break
+            if len(all_videos) >= 200:
+                break
+
+        return jsonify({
+            "success": True,
+            "total_videos": len(all_videos),
+            "videos": all_videos[:200]
+        })
+
+    except Exception as e:
+        app.logger.error(f"Shorts outliers error: {str(e)}")
+        return jsonify({"error": str(e)}), 500
+
 
 @app.route("/api/comp_analysis", methods=["POST"])
 def comp_analysis():
@@ -2519,10 +2672,11 @@ def format_number(num):
     else:
         return str(num)
     
-# app.
-@app.route('/api/generate-complete-script', methods=['POST'])
-def generate_complete_script():
-    """Enhanced all-in-one endpoint with proper video file handling"""
+# app.py
+
+@app.route('/api/script_generation', methods=['POST'])
+def script_generation():
+    """Enhanced all-in-one endpoint: ALL inputs optional - upload documents, process videos (YouTube + local), analyze, and generate script"""
     user_id = request.remote_addr
     print(f"\n{'='*60}")
     print(f"Starting complete script generation for user: {user_id}")
@@ -2725,13 +2879,20 @@ def generate_complete_script():
                         errors.append(error_msg)
                         print(f"  ❌ ERROR: {result['error']}")
                     else:
+                        # >>> ADD THESE LINES STARTING HERE <<<
+                        print("\n\n" + "="*40)
+                        print(f"EXTRACTED TRANSCRIPT FOR PERSONAL VIDEO: {url}")
+                        print("="*40)
+                        print(result['transcript'])
+                        print("="*40 + "\n\n")
+                        # >>> END OF ADDED LINES <<<
+
                         processed_personal.append({
                             'url': url,
                             'transcript': result['transcript'],
                             'stats': result['stats'],
                             'type': 'youtube'
                         })
-                        print(f"  ✓ Success: {len(result['transcript'])} characters")
         
         # ========================================
         # PROCESS INSPIRATION YOUTUBE VIDEOS
@@ -2994,353 +3155,9 @@ def health_check():
     return jsonify({
         'status': 'healthy',
         'timestamp': datetime.now().isoformat(),
-        'version': '2.0-simplified',
-        'upload_folder': UPLOAD_FOLDER,
-        'upload_folder_exists': os.path.exists(UPLOAD_FOLDER)
+        'version': '2.0-simplified'
     })
 
-
-# @app.route('/api/script_generation', methods=['POST'])
-# def generate_complete_script():
-#     """Enhanced all-in-one endpoint: ALL inputs optional - upload documents, process videos (YouTube + local), analyze, and generate script"""
-#     user_id = request.remote_addr
-    
-#     try:
-#         # Handle both JSON and multipart form data
-#         if request.content_type and 'multipart/form-data' in request.content_type:
-#             data = {
-#                 'personal_videos': request.form.getlist('personal_videos[]'),
-#                 'inspiration_videos': request.form.getlist('inspiration_videos[]'),
-#                 'prompt': request.form.get('prompt', '').strip(),
-#                 'minutes': request.form.get('minutes', type=int)  # NEW: video duration target
-#             }
-#             documents = request.files.getlist('documents[]')
-#             video_files = request.files.getlist('video_files[]')
-#         else:
-#             data = request.json or {}
-#             documents = []
-#             video_files = []
-        
-#         personal_videos = data.get('personal_videos', [])
-#         inspiration_videos = data.get('inspiration_videos', [])
-#         prompt = data.get('prompt', '').strip()
-#         target_minutes = data.get('minutes')  # NEW: optional duration target
-        
-#         # CHANGED: Prompt now optional - will generate generic script if missing
-#         if not prompt:
-#             prompt = "Create an engaging, informative YouTube video script on a topic of general interest."
-        
-#         # Initialize results
-#         processed_documents = []
-#         processed_personal = []
-#         processed_inspiration = []
-#         errors = []
-        
-#         # Process documents if uploaded (OPTIONAL)
-#         if documents:
-#             logger.info(f"Processing {len(documents)} documents...")
-#             for file in documents:
-#                 if file.filename and document_processor.allowed_file(file.filename):
-#                     try:
-#                         filename = secure_filename(file.filename)
-#                         file_path = os.path.join(app.config['UPLOAD_FOLDER'], f"temp_{user_id.replace('.', '_')}_{filename}")
-#                         file.save(file_path)
-                        
-#                         result = document_processor.process_document(file_path, filename)
-                        
-#                         try:
-#                             os.remove(file_path)
-#                         except:
-#                             pass
-                        
-#                         if result['error']:
-#                             errors.append(f"Document {filename}: {result['error']}")
-#                         else:
-#                             processed_documents.append({
-#                                 'filename': filename,
-#                                 'text': result['text'],
-#                                 'stats': result['stats']
-#                             })
-#                     except Exception as e:
-#                         errors.append(f"Document {file.filename}: {str(e)}")
-        
-#         # Process uploaded video files (OPTIONAL)
-#         if video_files:
-#             logger.info(f"Processing {len(video_files)} uploaded video files...")
-#             for video_file in video_files:
-#                 if video_file.filename and video_processor.is_supported_video_format(video_file.filename):
-#                     try:
-#                         filename = secure_filename(video_file.filename)
-#                         video_path = os.path.join(app.config['UPLOAD_FOLDER'], f"temp_video_{user_id.replace('.', '_')}_{filename}")
-#                         video_file.save(video_path)
-                        
-#                         result = video_processor.process_video_content(video_path, 'local')
-                        
-#                         try:
-#                             os.remove(video_path)
-#                         except:
-#                             pass
-                        
-#                         if result['error']:
-#                             errors.append(f"Video {filename}: {result['error']}")
-#                         else:
-#                             processed_inspiration.append({
-#                                 'source': filename,
-#                                 'transcript': result['transcript'],
-#                                 'stats': result['stats'],
-#                                 'type': 'local_video'
-#                             })
-#                     except Exception as e:
-#                         errors.append(f"Video {video_file.filename}: {str(e)}")
-        
-#         # Process personal YouTube videos (OPTIONAL)
-#         if personal_videos:
-#             logger.info(f"Processing {len(personal_videos)} personal videos...")
-#             for url in personal_videos:
-#                 if url and video_processor.validate_youtube_url(url):
-#                     result = video_processor.process_video_content(url, 'youtube')
-                    
-#                     if result['error']:
-#                         errors.append(f"Personal video {url}: {result['error']}")
-#                     else:
-#                         # >>> ADD THESE LINES STARTING HERE <<<
-#                         print("\n\n" + "="*40)
-#                         print(f"EXTRACTED TRANSCRIPT FOR PERSONAL VIDEO: {url}")
-#                         print("="*40)
-#                         print(result['transcript'])
-#                         print("="*40 + "\n\n")
-#                         # >>> END OF ADDED LINES <<<
-
-#                         processed_personal.append({
-#                             'url': url,
-#                             'transcript': result['transcript'],
-#                             'stats': result['stats'],
-#                             'type': 'youtube'
-#                         })
-
-        
-#         # Process inspiration YouTube videos (OPTIONAL)
-#         if inspiration_videos:
-#             logger.info(f"Processing {len(inspiration_videos)} inspiration videos...")
-#             for url in inspiration_videos:
-#                 if url and video_processor.validate_youtube_url(url):
-#                     result = video_processor.process_video_content(url, 'youtube')
-                    
-#                     if result['error']:
-#                         errors.append(f"Inspiration video {url}: {result['error']}")
-#                     else:
-#                         processed_inspiration.append({
-#                             'url': url,
-#                             'transcript': result['transcript'],
-#                             'stats': result['stats'],
-#                             'type': 'youtube'
-#                         })
-        
-#         # CHANGED: No error if no content - will use defaults
-#         logger.info("Analyzing all content...")
-        
-#         # Style analysis (use default if no personal videos)
-#         style_profile = "Professional, engaging YouTube style with clear explanations, good pacing, and viewer-friendly language."
-#         if processed_personal:
-#             personal_transcripts = [v['transcript'] for v in processed_personal]
-#             try:
-#                 style_profile = script_generator.analyze_creator_style(personal_transcripts)
-#             except Exception as e:
-#                 logger.error(f"Style analysis error: {str(e)}")
-#                 errors.append(f"Style analysis failed: {str(e)}")
-        
-#         # Inspiration analysis (use default if no inspiration)
-#         inspiration_summary = "Creating original, engaging content based on best YouTube practices and viewer engagement strategies."
-#         if processed_inspiration:
-#             inspiration_transcripts = [v['transcript'] for v in processed_inspiration]
-#             try:
-#                 inspiration_summary = script_generator.analyze_inspiration_content(inspiration_transcripts)
-#             except Exception as e:
-#                 logger.error(f"Inspiration analysis error: {str(e)}")
-#                 errors.append(f"Inspiration analysis failed: {str(e)}")
-        
-#         # Document analysis (use default if no documents)
-#         document_insights = "Using general knowledge and industry best practices to create informative content."
-#         if processed_documents:
-#             document_texts = [d['text'] for d in processed_documents]
-#             try:
-#                 document_insights = script_generator.analyze_documents(document_texts)
-#             except Exception as e:
-#                 logger.error(f"Document analysis error: {str(e)}")
-#                 errors.append(f"Document analysis failed: {str(e)}")
-        
-#         # NEW: Add duration context to prompt if specified
-#         if target_minutes:
-#             prompt = f"{prompt}\n\n[Target video duration: approximately {target_minutes} minutes]"
-        
-#         # Generate script
-#         logger.info("Generating final script...")
-#         try:
-#             script = script_generator.generate_enhanced_script(
-#                 style_profile,
-#                 inspiration_summary,
-#                 document_insights,
-#                 prompt
-#             )
-#         except Exception as e:
-#             logger.error(f"Script generation error: {str(e)}")
-#             return jsonify({'error': f'Script generation failed: {str(e)}'}), 500
-        
-#         # Store current script for chat modifications
-#         chat_session_id = str(uuid.uuid4())
-#         user_data[user_id]['current_script'] = {
-#             'content': script,
-#             'style_profile': style_profile,
-#             'topic_insights': inspiration_summary,
-#             'document_insights': document_insights,
-#             'original_prompt': prompt,
-#             'target_minutes': target_minutes,  # NEW: store duration
-#             'timestamp': datetime.now().isoformat()
-#         }
-        
-#         # Initialize chat session
-#         user_data[user_id]['chat_sessions'][chat_session_id] = {
-#             'messages': [],
-#             'script_versions': [script],
-#             'created_at': datetime.now().isoformat()
-#         }
-        
-#         # Calculate stats
-#         stats = {
-#             'personal_videos': len(processed_personal),
-#             'inspiration_videos': len(processed_inspiration),
-#             'documents': len(processed_documents),
-#             'total_sources': len(processed_personal) + len(processed_inspiration) + len(processed_documents),
-#             'errors_count': len(errors),
-#             'video_files_processed': len([v for v in processed_inspiration if v.get('type') == 'local_video']),
-#             'target_duration': target_minutes  # NEW: include in stats
-#         }
-        
-#         logger.info("Complete script generation finished successfully")
-        
-#         return jsonify({
-#             'success': True,
-#             'script': script,
-#             'chat_session_id': chat_session_id,
-#             'stats': stats,
-#             'processed_content': {
-#                 'personal_videos': len(processed_personal),
-#                 'inspiration_videos': len(processed_inspiration),
-#                 'documents': len(processed_documents),
-#                 'video_files': len([v for v in processed_inspiration if v.get('type') == 'local_video'])
-#             },
-#             'errors': errors if errors else None,
-#             'analysis_quality': 'premium' if (processed_personal and processed_inspiration and processed_documents) else 'optimal' if any([processed_personal, processed_inspiration, processed_documents]) else 'basic',
-#             'inputs_provided': {  # NEW: show what was provided
-#                 'prompt': bool(data.get('prompt')),
-#                 'personal_videos': len(personal_videos),
-#                 'inspiration_videos': len(inspiration_videos),
-#                 'documents': len(documents),
-#                 'video_files': len(video_files),
-#                 'duration_specified': target_minutes is not None
-#             }
-#         })
-        
-#     except Exception as e:
-#         logger.error(f"Complete script generation error: {str(e)}")
-#         return jsonify({'error': f'Complete script generation failed: {str(e)}'}), 500
-
-# @app.route('/api/chat-modify-script', methods=['POST'])
-# def chat_modify_script():
-#     """Enhanced chat modification with document context"""
-#     user_id = request.remote_addr  # Use IP as user_id
-    
-#     data = request.json
-#     user_message = data.get('message', '').strip()
-#     chat_session_id = data.get('chat_session_id')
-    
-#     if not user_message:
-#         return jsonify({'error': 'Please provide a modification request'}), 400
-    
-#     current_script_data = user_data[user_id].get('current_script')
-#     if not current_script_data:
-#         return jsonify({'error': 'No active script to modify'}), 400
-    
-#     try:
-#         logger.info(f"Processing chat modification: {user_message[:50]}...")
-        
-#         # Get current script and full context
-#         current_script = current_script_data['content']
-#         style_profile = current_script_data['style_profile']
-#         topic_insights = current_script_data['topic_insights']
-#         document_insights = current_script_data.get('document_insights', '')
-        
-#         # Generate modification with full context
-#         modification_response = script_generator.modify_script_chat(
-#             current_script,
-#             style_profile,
-#             topic_insights,
-#             document_insights,
-#             user_message
-#         )
-        
-#         # Update chat session
-#         if chat_session_id and chat_session_id in user_data[user_id]['chat_sessions']:
-#             chat_session = user_data[user_id]['chat_sessions'][chat_session_id]
-#             chat_session['messages'].append({
-#                 'user_message': user_message,
-#                 'ai_response': modification_response,
-#                 'timestamp': datetime.now().isoformat()
-#             })
-        
-#         logger.info("Script modification completed successfully")
-        
-#         return jsonify({
-#             'success': True,
-#             'response': modification_response,
-#             'user_message': user_message,
-#             'timestamp': datetime.now().isoformat()
-#         })
-        
-#     except Exception as e:
-#         logger.error(f"Error modifying script via chat: {str(e)}")
-#         return jsonify({'error': f'Error modifying script: {str(e)}'}), 500
-
-# @app.route('/api/update-script', methods=['POST'])
-# def update_script():
-#     """Update the current working script"""
-#     user_id = request.remote_addr  # Use IP as user_id
-    
-#     data = request.json
-#     new_script = data.get('script', '').strip()
-#     chat_session_id = data.get('chat_session_id')
-    
-#     if not new_script:
-#         return jsonify({'error': 'Script content is required'}), 400
-    
-#     try:
-#         # Update current script
-#         if user_data[user_id].get('current_script'):
-#             user_data[user_id]['current_script']['content'] = new_script
-#             user_data[user_id]['current_script']['timestamp'] = datetime.now().isoformat()
-        
-#         # Add to chat session history
-#         if chat_session_id and chat_session_id in user_data[user_id]['chat_sessions']:
-#             chat_session = user_data[user_id]['chat_sessions'][chat_session_id]
-#             chat_session['script_versions'].append(new_script)
-        
-#         return jsonify({
-#             'success': True,
-#             'message': 'Script updated successfully'
-#         })
-        
-#     except Exception as e:
-#         logger.error(f"Error updating script: {str(e)}")
-#         return jsonify({'error': f'Error updating script: {str(e)}'}), 500
-
-# @app.route('/health', methods=['GET'])
-# def health_check():
-#     """Health check endpoint"""
-#     return jsonify({
-#         'status': 'healthy',
-#         'timestamp': datetime.now().isoformat(),
-#         'version': '2.0-simplified-ytdlp'
-#     })
 
 @app.route('/api/similar_videos', methods=['POST'])
 def similar_videos():

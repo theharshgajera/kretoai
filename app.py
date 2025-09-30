@@ -3007,6 +3007,57 @@ def format_number(num):
 #         'version': '2.0-simplified'
 #     })
 
+BYTEPLUS_API_KEY = os.getenv("BYTEPLUS_API_KEY")
+
+@app.route("/api/thumbnail_generation", methods=["POST"])
+def thumbnail_generation():
+    try:
+        data = request.get_json()
+
+        # Inputs (all optional)
+        face_images = data.get("face_images", [])  # now supports multiple faces
+        reference_images = data.get("reference_images", [])
+        prompt = data.get("prompt", "Generate a professional YouTube thumbnail with given references")
+        size = data.get("size", "2K")
+        model = data.get("model", "seedream-4-0-250828")
+
+        if not face_images and not reference_images:
+            return jsonify({"error": "At least one face image or reference image is required"}), 400
+
+        # Combine all images into a single list
+        all_images = face_images + reference_images
+
+        payload = {
+            "model": model,
+            "prompt": prompt,
+            "image": all_images,
+            "sequential_image_generation": "disabled",
+            "response_format": "url",
+            "size": size,
+            "stream": False,
+            "watermark": False
+        }
+
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {BYTEPLUS_API_KEY}"
+        }
+
+        resp = requests.post(
+            "https://ark.ap-southeast.bytepluses.com/api/v3/images/generations",
+            headers=headers,
+            json=payload,
+            timeout=60
+        )
+
+        if resp.status_code != 200:
+            return jsonify({"error": f"BytePlus API failed: {resp.text}"}), 500
+
+        result = resp.json()
+        return jsonify(result)
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 @app.route('/api/script_generation', methods=['POST'])
 def generate_complete_script():
     """Enhanced all-in-one endpoint: ALL inputs optional - upload documents, process videos (YouTube + local), analyze, and generate script"""

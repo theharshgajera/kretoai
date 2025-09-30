@@ -13,5 +13,5 @@ isodate
 youtube-transcript-api
 PyPDF2
 python-docx
-pymupdf
-yt-dlp
+moviepy==1.0.3
+SpeechRecognition

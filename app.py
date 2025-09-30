@@ -3009,27 +3009,92 @@ def format_number(num):
 
 BYTEPLUS_API_KEY = os.getenv("BYTEPLUS_API_KEY")
 
+THUMBNAIL_CONTEXT = """
+Thumbnails are video “movie posters” — decide CTR in 0.5 seconds. They grab attention, communicate topic, trigger emotion/curiosity, and increase clicks.
+
+Core Functions:
+- Stop scroll, tell story, trigger emotion.
+- CTR benchmarks: 2–4% weak, 4–6% avg, 6–8% strong, 8%+ viral.
+
+Thumbnail Types:
+- Face+Emotion (surprise>happy>calm, avoid anger/fear/sad), Face+Text, Object/Product, Before/After, Tutorial, Podcast/Interview, List/Comparison, Minimal curiosity, Story, Challenge, Reaction, Cinematic/Vlog.
+
+3-Part Structure:
+1. Hero (face/object, largest, expressive)
+2. Supporting Scene (context, product, background, icons)
+3. Text (1–4 bold words, power/curiosity/urgency words)
+
+Design Rules:
+- Visual hierarchy: Hero → Text → Background
+- Zoom hero, blur/darken background
+- High contrast colors: red=urgency, yellow=happy, blue=trust, green=growth, orange=energy, purple=luxury, black=power, white=clean
+- Use complementary contrast
+- Fonts: bold sans-serif, add drop shadow/stroke
+- Text top-left/top-center, avoid bottom-right
+
+Curiosity Triggers:
+- Moment, Story, Result, Transformation, Novelty
+
+Scroll Stoppers:
+- Faces with strong emotions, gestures, big numbers, arrows/circles/question marks
+
+Branding:
+- 1–2 fonts, 2–3 colors, layout framework
+- Logos small, never bottom-right
+- Prioritize curiosity & clarity
+
+Workflow:
+1. Understand script/title → emotional core
+2. Research competitors → note patterns
+3. Choose one strong visual concept
+4. Layout: Hero, Supporting, Text
+5. Enhance: glow, blur, overlay, arrows
+6. Export: 1280×720, JPG/PNG <2MB, test small-screen readability
+
+Analytics & Iteration:
+- Monitor CTR, impressions, views
+- A/B test one change at a time
+- Iterate until CTR improves
+"""
+
 @app.route("/api/thumbnail_generation", methods=["POST"])
 def thumbnail_generation():
     try:
         data = request.get_json()
 
-        # Inputs (all optional)
-        face_images = data.get("face_images", [])  # now supports multiple faces
+        face_images = data.get("face_images", [])
         reference_images = data.get("reference_images", [])
-        prompt = data.get("prompt", "Generate a professional YouTube thumbnail with given references")
+        user_prompt = data.get("prompt", "Generate a YouTube thumbnail")
         size = data.get("size", "2K")
         model = data.get("model", "seedream-4-0-250828")
 
-        if not face_images and not reference_images:
-            return jsonify({"error": "At least one face image or reference image is required"}), 400
+        if not face_images and not reference_images and not user_prompt:
+            return jsonify({"error": "At least one input (prompt, face_images, or reference_images) is required"}), 400
 
-        # Combine all images into a single list
+        # Step 1: Build base prompt for Gemini
+        gemini_base_prompt = f"""
+You are a YouTube thumbnail design assistant. Use the following user idea to generate a detailed creative thumbnail prompt that can be passed to an image model (Seedream 4.0). 
+Follow all best practices for YouTube CTR, curiosity, hero element, supporting scene, text, color psychology, scroll-stopping visuals, and branding.
+
+User prompt: "{user_prompt}"
+Reference images: {reference_images if reference_images else 'None'}
+Number of faces: {len(face_images)}
+
+{THUMBNAIL_CONTEXT}
+
+Respond in plain English, concise but complete, no formatting.
+"""
+
+        # Step 2: Generate refined prompt via Gemini
+        gemini_client = genai.GenerativeModel("gemini-2.0-flash")
+        gemini_resp = gemini_client.generate_content(gemini_base_prompt)
+        refined_prompt = gemini_resp.text.strip()
+
+        # Step 3: Prepare Seedream API call
         all_images = face_images + reference_images
-
         payload = {
             "model": model,
-            "prompt": prompt,
+            "prompt": refined_prompt,
             "image": all_images,
             "sequential_image_generation": "disabled",
             "response_format": "url",
@@ -3054,6 +3119,7 @@ def thumbnail_generation():
             return jsonify({"error": f"BytePlus API failed: {resp.text}"}), 500
 
         result = resp.json()
+        result["refined_prompt"] = refined_prompt  # include Gemini’s output for transparency
         return jsonify(result)
 
     except Exception as e:

@@ -2520,8 +2520,8 @@ def format_number(num):
         return str(num)
     
 # app.
-@app.route('/api/generate-complete-script', methods=['POST'])
-def generate_complete_script():
+@app.route('/api/script_generation', methods=['POST'])
+def script_generation():
     """Enhanced all-in-one endpoint with proper video file handling"""
     user_id = request.remote_addr
     print(f"\n{'='*60}")

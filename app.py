@@ -3584,6 +3584,122 @@ def generate_script_api():
     except Exception as e:
         app.logger.error(f"Generate script error: {str(e)}")
         return jsonify({'success': False, 'error': f'An error occurred: {str(e)}'}), 500
+@app.route("/api/youtube_search", methods=["POST"])
+def youtube_search():
+    try:
+        data = request.get_json()
+        query = data.get("q", "").strip()
+        max_results = 50  # fixed at 50 results
+
+        if not query:
+            return jsonify({"error": "Search query (q) is required"}), 400
+
+        youtube = googleapiclient.discovery.build("youtube", "v3", developerKey=YOUTUBE_API_KEY)
+
+        # 1. Perform search
+        search_resp = youtube.search().list(
+            part="snippet",
+            q=query,
+            type="video",
+            maxResults=max_results
+        ).execute()
+
+        shorts = []
+        videos = []
+
+        for item in search_resp.get("items", []):
+            video_id = item["id"]["videoId"]
+            channel_id = item["snippet"]["channelId"]
+
+            # Fetch video details
+            video_resp = youtube.videos().list(
+                part="snippet,contentDetails,statistics",
+                id=video_id
+            ).execute()
+
+            if not video_resp.get("items"):
+                continue
+
+            v = video_resp["items"][0]
+            stats = v.get("statistics", {})
+            content = v.get("contentDetails", {})
+            snippet = v.get("snippet", {})
+
+            # Duration parsing
+            duration_seconds = parse_duration(content.get("duration", ""))
+
+            # Channel details
+            channel_resp = youtube.channels().list(
+                part="statistics,snippet,contentDetails",
+                id=channel_id
+            ).execute()
+
+            if not channel_resp.get("items"):
+                continue
+
+            ch = channel_resp["items"][0]
+            channel_data = {
+                "subscriber_count": int(ch["statistics"].get("subscriberCount", 0)),
+                "title": ch["snippet"].get("title", "")
+            }
+
+            views = int(stats.get("viewCount", 0))
+            likes = int(stats.get("likeCount", 0))
+            comments = int(stats.get("commentCount", 0))
+
+            # Compute average channel views
+            uploads_playlist = ch["contentDetails"]["relatedPlaylists"]["uploads"]
+            uploads_resp = youtube.playlistItems().list(
+                part="contentDetails",
+                playlistId=uploads_playlist,
+                maxResults=5
+            ).execute()
+
+            upload_video_ids = [u["contentDetails"]["videoId"] for u in uploads_resp.get("items", [])]
+            upload_details = fetch_video_details(youtube, upload_video_ids)
+
+            channel_avg = 0
+            if upload_details:
+                channel_avg = sum(int(u["statistics"].get("viewCount", 0)) for u in upload_details) / len(upload_details)
+
+            multiplier = views / channel_avg if channel_avg > 0 else 0
+
+            video_result = {
+                'video_id': video_id,
+                'title': snippet.get('title', ''),
+                'channel_id': channel_id,
+                'channel_title': channel_data["title"],
+                'views': views,
+                'channel_avg_views': round(channel_avg, 2),
+                'multiplier': round(multiplier, 2),
+                'likes': likes,
+                'comments': comments,
+                'duration': content.get("duration", ""),
+                'duration_seconds': duration_seconds,
+                'url': f"https://www.youtube.com/watch?v={video_id}",
+                'published_at': snippet.get("publishedAt", ""),
+                'thumbnail_url': snippet.get("thumbnails", {}).get("high", {}).get("url", ""),
+                'viral_score': round(multiplier / 10, 2),
+                'engagement_rate': round((likes + comments) / views if views > 0 else 0, 4),
+                'subscriber_count': channel_data.get('subscriber_count', 0),
+                'language': snippet.get("defaultAudioLanguage", "en")
+            }
+
+            # Separate Shorts vs Videos
+            if duration_seconds <= 60:
+                shorts.append(video_result)
+            else:
+                videos.append(video_result)
+
+        return jsonify({
+            "success": True,
+            "shorts": shorts,
+            "videos": videos
+        })
+
+    except Exception as e:
+        app.logger.error(f"YouTube search error: {str(e)}")
+        return jsonify({"error": str(e)}), 500
 
 @app.route('/api/shorts_outliers', methods=['POST'])
 def shorts_outliers():

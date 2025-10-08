@@ -1505,142 +1505,218 @@ def channel_outliers_by_id():
     except Exception as e:
         app.logger.error(f"Channel outliers error: {str(e)}")
         return jsonify({"error": str(e)}), 500
+
+
+
+
+# ------------------ Fetch Videos ------------------
+def get_channel_videos(youtube, channel_id, order_by):
+    """Fetch videos from a given channel with proper error handling."""
+    videos = []
+    next_page_token = None
+    total_fetched = 0
+
+    try:
+        while len(videos) < 50:  # limit for one channel
+            search_response = youtube.search().list(
+                part="snippet",
+                channelId=channel_id,
+                maxResults=50,
+                order=order_by,
+                type="video",
+                pageToken=next_page_token
+            ).execute()
+
+            video_ids = [item["id"]["videoId"] for item in search_response.get("items", [])]
+            if not video_ids:
+                break
+
+            video_response = youtube.videos().list(
+                part="snippet,statistics,contentDetails",
+                id=",".join(video_ids)
+            ).execute()
+
+            for video in video_response.get("items", []):
+                snippet = video.get("snippet", {})
+                stats = video.get("statistics", {})
+                videos.append({
+                    "video_id": video["id"],
+                    "title": snippet.get("title"),
+                    "publishedAt": snippet.get("publishedAt"),
+                    "channelId": snippet.get("channelId"),
+                    "channelTitle": snippet.get("channelTitle"),
+                    "views": int(stats.get("viewCount", 0)),
+                    "likes": int(stats.get("likeCount", 0)),
+                    "thumbnails": snippet.get("thumbnails", {}),
+                    "url": f"https://www.youtube.com/watch?v={video['id']}"
+                })
+
+            total_fetched += len(video_ids)
+            next_page_token = search_response.get("nextPageToken")
+            if not next_page_token:
+                break
+
+    except Exception as e:
+        print(f"❌ Error fetching videos for {channel_id}: {e}")
+        traceback.print_exc()
+
+    print(f"✅ {len(videos)} videos fetched from {channel_id} ({order_by})")
+    return videos
+
+
+# ------------------ Merge Logic ------------------
+def merge_videos(latest_videos, popular_videos):
+    final = []
+    used_ids = set()
+
+    latest_by_views = sorted(latest_videos, key=lambda x: x["views"], reverse=True)
+    latest_by_date = sorted(latest_videos, key=lambda x: x["publishedAt"])
+    popular_by_views = sorted(popular_videos, key=lambda x: x["views"], reverse=True)
+    popular_by_date = sorted(popular_videos, key=lambda x: x["publishedAt"], reverse=True)
+
+    while any([latest_by_views, latest_by_date, popular_by_views, popular_by_date]):
+        for lst in [latest_by_views, popular_by_date, latest_by_date, popular_by_views]:
+            if lst:
+                vid = lst.pop(0) if lst in [latest_by_views, popular_by_date] else lst.pop()
+                if vid["video_id"] not in used_ids:
+                    final.append(vid)
+                    used_ids.add(vid["video_id"])
+        if len(final) >= 400:
+            break
+
+    # enforce 2 videos per channel per 24 batch
+    adjusted = []
+    for i in range(0, len(final), 24):
+        segment = final[i:i + 24]
+        counts = {}
+        valid = []
+        overflow = []
+        for v in segment:
+            c = v["channelId"]
+            if counts.get(c, 0) < 2:
+                valid.append(v)
+                counts[c] = counts.get(c, 0) + 1
+            else:
+                overflow.append(v)
+        adjusted.extend(valid)
+        adjusted.extend(overflow)
+    return adjusted[:400]
+
+
+# ------------------ Endpoint ------------------
 @app.route("/api/video_outliers", methods=["POST"])
 def video_outliers():
     try:
         data = request.get_json()
-        channel_ids = data.get("channel_ids", [])
+        channel_ids = data.get("channel_ids") or data.get("competitors", [])
         if not channel_ids:
-            return jsonify({"error": "Channel IDs list is required"}), 400
+            return jsonify({"error": "No competitors provided"}), 400
 
-        youtube = googleapiclient.discovery.build("youtube", "v3", developerKey=YOUTUBE_API_KEY)
+        youtube = build("youtube", "v3", developerKey=YOUTUBE_API_KEY)
 
-        channel_videos = []
+        latest_videos_all = []
+        popular_videos_all = []
+
         for ch_id in channel_ids:
-            ch_resp = youtube.channels().list(
-                part="snippet,statistics",   # ✅ include statistics
-                id=ch_id
-            ).execute()
-
+            # Channel info
+            ch_resp = youtube.channels().list(part="snippet,statistics", id=ch_id).execute()
             if not ch_resp.get("items"):
                 continue
-
             ch_info = ch_resp["items"][0]
             ch_title = ch_info["snippet"]["title"]
-            subs_count = int(ch_info["statistics"].get("subscriberCount", 1))  # ✅ subscriber count
+            subs_count = int(ch_info["statistics"].get("subscriberCount", 1))
 
+            # Fetch latest videos
             search_resp = youtube.search().list(
                 part="snippet",
                 channelId=ch_id,
                 type="video",
-                order="date",
                 videoDuration="medium",
+                order="date",
                 maxResults=50
             ).execute()
-
             video_ids = [item["id"]["videoId"] for item in search_resp.get("items", [])]
-            if not video_ids:
-                continue
+            latest_videos = fetch_video_details(youtube, video_ids)
 
-            comp_videos = fetch_video_details(youtube, video_ids)
-            if not comp_videos:
-                continue
+            # Fetch popular videos
+            search_resp_pop = youtube.search().list(
+                part="snippet",
+                channelId=ch_id,
+                type="video",
+                order="viewCount",
+                maxResults=50
+            ).execute()
+            popular_ids = [item["id"]["videoId"] for item in search_resp_pop.get("items", [])]
+            popular_videos = fetch_video_details(youtube, popular_ids)
 
-            avg_recent_views = sum(
-                int(v["statistics"].get("viewCount", 0)) for v in comp_videos
-            ) / len(comp_videos)
+            # Compute average recent views for latest videos
+            if latest_videos:
+                avg_recent_views = sum(int(v["statistics"].get("viewCount", 0)) for v in latest_videos) / len(latest_videos)
+            else:
+                avg_recent_views = 1
 
-            popular_videos = sorted(
-                comp_videos,
-                key=lambda x: int(x["statistics"].get("viewCount", 0)),
-                reverse=True
-            )[:5]
-
-            trending_videos = []
-            for v in comp_videos[:10]:
+            def clean_video(v):
                 views = int(v["statistics"].get("viewCount", 0))
-                if avg_recent_views > 0 and (views / avg_recent_views) > 1:
-                    trending_videos.append(v)
-                if len(trending_videos) >= 5:
-                    break
-
-            channel_data = {
-                "channel_id": ch_id,
-                "channel_title": ch_title,
-                "subscriber_count": subs_count,   # ✅ include at channel level too
-                "avg_recent_views": round(avg_recent_views, 2),
-                "avg_recent_views_formatted": format_number(round(avg_recent_views, 0)),
-                "trending": [],
-                "popular": []
-            }
-
-            def format_video(v):
-                duration_str = v.get("contentDetails", {}).get("duration", "")
-                duration = parse_duration(duration_str)
-                views = int(v["statistics"].get("viewCount", 0))
-                multiplier = round(views / avg_recent_views, 2) if avg_recent_views > 0 else 0
-
-                snippet = v.get("snippet", {}) or {}
-                language = snippet.get("defaultAudioLanguage") or snippet.get("defaultLanguage") or snippet.get("language") or None
-
-                published_at = snippet.get("publishedAt")
-                published_date_friendly = None
-                if published_at:
-                    try:
-                        if published_at.endswith("Z"):
-                            try:
-                                dt = datetime.strptime(published_at, "%Y-%m-%dT%H:%M:%SZ")
-                            except ValueError:
-                                dt = datetime.strptime(published_at, "%Y-%m-%dT%H:%M:%S.%fZ")
-                        else:
-                            dt = datetime.fromisoformat(published_at)
-                        published_date_friendly = dt.strftime("%Y-%m-%d")
-                    except Exception:
-                        published_date_friendly = published_at
-
+                duration = parse_duration(v.get("contentDetails", {}).get("duration", "PT0S"))
                 return {
                     "video_id": v["id"],
-                    "title": snippet.get("title"),
+                    "title": v["snippet"]["title"],
                     "channel_id": ch_id,
                     "channel_title": ch_title,
-                    "subscriber_count": subs_count,   # ✅ add here
                     "views": views,
                     "views_formatted": format_number(views),
                     "duration_seconds": duration,
-                    "multiplier": multiplier,
                     "avg_recent_views": round(avg_recent_views, 2),
-                    "channel_avg_views_formatted": format_number(round(avg_recent_views, 0)),
-                    "thumbnail_url": snippet.get("thumbnails", {}).get("high", {}).get("url"),
-                    "url": f"https://www.youtube.com/watch?v={v['id']}",
-                    "language": language,
-                    "published_date": published_at,
-                    "published_date_friendly": published_date_friendly
+                    "multiplier": round(views / avg_recent_views, 2) if avg_recent_views > 0 else 0,
+                    "thumbnail_url": v["snippet"]["thumbnails"].get("high", {}).get("url"),
+                    "url": f"https://www.youtube.com/watch?v={v['id']}"
                 }
 
-            channel_data["trending"] = [format_video(v) for v in trending_videos]
-            channel_data["popular"] = [format_video(v) for v in popular_videos]
+            latest_videos_all.extend([clean_video(v) for v in latest_videos[:50]])
+            popular_videos_all.extend([clean_video(v) for v in popular_videos[:50]])
 
-            channel_videos.append(channel_data)
+        # Sorting and merging based on your 4-rule pattern
+        latest_videos_all.sort(key=lambda x: x["views"], reverse=True)  # latest most viewed
+        popular_videos_all.sort(key=lambda x: x["views"])  # least performing
 
-        # Interleave videos: trending/popular alternating across channels
-        all_videos = []
-        max_videos_per_type = 5
+        final_list = []
+        channel_counter = {}  # track per channel per batch of 24
 
-        for i in range(max_videos_per_type):
-            for j, channel in enumerate(channel_videos):
-                if j % 2 == 0 and i < len(channel["trending"]):
-                    all_videos.append(channel["trending"][i])
-                elif j % 2 == 1 and i < len(channel["popular"]):
-                    all_videos.append(channel["popular"][i])
-                if len(all_videos) >= 200:
+        batch_size = 24
+        i = 0
+        while latest_videos_all or popular_videos_all:
+            for lst_type in ["latest", "popular"]:
+                if lst_type == "latest" and latest_videos_all:
+                    v = latest_videos_all.pop(0)
+                elif lst_type == "popular" and popular_videos_all:
+                    v = popular_videos_all.pop(0)
+                else:
+                    continue
+
+                # enforce max 2 videos per channel per 24 videos
+                batch_index = i // batch_size
+                key = f"{v['channel_id']}_{batch_index}"
+                if channel_counter.get(key, 0) >= 2:
+                    # push to later
+                    if lst_type == "latest":
+                        latest_videos_all.append(v)
+                    else:
+                        popular_videos_all.append(v)
+                    continue
+
+                final_list.append(v)
+                channel_counter[key] = channel_counter.get(key, 0) + 1
+                i += 1
+
+                if i >= 200:  # max total videos
                     break
-            if len(all_videos) >= 200:
+            if i >= 200:
                 break
 
         return jsonify({
             "success": True,
-            "total_videos": len(all_videos),
-            "videos": all_videos[:200]
+            "total_videos": len(final_list),
+            "videos": final_list
         })
 
     except Exception as e:

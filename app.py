@@ -3,6 +3,7 @@ from flask_cors import CORS
 import google.generativeai as genai
 from googleapiclient.discovery import build
 from sklearn import logger
+import io
 import logging
 from isodate import parse_duration
 from datetime import datetime
@@ -3776,6 +3777,9 @@ def youtube_search():
     except Exception as e:
         app.logger.error(f"YouTube search error: {str(e)}")
         return jsonify({"error": str(e)}), 500
+    
+
+
 BYTEPLUS_API_KEY = os.getenv("BYTEPLUS_API_KEY")
 
 THUMBNAIL_CONTEXT = """
@@ -3832,32 +3836,91 @@ def thumbnail_generation():
         data = request.get_json()
 
         face_images = data.get("face_images", [])
-        reference_images = data.get("reference_images", [])
+        reference_images = data.get("reference_images", [])[:1]  # Enforce max 1 reference image
+        if len(data.get("reference_images", [])) > 1:
+            print("Warning: More than 1 reference image provided; using only the first.")
+
         user_prompt = data.get("prompt", "Generate a YouTube thumbnail")
-        size = data.get("size", "2K")
+        size = data.get("size", "1280x720")  # Default to YouTube standard
         model = data.get("model", "seedream-4-0-250828")
 
         if not face_images and not reference_images and not user_prompt:
             return jsonify({"error": "At least one input (prompt, face_images, or reference_images) is required"}), 400
 
-        # Step 1: Build base prompt for Gemini
+        # Initialize Gemini client
+        gemini_client = genai.GenerativeModel("gemini-2.0-flash")
+
+        # Step 0: Describe faces and references
+        face_descriptions = []
+        uploaded_files = []
+        for url in face_images:
+            img_resp = requests.get(url, timeout=10)
+            if img_resp.status_code == 200:
+                image_bytes = img_resp.content
+                mime_type = img_resp.headers.get('Content-Type', 'image/jpeg')
+                uploaded_file = genai.upload_file(io.BytesIO(image_bytes), mime_type=mime_type)
+                uploaded_files.append(uploaded_file)
+                desc_resp = gemini_client.generate_content([
+                    "Describe this person's appearance in detail for an image generation prompt: age, gender, ethnicity, facial expression, hair style/color, clothing, notable features. If used in a thumbnail with a reference image, match the pose, lighting, and emotion of any face in the reference for seamless integration. Emphasize expressive emotions (surprise or happy) for high CTR.",
+                    uploaded_file
+                ])
+                face_descriptions.append(desc_resp.text.strip())
+
+        reference_descriptions = []
+        for url in reference_images:
+            img_resp = requests.get(url, timeout=10)
+            if img_resp.status_code == 200:
+                image_bytes = img_resp.content
+                mime_type = img_resp.headers.get('Content-Type', 'image/jpeg')
+                uploaded_file = genai.upload_file(io.BytesIO(image_bytes), mime_type=mime_type)
+                uploaded_files.append(uploaded_file)
+                desc_resp = gemini_client.generate_content([
+                    "Describe this YouTube thumbnail in detail: exact composition, hero element, supporting elements, text (content, placement, style, font, size), colors, background, emotions, faces/objects. Note high-CTR features like curiosity triggers and scroll-stoppers. For face replacement, note the pose, lighting, and emotion of any face to match.",
+                    uploaded_file
+                ])
+                reference_descriptions.append(desc_resp.text.strip())
+
+        # Step 1: Build base prompt for Gemini with enhanced scenario instructions
+        scenario_instructions = ""
+        if face_images and reference_images:
+            scenario_instructions = """
+Scenario: Face + Reference + Prompt. Generate an exact replica of the reference thumbnail: identical layout, colors, text (content, placement, style, font), background, supporting elements, and high-CTR features (curiosity triggers, scroll-stoppers). Replace any face in the reference with the provided face(s), matching the exact pose, lighting, and emotion of the original face for seamless integration. Use the user prompt only to guide context or minor text tweaks if specified, but do not alter the reference's design or composition.
+"""
+        elif face_images:
+            scenario_instructions = """
+Scenario: Face + Prompt. Feature the described face(s) prominently as the zoomed-in hero with strong, positive emotion (surprise or happy). Build supporting scene and text around the user prompt. Use high-contrast colors, bold sans-serif text with shadows, curiosity triggers like questions/arrows, and scroll-stoppers for max CTR.
+"""
+        elif reference_images:
+            scenario_instructions = """
+Scenario: Reference + Prompt. Replicate the reference thumbnail's style, layout, colors, text placement, composition, and CTR elements exactly, but adapt content to the user prompt. Enhance with better curiosity, emotions, and visuals if needed.
+"""
+        else:
+            scenario_instructions = """
+Scenario: Prompt Only. Create from scratch: Choose optimal thumbnail type (e.g., Face+Emotion if applicable). Include hero element, supporting scene, bold text (1-4 words), high-contrast colors, curiosity triggers, and scroll-stoppers for viral CTR.
+"""
+
         gemini_base_prompt = f"""
-You are a YouTube thumbnail design assistant. Use the following user idea to generate a detailed creative thumbnail prompt that can be passed to an image model (Seedream 4.0). 
-Follow all best practices for YouTube CTR, curiosity, hero element, supporting scene, text, color psychology, scroll-stopping visuals, and branding.
+You are a YouTube thumbnail design expert. Generate a detailed, vivid prompt for Seedream 4.0 to create a high-CTR thumbnail. Strictly follow best practices: emotional hero, curiosity text, contrasts, etc.
 
 User prompt: "{user_prompt}"
-Reference images: {reference_images if reference_images else 'None'}
-Number of faces: {len(face_images)}
+Face descriptions: {', '.join(face_descriptions) if face_descriptions else 'None'}
+Reference descriptions: {', '.join(reference_descriptions) if reference_descriptions else 'None'}
+
+{scenario_instructions}
 
 {THUMBNAIL_CONTEXT}
 
+Output a single, detailed text prompt. Include specifics like 'bold red text "SHOCKING TRUTH!" top-center with shadow', 'high contrast yellow background', 'face with wide-eyed surprise'. End with: 'Generate the image in exact 1280x720 resolution, optimized for YouTube thumbnail (16:9 aspect ratio), high quality, no distortion.'
 Respond in plain English, concise but complete, no formatting.
 """
 
         # Step 2: Generate refined prompt via Gemini
-        gemini_client = genai.GenerativeModel("gemini-2.0-flash")
         gemini_resp = gemini_client.generate_content(gemini_base_prompt)
         refined_prompt = gemini_resp.text.strip()
+
+        # Cleanup uploaded files
+        for file in uploaded_files:
+            genai.delete_file(file.name)
 
         # Step 3: Prepare Seedream API call
         all_images = face_images + reference_images
@@ -3888,10 +3951,15 @@ Respond in plain English, concise but complete, no formatting.
             return jsonify({"error": f"BytePlus API failed: {resp.text}"}), 500
 
         result = resp.json()
-        result["refined_prompt"] = refined_prompt  # include Gemini’s output for transparency
+        result["refined_prompt"] = refined_prompt
         return jsonify(result)
 
     except Exception as e:
+        for file in uploaded_files:
+            try:
+                genai.delete_file(file.name)
+            except:
+                pass
         return jsonify({"error": str(e)}), 500
 @app.route('/api/shorts_outliers', methods=['POST'])
 def shorts_outliers():

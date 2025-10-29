@@ -1,3 +1,4 @@
+import traceback
 from flask import Flask, render_template, request, jsonify, session
 from flask_cors import CORS
 import google.generativeai as genai
@@ -77,8 +78,11 @@ from script import (
     DocumentProcessor, 
     VideoProcessor, 
     EnhancedScriptGenerator,
+    facebook_processor,
+    instagram_processor,
     user_data
 )
+
 
 # Initialize processors
 document_processor = DocumentProcessor()
@@ -3618,49 +3622,7 @@ def refine_description():
         app.logger.error(f"Refine description error: {str(e)}")
         return jsonify({'success': False, 'error': f'An error occurred: {str(e)}'}), 500
 
-@app.route('/api/generate_script', methods=['POST'])
-def generate_script_api():
-    try:
-        # Get JSON data from the request
-        data = request.get_json()
 
-        # Validate required fields
-        text = data.get('text')
-        duration = data.get('duration')  # in minutes
-        groups = data.get('groups', [])  # Array of group objects with name and videos
-
-        if not text or not duration:
-            return jsonify({'error': 'Text and duration are required'}), 400
-
-        # Convert duration to float and validate
-        duration = float(duration)
-        if duration <= 0:
-            return jsonify({'error': 'Duration must be a positive number'}), 400
-
-        # Optional parameters with defaults
-        wpm = data.get('wpm', 145)  # default to 145 WPM
-        creator_name = data.get('creator_name', 'YourChannelName')
-        audience = data.get('audience', 'beginners')
-        language = data.get('language', 'en')  # default to English
-
-        # Prepare data in the format expected by generate_script
-        script_data = {
-            'text': text,
-            'duration': duration,
-            'groups': groups
-        }
-
-        # Generate the script using the updated generate_script function
-        script = generate_script(script_data)
-
-        # Return the generated script as JSON response
-        return jsonify({
-            'success': True,
-            'script': script
-        })
-    except Exception as e:
-        app.logger.error(f"Generate script error: {str(e)}")
-        return jsonify({'success': False, 'error': f'An error occurred: {str(e)}'}), 500
 @app.route("/api/youtube_search", methods=["POST"])
 def youtube_search():
     try:
@@ -4614,7 +4576,560 @@ def generate_script_from_title_endpoint():
     except Exception as e:
         print(f"Error in generate_script_from_title_endpoint: {str(e)}")
         return jsonify({'success': False, 'error': f'An error occurred: {str(e)}'}), 500
-
+@app.route('/api/whole_script', methods=['POST'])
+def whole_script():
+    """ULTRA-OPTIMIZED: Fast script generation with parallel processing + TRANSCRIPT PREVIEW + INSTAGRAM + FACEBOOK SUPPORT"""
+    user_id = request.remote_addr
+    print(f"\n{'='*60}")
+    print(f"FAST SCRIPT GENERATION: {user_id}")
+    print(f"{'='*60}\n")
+    
+    try:
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        
+        # Parse request
+        content_type = request.content_type or ''
+        folders = []
+        prompt = ""
+        target_minutes = None
+        
+        if 'application/json' in content_type:
+            data = request.json or {}
+            folders = data.get('folders', [])
+            prompt = data.get('prompt', '').strip()
+            target_minutes = data.get('minutes')
+        
+        elif 'multipart/form-data' in content_type:
+            prompt = request.form.get('prompt', '').strip()
+            target_minutes = request.form.get('minutes', type=int)
+            
+            # Build folders from uploads
+            uploaded_videos = request.files.getlist('video_files[]')
+            uploaded_docs = request.files.getlist('documents[]')
+            youtube_urls = request.form.getlist('youtube_urls[]')
+            instagram_urls = request.form.getlist('instagram_urls[]')
+            facebook_urls = request.form.getlist('facebook_urls[]')
+            
+            if uploaded_videos:
+                video_folder = {'name': 'Videos', 'type': 'inspiration', 'items': []}
+                for vf in uploaded_videos:
+                    if vf.filename:
+                        import base64
+                        video_folder['items'].append({
+                            'type': 'video_file',
+                            'filename': vf.filename,
+                            'data': base64.b64encode(vf.read()).decode('utf-8')
+                        })
+                if video_folder['items']:
+                    folders.append(video_folder)
+            
+            if uploaded_docs:
+                doc_folder = {'name': 'Documents', 'type': 'document', 'items': []}
+                for df in uploaded_docs:
+                    if df.filename:
+                        import base64
+                        doc_folder['items'].append({
+                            'type': 'document',
+                            'filename': df.filename,
+                            'data': base64.b64encode(df.read()).decode('utf-8')
+                        })
+                if doc_folder['items']:
+                    folders.append(doc_folder)
+            
+            if youtube_urls:
+                yt_folder = {'name': 'YouTube', 'type': 'inspiration', 'items': []}
+                for url in youtube_urls:
+                    if url and url.strip():
+                        yt_folder['items'].append({'type': 'youtube_url', 'url': url.strip()})
+                if yt_folder['items']:
+                    folders.append(yt_folder)
+            
+            if instagram_urls:
+                insta_folder = {'name': 'Instagram', 'type': 'inspiration', 'items': []}
+                for url in instagram_urls:
+                    if url and url.strip():
+                        insta_folder['items'].append({'type': 'instagram_url', 'url': url.strip()})
+                if insta_folder['items']:
+                    folders.append(insta_folder)
+            
+            if facebook_urls:
+                fb_folder = {'name': 'Facebook', 'type': 'inspiration', 'items': []}
+                for url in facebook_urls:
+                    if url and url.strip():
+                        fb_folder['items'].append({'type': 'facebook_url', 'url': url.strip()})
+                if fb_folder['items']:
+                    folders.append(fb_folder)
+        else:
+            return jsonify({'error': 'Unsupported content type'}), 415
+        
+        if not prompt:
+            prompt = "Create an engaging YouTube video script."
+        
+        print(f"Folders: {len(folders)}, Prompt: {prompt[:50]}...")
+        
+        # Results storage
+        processed_personal = []
+        processed_inspiration = []
+        processed_documents = []
+        errors = []
+        
+        # ========================================
+        # PARALLEL PROCESSING OF ALL ITEMS
+        # ========================================
+        
+        def process_item(folder_name, folder_type, item, item_idx):
+            """Process a single item (video/doc/youtube/instagram/facebook)"""
+            item_type = item.get('type')
+            
+            try:
+                # YOUTUBE
+                if item_type == 'youtube_url':
+                    url = item.get('url', '').strip()
+                    if url and video_processor.validate_youtube_url(url):
+                        print(f"\n[{folder_name}] Processing YouTube: {url}")
+                        result = video_processor.process_video_content(url, 'youtube')
+                        
+                        if result['error']:
+                            return ('error', f"[{folder_name}] YouTube {url}: {result['error']}")
+                        
+                        # PRINT TRANSCRIPT PREVIEW
+                        transcript = result['transcript']
+                        print(f"\n{'='*80}")
+                        print(f"YOUTUBE TRANSCRIPT EXTRACTED: {url}")
+                        print(f"{'='*80}")
+                        print(f"Length: {len(transcript):,} characters")
+                        print(f"Words: {result['stats'].get('word_count', 0):,}")
+                        print(f"\nPREVIEW (first 500 chars):")
+                        print(f"{'-'*80}")
+                        print(transcript[:500])
+                        if len(transcript) > 500:
+                            print(f"... (truncated, {len(transcript) - 500:,} more characters)")
+                        print(f"{'='*80}\n")
+                        
+                        return (folder_type if folder_type == 'personal' else 'inspiration', {
+                            'folder_name': folder_name,
+                            'url': url,
+                            'transcript': transcript,
+                            'stats': result['stats'],
+                            'type': 'youtube'
+                        })
+                    return ('error', f"[{folder_name}] Invalid YouTube URL")
+                
+                # INSTAGRAM
+                elif item_type == 'instagram_url':
+                    url = item.get('url', '').strip()
+                    if url and instagram_processor.validate_instagram_url(url):
+                        print(f"\n[{folder_name}] Processing Instagram: {url}")
+                        result = instagram_processor.process_instagram_url(url)
+                        
+                        if result['error']:
+                            return ('error', f"[{folder_name}] Instagram {url}: {result['error']}")
+                        
+                        transcript = result['transcript']
+                        
+                        return (folder_type if folder_type == 'personal' else 'inspiration', {
+                            'folder_name': folder_name,
+                            'url': url,
+                            'transcript': transcript,
+                            'stats': result['stats'],
+                            'type': 'instagram'
+                        })
+                    return ('error', f"[{folder_name}] Invalid Instagram URL")
+                
+                # FACEBOOK
+                elif item_type == 'facebook_url':
+                    url = item.get('url', '').strip()
+                    if url and facebook_processor.validate_facebook_url(url):
+                        print(f"\n[{folder_name}] Processing Facebook: {url}")
+                        result = facebook_processor.process_facebook_url(url)
+                        
+                        if result['error']:
+                            return ('error', f"[{folder_name}] Facebook {url}: {result['error']}")
+                        
+                        transcript = result['transcript']
+                        
+                        return (folder_type if folder_type == 'personal' else 'inspiration', {
+                            'folder_name': folder_name,
+                            'url': url,
+                            'transcript': transcript,
+                            'stats': result['stats'],
+                            'type': 'facebook'
+                        })
+                    return ('error', f"[{folder_name}] Invalid Facebook URL")
+                
+                # VIDEO FILE
+                elif item_type == 'video_file':
+                    filename = item.get('filename', 'video.mp4')
+                    file_data = item.get('data')
+                    
+                    if not video_processor.is_supported_video_format(filename):
+                        return ('error', f"[{folder_name}] Unsupported: {filename}")
+                    
+                    if not file_data:
+                        return ('error', f"[{folder_name}] No data: {filename}")
+                    
+                    print(f"\n[{folder_name}] Processing Video File: {filename}")
+                    
+                    # Save temp file
+                    safe_user_id = user_id.replace('.', '_').replace(':', '_')
+                    video_path = os.path.join(
+                        UPLOAD_FOLDER,
+                        f"temp_{safe_user_id}_{int(time.time())}_{item_idx}_{secure_filename(filename)}"
+                    )
+                    
+                    try:
+                        import base64
+                        video_bytes = base64.b64decode(file_data)
+                        with open(video_path, 'wb') as f:
+                            f.write(video_bytes)
+                        
+                        print(f"  Saved: {len(video_bytes):,} bytes ({len(video_bytes)/(1024*1024):.2f} MB)")
+                        
+                        result = video_processor.process_video_content(video_path, 'local')
+                        
+                        # Cleanup
+                        try:
+                            os.remove(video_path)
+                        except:
+                            pass
+                        
+                        if result['error']:
+                            return ('error', f"[{folder_name}] Video {filename}: {result['error']}")
+                        
+                        # PRINT TRANSCRIPT PREVIEW
+                        transcript = result['transcript']
+                        print(f"\n{'='*80}")
+                        print(f"VIDEO FILE TRANSCRIPT EXTRACTED: {filename}")
+                        print(f"{'='*80}")
+                        print(f"Length: {len(transcript):,} characters")
+                        print(f"Words: {result['stats'].get('word_count', 0):,}")
+                        print(f"Duration: {result['stats'].get('actual_duration', 0)/60:.1f} minutes")
+                        print(f"\nPREVIEW (first 500 chars):")
+                        print(f"{'-'*80}")
+                        print(transcript[:500])
+                        if len(transcript) > 500:
+                            print(f"... (truncated, {len(transcript) - 500:,} more characters)")
+                        print(f"{'='*80}\n")
+                        
+                        return (folder_type if folder_type == 'personal' else 'inspiration', {
+                            'folder_name': folder_name,
+                            'source': filename,
+                            'transcript': transcript,
+                            'stats': result['stats'],
+                            'type': 'local_video'
+                        })
+                    
+                    except Exception as e:
+                        if os.path.exists(video_path):
+                            try:
+                                os.remove(video_path)
+                            except:
+                                pass
+                        return ('error', f"[{folder_name}] Video error {filename}: {str(e)}")
+                
+                # DOCUMENT
+                elif item_type == 'document':
+                    filename = item.get('filename', 'doc.pdf')
+                    file_data = item.get('data')
+                    
+                    if not document_processor.allowed_file(filename):
+                        return ('error', f"[{folder_name}] Unsupported doc: {filename}")
+                    
+                    if not file_data:
+                        return ('error', f"[{folder_name}] No data: {filename}")
+                    
+                    print(f"\n[{folder_name}] Processing Document: {filename}")
+                    
+                    # Save temp file
+                    safe_user_id = user_id.replace('.', '_').replace(':', '_')
+                    file_path = os.path.join(
+                        UPLOAD_FOLDER,
+                        f"temp_{safe_user_id}_{int(time.time())}_{item_idx}_{secure_filename(filename)}"
+                    )
+                    
+                    try:
+                        import base64
+                        doc_bytes = base64.b64decode(file_data)
+                        with open(file_path, 'wb') as f:
+                            f.write(doc_bytes)
+                        
+                        print(f"  Saved: {len(doc_bytes):,} bytes ({len(doc_bytes)/(1024*1024):.2f} MB)")
+                        
+                        result = document_processor.process_document(file_path, filename)
+                        
+                        # Cleanup
+                        try:
+                            os.remove(file_path)
+                        except:
+                            pass
+                        
+                        if result['error']:
+                            return ('error', f"[{folder_name}] Doc {filename}: {result['error']}")
+                        
+                        # PRINT DOCUMENT TEXT PREVIEW
+                        doc_text = result['text']
+                        print(f"\n{'='*80}")
+                        print(f"DOCUMENT TEXT EXTRACTED: {filename}")
+                        print(f"{'='*80}")
+                        print(f"Length: {len(doc_text):,} characters")
+                        print(f"Words: {result['stats'].get('word_count', 0):,}")
+                        print(f"Pages (est): {result['stats'].get('page_estimate', 0)}")
+                        print(f"\nPREVIEW (first 500 chars):")
+                        print(f"{'-'*80}")
+                        print(doc_text[:500])
+                        if len(doc_text) > 500:
+                            print(f"... (truncated, {len(doc_text) - 500:,} more characters)")
+                        print(f"{'='*80}\n")
+                        
+                        return ('document', {
+                            'folder_name': folder_name,
+                            'filename': filename,
+                            'text': doc_text,
+                            'stats': result['stats']
+                        })
+                    
+                    except Exception as e:
+                        if os.path.exists(file_path):
+                            try:
+                                os.remove(file_path)
+                            except:
+                                pass
+                        return ('error', f"[{folder_name}] Doc error {filename}: {str(e)}")
+                
+                return ('error', f"[{folder_name}] Unknown type: {item_type}")
+            
+            except Exception as e:
+                return ('error', f"[{folder_name}] Item error: {str(e)}")
+        
+        # Process all items in parallel
+        print(f"\n{'='*60}")
+        print(f"PARALLEL PROCESSING START")
+        print(f"{'='*60}\n")
+        
+        all_tasks = []
+        for folder in folders:
+            folder_name = folder.get('name', 'Unnamed')
+            folder_type = folder.get('type', 'inspiration')
+            items = folder.get('items', [])
+            
+            for idx, item in enumerate(items):
+                all_tasks.append((folder_name, folder_type, item, idx))
+        
+        print(f"Total tasks: {len(all_tasks)}")
+        
+        # Process with ThreadPoolExecutor
+        max_workers = min(5, len(all_tasks)) if all_tasks else 1
+        
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {
+                executor.submit(process_item, fn, ft, item, idx): (fn, ft, item, idx)
+                for fn, ft, item, idx in all_tasks
+            }
+            
+            completed = 0
+            for future in as_completed(futures):
+                completed += 1
+                result_type, result_data = future.result()
+                
+                if result_type == 'error':
+                    errors.append(result_data)
+                    print(f"[{completed}/{len(all_tasks)}] ❌ Error")
+                elif result_type == 'personal':
+                    processed_personal.append(result_data)
+                    print(f"[{completed}/{len(all_tasks)}] ✓ Personal video")
+                elif result_type == 'inspiration':
+                    processed_inspiration.append(result_data)
+                    print(f"[{completed}/{len(all_tasks)}] ✓ Inspiration")
+                elif result_type == 'document':
+                    processed_documents.append(result_data)
+                    print(f"[{completed}/{len(all_tasks)}] ✓ Document")
+        
+        print(f"\n{'='*60}")
+        print(f"PROCESSING COMPLETE")
+        print(f"{'='*60}")
+        print(f"Personal: {len(processed_personal)}")
+        print(f"Inspiration: {len(processed_inspiration)}")
+        print(f"Documents: {len(processed_documents)}")
+        print(f"Errors: {len(errors)}\n")
+        
+        # ========================================
+        # PARALLEL ANALYSIS
+        # ========================================
+        
+        print(f"{'='*60}")
+        print(f"PARALLEL ANALYSIS")
+        print(f"{'='*60}\n")
+        
+        style_profile = "Professional YouTube style."
+        inspiration_summary = "Best practices for engaging content."
+        document_insights = "General knowledge for informative content."
+        
+        def analyze_style():
+            if processed_personal:
+                transcripts = [v['transcript'] for v in processed_personal]
+                result = script_generator.analyze_creator_style(transcripts)
+                
+                # PRINT STYLE ANALYSIS
+                print(f"\n{'='*80}")
+                print(f"STYLE ANALYSIS COMPLETE")
+                print(f"{'='*80}")
+                print(result[:1000] if len(result) > 1000 else result)
+                if len(result) > 1000:
+                    print(f"... (truncated, {len(result) - 1000} more chars)")
+                print(f"{'='*80}\n")
+                
+                return result
+            return style_profile
+        
+        def analyze_inspiration():
+            if processed_inspiration:
+                transcripts = [v['transcript'] for v in processed_inspiration]
+                result = script_generator.analyze_inspiration_content(transcripts)
+                
+                # PRINT INSPIRATION ANALYSIS
+                print(f"\n{'='*80}")
+                print(f"INSPIRATION ANALYSIS COMPLETE")
+                print(f"{'='*80}")
+                print(result[:1000] if len(result) > 1000 else result)
+                if len(result) > 1000:
+                    print(f"... (truncated, {len(result) - 1000} more chars)")
+                print(f"{'='*80}\n")
+                
+                return result
+            return inspiration_summary
+        
+        def analyze_documents():
+            if processed_documents:
+                texts = [d['text'] for d in processed_documents]
+                result = script_generator.analyze_documents(texts)
+                
+                # PRINT DOCUMENT ANALYSIS
+                print(f"\n{'='*80}")
+                print(f"DOCUMENT ANALYSIS COMPLETE")
+                print(f"{'='*80}")
+                print(result[:1000] if len(result) > 1000 else result)
+                if len(result) > 1000:
+                    print(f"... (truncated, {len(result) - 1000} more chars)")
+                print(f"{'='*80}\n")
+                
+                return result
+            return document_insights
+        
+        # Run analyses in parallel
+        with ThreadPoolExecutor(max_workers=3) as executor:
+            style_future = executor.submit(analyze_style)
+            inspiration_future = executor.submit(analyze_inspiration)
+            docs_future = executor.submit(analyze_documents)
+            
+            style_profile = style_future.result()
+            inspiration_summary = inspiration_future.result()
+            document_insights = docs_future.result()
+        
+        print("✓ All analyses complete\n")
+        
+        # ========================================
+        # GENERATE SCRIPT
+        # ========================================
+        
+        print(f"{'='*60}")
+        print(f"GENERATING SCRIPT")
+        print(f"{'='*60}\n")
+        
+        script = script_generator.generate_enhanced_script(
+            style_profile,
+            inspiration_summary,
+            document_insights,
+            prompt,
+            target_minutes
+        )
+        
+        # PRINT FINAL SCRIPT
+        print(f"\n{'='*80}")
+        print(f"FINAL SCRIPT GENERATED")
+        print(f"{'='*80}")
+        print(f"Length: {len(script):,} characters")
+        print(f"\nFULL SCRIPT:")
+        print(f"{'-'*80}")
+        print(script)
+        print(f"{'='*80}\n")
+        
+        print("✓ Script generated\n")
+        
+        # Store session
+        chat_session_id = str(uuid.uuid4())
+        user_data[user_id]['current_script'] = {
+            'content': script,
+            'style_profile': style_profile,
+            'topic_insights': inspiration_summary,
+            'document_insights': document_insights,
+            'original_prompt': prompt,
+            'target_minutes': target_minutes,
+            'timestamp': datetime.now().isoformat()
+        }
+        
+        user_data[user_id]['chat_sessions'][chat_session_id] = {
+            'messages': [],
+            'script_versions': [script],
+            'created_at': datetime.now().isoformat()
+        }
+        
+        # Response
+        stats = {
+            'folders_processed': len(folders),
+            'personal_videos': len(processed_personal),
+            'inspiration_sources': len(processed_inspiration),
+            'documents': len(processed_documents),
+            'total_sources': len(processed_personal) + len(processed_inspiration) + len(processed_documents),
+            'errors_count': len(errors),
+            'target_duration': target_minutes
+        }
+        
+        print(f"\n{'='*60}")
+        print(f"✓ GENERATION COMPLETE")
+        print(f"{'='*60}")
+        print(f"Stats: {json.dumps(stats, indent=2)}")
+        print(f"{'='*60}\n")
+        
+        return jsonify({
+            'success': True,
+            'script': script,
+            'chat_session_id': chat_session_id,
+            'stats': stats,
+            'processed_content': {
+                'personal_videos': len(processed_personal),
+                'inspiration_sources': len(processed_inspiration),
+                'documents': len(processed_documents),
+                'video_files': len([v for v in processed_inspiration + processed_personal if v.get('type') == 'local_video']),
+                'instagram_reels': len([v for v in processed_inspiration + processed_personal if v.get('type') == 'instagram']),
+                'facebook_videos': len([v for v in processed_inspiration + processed_personal if v.get('type') == 'facebook'])
+            },
+            'errors': errors if errors else None,
+            'analysis_quality': 'premium' if (processed_personal and processed_inspiration and processed_documents) else 
+                               'optimal' if any([processed_personal, processed_inspiration, processed_documents]) else 
+                               'basic',
+            'folder_summary': [
+                {
+                    'name': folder.get('name'),
+                    'type': folder.get('type'),
+                    'items_count': len(folder.get('items', [])),
+                    'processed_successfully': len([
+                        item for item in folder.get('items', [])
+                        if not any(folder.get('name') in err for err in errors)
+                    ])
+                }
+                for folder in folders
+            ]
+        })
+        
+    except Exception as e:
+        print(f"\n{'='*60}")
+        print(f"CRITICAL ERROR")
+        print(f"{'='*60}")
+        print(f"Error: {str(e)}")
+        import traceback
+        print(f"Traceback:\n{traceback.format_exc()}")
+        print(f"{'='*60}\n")
+        return jsonify({'error': f'Script generation failed: {str(e)}'}), 500
 
 @app.route('/api/review-thumbnail', methods=['POST'])
 def review_thumbnail_endpoint():

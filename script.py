@@ -1246,20 +1246,18 @@ class FacebookProcessor:
             
 class EnhancedScriptGenerator:
     """Script generator with advanced analysis - Speech-Only Output"""
-    
+
     def __init__(self):
         self.style_analysis_prompt = """
         You are an expert YouTube content analyst. Analyze the following transcripts from the creator's personal videos to create a comprehensive style profile.
-
         Focus on identifying:
-
         **VOICE & TONE CHARACTERISTICS:**
         - Speaking style (conversational, formal, energetic, calm, etc.)
         - Emotional tone and energy levels
         - Use of humor, sarcasm, or specific personality traits
         - Level of enthusiasm and passion
         - Pacing and rhythm patterns
-        
+       
         **LANGUAGE PATTERNS:**
         - Vocabulary complexity and word choices
         - Sentence structure preferences (short/long, simple/complex)
@@ -1267,7 +1265,7 @@ class EnhancedScriptGenerator:
         - Use of technical jargon vs. simple explanations
         - Storytelling approach and narrative style
         - Transition phrases and connection words
-        
+       
         **CONTENT STRUCTURE & FLOW:**
         - How they introduce topics and hook viewers
         - Transition techniques between sections
@@ -1275,7 +1273,7 @@ class EnhancedScriptGenerator:
         - Conclusion and call-to-action styles
         - Use of examples, analogies, and explanations
         - Information presentation patterns
-        
+       
         **ENGAGEMENT TECHNIQUES:**
         - How they ask questions to audience
         - Interactive elements and audience engagement
@@ -1283,7 +1281,7 @@ class EnhancedScriptGenerator:
         - How they handle complex topics
         - Teaching and explanation methodology
         - Retention strategies used
-        
+       
         **UNIQUE CREATOR CHARACTERISTICS:**
         - What makes this creator distinctive
         - Their unique perspective or angle
@@ -1291,24 +1289,19 @@ class EnhancedScriptGenerator:
         - Values and beliefs that come through
         - Specific expertise areas and how they showcase them
         - Content themes and recurring topics
-
         **KEY INSIGHTS FOR SCRIPT GENERATION:**
         - Most effective hooks and openings used
         - Common content structures that work well
         - Signature explanations or teaching methods
         - Audience connection techniques
         - Call-to-action patterns
-
         Provide a detailed, actionable style profile that captures the creator's authentic voice for script generation.
-
         **Creator's Personal Video Transcripts:**
         """
-        
+
         self.inspiration_analysis_prompt = """
         You are an expert content strategist and topic analyst. Analyze these inspiration video transcripts to extract valuable insights and identify key topics with detailed breakdowns.
-
         Extract and organize:
-
         **CORE TOPICS & DETAILED INSIGHTS:**
         - Main subject matters with specific subtopics
         - Key points, arguments, and the 'why' behind them
@@ -1316,7 +1309,7 @@ class EnhancedScriptGenerator:
         - Nuanced perspectives and expert opinions
         - Trending discussions and current debates
         - Evergreen vs. timely content themes
-        
+       
         **CONTENT IDEAS & CREATIVE ANGLES:**
         - Unique perspectives and fresh takes on topics
         - Creative approaches to common subjects
@@ -1324,7 +1317,7 @@ class EnhancedScriptGenerator:
         - Potential spin-offs and related topics
         - Cross-topic connection opportunities
         - Controversial or debate-worthy points
-        
+       
         **STORYTELLING & PRESENTATION TECHNIQUES:**
         - Narrative structures and story arcs used
         - How complex topics are simplified and explained from first principles
@@ -1332,7 +1325,7 @@ class EnhancedScriptGenerator:
         - Visual or conceptual metaphors
         - Emotional appeals and connection methods
         - Pacing and information delivery patterns
-        
+       
         **VALUABLE INSIGHTS & ACTIONABLE INFORMATION:**
         - Specific tips, tricks, and how-to steps
         - Common problems and detailed solution approaches
@@ -1340,7 +1333,7 @@ class EnhancedScriptGenerator:
         - Tools, resources, and recommendations
         - Success stories and failure case studies
         - Expert advice and professional insights
-        
+       
         **TOPIC-SPECIFIC MAIN POINTS BREAKDOWN:**
         For each major topic discussed, provide:
         - Core concept explanation
@@ -1349,117 +1342,127 @@ class EnhancedScriptGenerator:
         - Common misconceptions addressed
         - Advanced concepts introduced
         - Related subtopics worth exploring
-        
+       
         **CONTENT GAPS & OPPORTUNITIES:**
         - Topics that could be expanded upon
         - Alternative viewpoints not covered
         - Beginner vs. advanced treatment opportunities
         - Updated information or fresh perspectives needed
         - Underexplored subtopics with potential
-
         Provide a comprehensive analysis that captures both the content insights and the presentation methods for creating informed, original content.
-
         **Inspiration Video Transcripts:**
         """
 
         self.document_analysis_prompt = """
         You are an expert content analyst specializing in document comprehension and insight extraction. Analyze the following document content to extract key insights, main points, and actionable information that can inform YouTube script generation.
-
         Focus on identifying:
-
         **CORE CONCEPTS & MAIN THEMES:**
         - Primary topics and subject areas covered
         - The underlying principles or 'first principles' behind the main themes
         - Central arguments, thesis points, and their supporting evidence
         - Specific data, statistics, and verifiable facts
         - Expert opinions and authoritative insights
-        
+       
         **ACTIONABLE INFORMATION:**
         - Step-by-step processes and procedures
         - Specific tips, strategies, and recommendations
         - Tools, resources, and methodologies mentioned
         - Best practices and proven approaches
         - Case studies and real-world examples
-        
+       
         **KNOWLEDGE STRUCTURE:**
         - Logical flow of information from basic to advanced
         - How concepts build upon each other
         - Prerequisites and foundational knowledge needed
         - Advanced concepts and expert-level insights
         - Practical applications and implementations
-        
+       
         **CONTENT OPPORTUNITIES FOR VIDEO SCRIPTS:**
         - Main points that could become video topics
         - Complex concepts that need simplification with analogies
         - Practical demonstrations or tutorials possible
         - Controversial or debate-worthy points
         - Gaps that could be filled with additional research
-        
+       
         **AUDIENCE VALUE PROPOSITIONS:**
         - What viewers would learn or gain on a deep level
         - Problems this content helps solve comprehensively
         - Skills or knowledge they would acquire
         - Practical benefits and outcomes
         - Target audience level (beginner/intermediate/advanced)
-
         Extract the most valuable and in-depth insights that could inform comprehensive, educational YouTube content creation.
-
         **Document Content:**
+        """
+
+        # === FIXED: ADDING MISSING CHAT MODIFICATION PROMPT ===
+        self.chat_modification_prompt = """
+        You are an expert YouTube script editor.  
+        You have the **full original script**, the **creator’s style profile**, **topic insights**, and **document insights**.
+
+        **CURRENT SCRIPT:**
+        {current_script}
+
+        **CREATOR STYLE PROFILE:**
+        {style_profile}
+
+        **TOPIC INSIGHTS:**
+        {topic_insights}
+
+        **DOCUMENT INSIGHTS:**
+        {document_insights}
+
+        **USER REQUEST:**
+        {user_message}
+
+        **INSTRUCTIONS**
+        1. Keep the exact same markdown structure (# TITLE, ## HOOK, ### Section …).
+        2. Preserve the creator’s authentic voice (tone, phrasing, catch-phrases).
+        3. Apply the user’s request **exactly** (add, remove, re-word).
+        4. Do **not** add any production notes, visual cues, or tone descriptions.
+        5. Return **only** the spoken words (pure speech).
+
+        Generate the **updated script** now.
         """
 
         self.enhanced_script_template = """
         You are an expert YouTube script writer creating a professional, engaging, and deeply informative script. Your primary goal is to establish the creator as an authority by providing expert-level knowledge.
-
         **CREATOR'S AUTHENTIC STYLE PROFILE:**
         {style_profile}
-
         **TOPIC INSIGHTS FROM INSPIRATION CONTENT:**
         {inspiration_summary}
-
         **DOCUMENT KNOWLEDGE BASE:**
         {document_insights}
-
         **USER'S SPECIFIC REQUEST:**
         {user_prompt}
-
         **TARGET DURATION:** {target_duration}
-
         **SCRIPT GENERATION INSTRUCTIONS:**
-
         Create a complete, speech-only YouTube script that:
-
         1. **MAINTAINS AUTHENTIC VOICE:** Use the creator's natural speaking style, vocabulary, and personality traits identified in the style profile.
-
         2. **ADHERES TO TARGET DURATION:** {duration_instruction}
-
         3. **INTEGRATES DOCUMENT KNOWLEDGE AS AUTHORITY:**
            - Use document insights as the core foundation for claims.
            - Weave in specific data, statistics, and expert findings to substantiate all major points.
            - Reference key concepts and methodologies from the documents to build credibility.
            - Explain complex topics using the structured knowledge from the documents.
-           
+          
         4. **LEVERAGES INSPIRATION INSIGHTS FOR ENGAGEMENT:**
            - Address trending discussions or common questions identified.
            - Use successful presentation techniques (like analogies or storytelling) from the analysis.
            - Apply proven engagement strategies to keep the audience hooked.
-
         5. **FOLLOWS A DEEP-DIVE STRUCTURE:**
            - **Hook (0-15 seconds):** Grab attention with a surprising fact, a common misconception, or a powerful question that promises deep insight.
            - **Introduction (15-45 seconds):** Clearly state the topic and promise the viewer they will gain a comprehensive understanding by the end. Establish authority early.
            - **Main Content Sections:** Structure the body logically, moving from foundational knowledge to more complex ideas. Each section should be a mini deep-dive.
            - **Conclusion:** Provide a strong summary of the key insights and offer a clear, actionable takeaway that empowers the viewer with their new knowledge.
-
         6. **PRIORITIZES DEPTH & EXPERT KNOWLEDGE (DEEP DIVE):**
            - **Go Beyond the Obvious:** For each main point, do not just state the fact. Explain the 'why' and 'how'. Explore the context, implications, and underlying principles.
            - **Address Nuance and Misconceptions:** Actively identify and correct common misunderstandings about the topic. Discuss edge cases or nuances that a beginner wouldn't know.
            - **Build a Learning Path:** Structure the script to logically build concepts. Start with the foundational 'what is it', move to 'how it works', and then to 'how you can apply it' or 'what it means for you'.
            - **Provide Actionable Value:** Ensure every section delivers significant, actionable takeaways, not just passive information. The viewer should feel smarter and more capable after watching.
-
         7. **MAINTAINS ENGAGEMENT:**
            - Use the creator's proven engagement techniques.
            - Ask rhetorical and engaging questions to make the audience think.
            - Apply storytelling methods that make complex data memorable and relatable.
-
         **CRITICAL OUTPUT REQUIREMENTS:**
         - Provide ONLY the spoken words that will be said in the video.
         - NO production notes, NO visual directions, NO camera instructions.
@@ -1469,47 +1472,34 @@ class EnhancedScriptGenerator:
         - Just pure, natural speech as if the creator is talking directly to the camera.
         - Include natural transitions and conversational flow.
         - Write exactly what should be spoken, nothing more.
-
         **OUTPUT FORMAT:**
-
         # [VIDEO TITLE]
-
         ## HOOK (0-15 seconds)
         [Pure spoken content - exactly what the creator will say]
-
-        ## INTRODUCTION (15-45 seconds)  
+        ## INTRODUCTION (15-45 seconds)
         [Pure spoken content - exactly what the creator will say]
-
         ## MAIN CONTENT
-
         ### Section 1: [Title] (Timing: X:XX - X:XX)
         [Pure spoken content - exactly what the creator will say]
-
         ### Section 2: [Title] (Timing: X:XX - X:XX)
         [Pure spoken content - exactly what the creator will say]
-
         [Continue for all main sections...]
-
         ## CONCLUSION (Last 30-60 seconds)
         [Pure spoken content - exactly what the creator will say]
-
         ---
-
         **SCRIPT NOTES (Optional Reference):**
         - Key document sources referenced
         - Main authority points covered
         - Core topics addressed
-
         Remember: Write ONLY what will be spoken. No visual cues, no production notes, no tone directions, no bracketed annotations. Just the actual words the creator will say to their audience.
-
         Generate the complete speech-only script now.
         """
-    
+
     def analyze_creator_style(self, personal_transcripts):
         """Analyze creator style from personal videos"""
         print("Starting creator style analysis...")
         combined_transcripts = "\n\n---VIDEO SEPARATOR---\n\n".join(personal_transcripts)
-        
+
         max_chars = 50000
         if len(combined_transcripts) > max_chars:
             print(f"Truncating combined transcripts from {len(combined_transcripts)} to {max_chars} characters.")
@@ -1519,7 +1509,7 @@ class EnhancedScriptGenerator:
             middle_chunk = combined_transcripts[middle_start:middle_start + chunk_size]
             end_chunk = combined_transcripts[-chunk_size:]
             combined_transcripts = f"{start_chunk}\n\n[...CONTENT CONTINUES...]\n\n{middle_chunk}\n\n[...CONTENT CONTINUES...]\n\n{end_chunk}"
-        
+
         try:
             print("Generating style analysis with Gemini model...")
             model = genai.GenerativeModel("gemini-2.0-flash")
@@ -1530,7 +1520,7 @@ class EnhancedScriptGenerator:
                     max_output_tokens=3000
                 )
             )
-            
+
             if response.text:
                 print(f"Style analysis completed: {len(response.text)} characters")
                 print("\n\n" + "="*40)
@@ -1542,17 +1532,17 @@ class EnhancedScriptGenerator:
             else:
                 print("Empty response from style analysis.")
                 return "Could not analyze creator style - empty response"
-                
+
         except Exception as e:
             logger.error(f"Error analyzing creator style: {str(e)}")
             print(f"Error in style analysis: {str(e)}")
             return f"Error analyzing creator style: {str(e)}"
-    
+
     def analyze_inspiration_content(self, inspiration_transcripts):
         """Analyze inspiration content for topic insights"""
         print("Starting inspiration content analysis...")
         combined_transcripts = "\n\n---VIDEO SEPARATOR---\n\n".join(inspiration_transcripts)
-        
+
         max_chars = 50000
         if len(combined_transcripts) > max_chars:
             print(f"Truncating inspiration transcripts from {len(combined_transcripts)} to {max_chars} characters.")
@@ -1566,7 +1556,7 @@ class EnhancedScriptGenerator:
                 else:
                     sampled_transcripts.append(transcript)
             combined_transcripts = "\n\n---VIDEO SEPARATOR---\n\n".join(sampled_transcripts)
-        
+
         try:
             print("Generating inspiration analysis with Gemini model...")
             model = genai.GenerativeModel("gemini-2.0-flash")
@@ -1577,7 +1567,7 @@ class EnhancedScriptGenerator:
                     max_output_tokens=3000
                 )
             )
-            
+
             if response.text:
                 print(f"Inspiration analysis completed: {len(response.text)} characters")
                 print("\n\n" + "="*40)
@@ -1589,38 +1579,35 @@ class EnhancedScriptGenerator:
             else:
                 print("Empty response from inspiration analysis.")
                 return "Could not analyze inspiration content - empty response"
-                
+
         except Exception as e:
             logger.error(f"Error analyzing inspiration content: {str(e)}")
             print(f"Error in inspiration analysis: {str(e)}")
             return f"Error analyzing inspiration content: {str(e)}"
-    
+
     def analyze_documents(self, document_texts):
         """Analyze uploaded documents for insights"""
         if not document_texts:
             print("No documents provided for analysis.")
             return "No documents provided for analysis."
-        
+
         print("Starting document analysis...")
         combined_documents = "\n\n---DOCUMENT SEPARATOR---\n\n".join(document_texts)
-        
-        # Limit document content for processing
+
         max_chars = 60000
         if len(combined_documents) > max_chars:
             print(f"Truncating documents from {len(combined_documents)} to {max_chars} characters.")
-            # Take chunks from each document rather than truncating
             chunk_size = max_chars // len(document_texts) if len(document_texts) > 1 else max_chars
             sampled_docs = []
             for doc_text in document_texts:
                 if len(doc_text) > chunk_size:
-                    # Take beginning and end of each document
                     half_chunk = chunk_size // 2
                     sampled = doc_text[:half_chunk] + "\n[...DOCUMENT CONTINUES...]\n" + doc_text[-half_chunk:]
                     sampled_docs.append(sampled)
                 else:
                     sampled_docs.append(doc_text)
             combined_documents = "\n\n---DOCUMENT SEPARATOR---\n\n".join(sampled_docs)
-        
+
         try:
             print("Generating document analysis with Gemini model...")
             model = genai.GenerativeModel("gemini-2.0-flash")
@@ -1631,7 +1618,7 @@ class EnhancedScriptGenerator:
                     max_output_tokens=3500
                 )
             )
-            
+
             if response.text:
                 print(f"Document analysis completed: {len(response.text)} characters")
                 print("\n\n" + "="*40)
@@ -1643,24 +1630,23 @@ class EnhancedScriptGenerator:
             else:
                 print("Empty response from document analysis.")
                 return "Could not analyze document content - empty response"
-                
+
         except Exception as e:
             logger.error(f"Error analyzing documents: {str(e)}")
             print(f"Error in document analysis: {str(e)}")
             return f"Error analyzing documents: {str(e)}"
-    
+
     def generate_enhanced_script(self, style_profile, inspiration_summary, document_insights, user_prompt, target_minutes=None):
         """Generate script with all available knowledge sources"""
         print("Starting enhanced script generation...")
-        
-        # Handle duration instructions
+
         if target_minutes:
             target_duration = f"Approximately {target_minutes} minutes"
             duration_instruction = f"Structure the script to fit approximately {target_minutes} minutes of video content (roughly {target_minutes * 150} words, assuming 150 words per minute speaking pace). Adjust content density and pacing accordingly."
         else:
             target_duration = "No specific duration requirement"
             duration_instruction = "Create a comprehensive script with appropriate length for the topic, typically 8-12 minutes for in-depth content."
-        
+
         enhanced_prompt = self.enhanced_script_template.format(
             style_profile=style_profile,
             inspiration_summary=inspiration_summary,
@@ -1670,7 +1656,7 @@ class EnhancedScriptGenerator:
             duration_instruction=duration_instruction
         )
         print(f"Enhanced prompt prepared: {len(enhanced_prompt)} characters")
-        
+
         try:
             print("Generating script with Gemini model...")
             model = genai.GenerativeModel("gemini-2.0-flash")
@@ -1681,7 +1667,7 @@ class EnhancedScriptGenerator:
                     max_output_tokens=4000
                 )
             )
-            
+
             if response.text:
                 print(f"Script generated: {len(response.text)} characters")
                 print("\n\n" + "="*40)
@@ -1693,7 +1679,7 @@ class EnhancedScriptGenerator:
             else:
                 print("Empty response from script generation.")
                 return "Error: Could not generate script - empty response"
-                
+
         except Exception as e:
             logger.error(f"Error generating enhanced script: {str(e)}")
             print(f"Error in script generation: {str(e)}")
@@ -1702,8 +1688,19 @@ class EnhancedScriptGenerator:
     def modify_script_chat(self, current_script, style_profile, topic_insights, document_insights, user_message):
         """Modify script with full context including documents"""
         print("Starting script modification via chat...")
-        
-        chat_prompt = self.chat_modification_prompt.format(
+
+        # Defensive: fallback if prompt missing
+        prompt_template = getattr(self, "chat_modification_prompt", None)
+        if not prompt_template:
+            prompt_template = """
+            Edit the script according to this user request:
+            {user_message}
+
+            Current Script:
+            {current_script}
+            """
+
+        chat_prompt = prompt_template.format(
             current_script=current_script,
             style_profile=style_profile,
             topic_insights=topic_insights,
@@ -1711,7 +1708,7 @@ class EnhancedScriptGenerator:
             user_message=user_message
         )
         print(f"Chat modification prompt: {len(chat_prompt)} characters")
-        
+
         try:
             print("Generating modification with Gemini model...")
             model = genai.GenerativeModel("gemini-2.0-flash")
@@ -1722,7 +1719,7 @@ class EnhancedScriptGenerator:
                     max_output_tokens=3000
                 )
             )
-            
+
             if response.text:
                 print(f"Modification response: {len(response.text)} characters")
                 print("\n\n" + "="*40)
@@ -1734,7 +1731,7 @@ class EnhancedScriptGenerator:
             else:
                 print("Empty response from modification.")
                 return "Could not modify script - empty response"
-                
+
         except Exception as e:
             logger.error(f"Error modifying script: {str(e)}")
             print(f"Error in script modification: {str(e)}")

@@ -3037,6 +3037,7 @@ def chat_modify_script():
             'success': True,
             'response': modification_response,
             'user_message': user_message,
+            'chat_session_id': chat_session_id,
             'timestamp': datetime.now().isoformat()
         })
     except Exception as e:

@@ -3069,6 +3069,8 @@ def update_script():
     except Exception as e:
         return jsonify({'error': f'Error updating script: {str(e)}'}), 500
 
+
+
 @app.route('/health', methods=['GET'])
 def health_check():
     """Health check endpoint"""

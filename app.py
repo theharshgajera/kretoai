@@ -3043,6 +3043,7 @@ def chat_modify_script():
     except Exception as e:
         return jsonify({'error': f'Error modifying script: {str(e)}'}), 500
 
+
 @app.route('/api/update-script', methods=['POST'])
 def update_script():
     """Update the current working script"""

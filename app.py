@@ -5133,7 +5133,149 @@ def whole_script():
         print(f"Traceback:\n{traceback.format_exc()}")
         print(f"{'='*60}\n")
         return jsonify({'error': f'Script generation failed: {str(e)}'}), 500
+@app.route("/api/shorts_videos", methods=["POST"])
+def shorts_videos():
+    try:
+        data = request.get_json()
+        channel_ids = data.get("channel_ids", [])
+        if not channel_ids:
+            return jsonify({"error": "Channel IDs list is required"}), 400
 
+        youtube = googleapiclient.discovery.build("youtube", "v3", developerKey=YOUTUBE_API_KEY)
+
+        channel_videos = []
+
+        for ch_id in channel_ids:
+            # Fetch channel info
+            ch_resp = youtube.channels().list(
+                part="snippet,statistics",
+                id=ch_id
+            ).execute()
+
+            if not ch_resp.get("items"):
+                continue
+
+            ch_info = ch_resp["items"][0]
+            ch_title = ch_info["snippet"]["title"]
+            subs_count = int(ch_info["statistics"].get("subscriberCount", 1))
+
+            # Fetch Shorts only (under 60s)
+            search_resp = youtube.search().list(
+                part="snippet",
+                channelId=ch_id,
+                type="video",
+                order="date",
+                videoDuration="short",
+                maxResults=50
+            ).execute()
+
+            video_ids = [item["id"]["videoId"] for item in search_resp.get("items", [])]
+            if not video_ids:
+                continue
+
+            comp_videos = fetch_video_details(youtube, video_ids)
+            if not comp_videos:
+                continue
+
+            avg_recent_views = sum(
+                int(v["statistics"].get("viewCount", 0)) for v in comp_videos
+            ) / len(comp_videos)
+
+            # Top 10 popular Shorts
+            popular_videos = sorted(
+                comp_videos,
+                key=lambda x: int(x["statistics"].get("viewCount", 0)),
+                reverse=True
+            )[:10]
+
+            # Trending Shorts: top 10 above average
+            trending_videos = []
+            for v in comp_videos[:20]:  # look at first 20 recent videos
+                views = int(v["statistics"].get("viewCount", 0))
+                if avg_recent_views > 0 and (views / avg_recent_views) > 1:
+                    trending_videos.append(v)
+                if len(trending_videos) >= 10:
+                    break
+
+            def format_video(v):
+                duration_str = v.get("contentDetails", {}).get("duration", "")
+                duration = parse_duration(duration_str)
+                views = int(v["statistics"].get("viewCount", 0))
+                multiplier = round(views / avg_recent_views, 2) if avg_recent_views > 0 else 0
+
+                snippet = v.get("snippet", {}) or {}
+                language = snippet.get("defaultAudioLanguage") or snippet.get("defaultLanguage") or snippet.get("language") or None
+
+                published_at = snippet.get("publishedAt")
+                published_date_friendly = None
+                if published_at:
+                    try:
+                        if published_at.endswith("Z"):
+                            try:
+                                dt = datetime.strptime(published_at, "%Y-%m-%dT%H:%M:%SZ")
+                            except ValueError:
+                                dt = datetime.strptime(published_at, "%Y-%m-%dT%H:%M:%S.%fZ")
+                        else:
+                            dt = datetime.fromisoformat(published_at)
+                        published_date_friendly = dt.strftime("%Y-%m-%d")
+                    except Exception:
+                        published_date_friendly = published_at
+
+                return {
+                    "video_id": v["id"],
+                    "title": snippet.get("title"),
+                    "channel_id": ch_id,
+                    "channel_title": ch_title,
+                    "subscriber_count": subs_count,
+                    "views": views,
+                    "views_formatted": format_number(views),
+                    "duration_seconds": duration,
+                    "multiplier": multiplier,
+                    "avg_recent_views": round(avg_recent_views, 2),
+                    "channel_avg_views_formatted": format_number(round(avg_recent_views, 0)),
+                    "thumbnail_url": snippet.get("thumbnails", {}).get("high", {}).get("url"),
+                    "url": f"https://www.youtube.com/watch?v={v['id']}",
+                    "language": language,
+                    "published_date": published_at,
+                    "published_date_friendly": published_date_friendly
+                }
+
+            channel_data = {
+                "channel_id": ch_id,
+                "channel_title": ch_title,
+                "subscriber_count": subs_count,
+                "avg_recent_views": round(avg_recent_views, 2),
+                "avg_recent_views_formatted": format_number(round(avg_recent_views, 0)),
+                "trending": [format_video(v) for v in trending_videos],
+                "popular": [format_video(v) for v in popular_videos]
+            }
+
+            channel_videos.append(channel_data)
+
+        # Interleave trending/popular Shorts across channels
+        all_videos = []
+        max_videos_per_type = 10  # now 10
+
+        for i in range(max_videos_per_type):
+            for j, channel in enumerate(channel_videos):
+                if j % 2 == 0 and i < len(channel["trending"]):
+                    all_videos.append(channel["trending"][i])
+                elif j % 2 == 1 and i < len(channel["popular"]):
+                    all_videos.append(channel["popular"][i])
+                if len(all_videos) >= 200:
+                    break
+            if len(all_videos) >= 200:
+                break
+
+        return jsonify({
+            "success": True,
+            "total_videos": len(all_videos),
+            "videos": all_videos[:200]
+        })
+
+    except Exception as e:
+        app.logger.error(f"Shorts outliers error: {str(e)}")
+        return jsonify({"error": str(e)}), 500
 @app.route('/api/review-thumbnail', methods=['POST'])
 def review_thumbnail_endpoint():
     """API endpoint to review a thumbnail image."""

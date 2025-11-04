@@ -4581,7 +4581,7 @@ def generate_script_from_title_endpoint():
         return jsonify({'success': False, 'error': f'An error occurred: {str(e)}'}), 500
 @app.route('/api/whole_script', methods=['POST'])
 def whole_script():
-    """ULTRA-OPTIMIZED: Fast script generation with parallel processing + TRANSCRIPT PREVIEW + INSTAGRAM + FACEBOOK SUPPORT"""
+    """ULTRA-OPTIMIZED: Fast script generation with parallel processing + TRANSCRIPT PREVIEW + INSTAGRAM + FACEBOOK + AUDIO SUPPORT"""
     user_id = request.remote_addr
     print(f"\n{'='*60}")
     print(f"FAST SCRIPT GENERATION: {user_id}")
@@ -4608,11 +4608,13 @@ def whole_script():
             
             # Build folders from uploads
             uploaded_videos = request.files.getlist('video_files[]')
+            uploaded_audio = request.files.getlist('audio_files[]')
             uploaded_docs = request.files.getlist('documents[]')
             youtube_urls = request.form.getlist('youtube_urls[]')
             instagram_urls = request.form.getlist('instagram_urls[]')
             facebook_urls = request.form.getlist('facebook_urls[]')
             
+            # Process uploaded video files
             if uploaded_videos:
                 video_folder = {'name': 'Videos', 'type': 'inspiration', 'items': []}
                 for vf in uploaded_videos:
@@ -4626,6 +4628,21 @@ def whole_script():
                 if video_folder['items']:
                     folders.append(video_folder)
             
+            # Process uploaded audio files
+            if uploaded_audio:
+                audio_folder = {'name': 'Audio Files', 'type': 'inspiration', 'items': []}
+                for af in uploaded_audio:
+                    if af.filename:
+                        import base64
+                        audio_folder['items'].append({
+                            'type': 'audio_file',
+                            'filename': af.filename,
+                            'data': base64.b64encode(af.read()).decode('utf-8')
+                        })
+                if audio_folder['items']:
+                    folders.append(audio_folder)
+            
+            # Process uploaded documents
             if uploaded_docs:
                 doc_folder = {'name': 'Documents', 'type': 'document', 'items': []}
                 for df in uploaded_docs:
@@ -4639,6 +4656,7 @@ def whole_script():
                 if doc_folder['items']:
                     folders.append(doc_folder)
             
+            # Process YouTube URLs
             if youtube_urls:
                 yt_folder = {'name': 'YouTube', 'type': 'inspiration', 'items': []}
                 for url in youtube_urls:
@@ -4647,6 +4665,7 @@ def whole_script():
                 if yt_folder['items']:
                     folders.append(yt_folder)
             
+            # Process Instagram URLs
             if instagram_urls:
                 insta_folder = {'name': 'Instagram', 'type': 'inspiration', 'items': []}
                 for url in instagram_urls:
@@ -4655,6 +4674,7 @@ def whole_script():
                 if insta_folder['items']:
                     folders.append(insta_folder)
             
+            # Process Facebook URLs
             if facebook_urls:
                 fb_folder = {'name': 'Facebook', 'type': 'inspiration', 'items': []}
                 for url in facebook_urls:
@@ -4681,7 +4701,7 @@ def whole_script():
         # ========================================
         
         def process_item(folder_name, folder_type, item, item_idx):
-            """Process a single item (video/doc/youtube/instagram/facebook)"""
+            """Process a single item (video/audio/doc/youtube/instagram/facebook)"""
             item_type = item.get('type')
             
             try:
@@ -4759,6 +4779,78 @@ def whole_script():
                             'type': 'facebook'
                         })
                     return ('error', f"[{folder_name}] Invalid Facebook URL")
+                
+                # AUDIO FILE
+                elif item_type == 'audio_file':
+                    filename = item.get('filename', 'audio.mp3')
+                    file_data = item.get('data')
+                    
+                    if not audio_processor.is_supported_audio_format(filename):
+                        return ('error', f"[{folder_name}] Unsupported audio format: {filename}")
+                    
+                    if not file_data:
+                        return ('error', f"[{folder_name}] No data: {filename}")
+                    
+                    print(f"\n[{folder_name}] Processing Audio File: {filename}")
+                    
+                    # Save temp file
+                    safe_user_id = user_id.replace('.', '_').replace(':', '_')
+                    audio_path = os.path.join(
+                        UPLOAD_FOLDER,
+                        f"temp_{safe_user_id}_{int(time.time())}_{item_idx}_{secure_filename(filename)}"
+                    )
+                    
+                    try:
+                        import base64
+                        audio_bytes = base64.b64decode(file_data)
+                        with open(audio_path, 'wb') as f:
+                            f.write(audio_bytes)
+                        
+                        print(f"  Saved: {len(audio_bytes):,} bytes ({len(audio_bytes)/(1024*1024):.2f} MB)")
+                        
+                        result = audio_processor.process_audio_file(audio_path, filename)
+                        
+                        # Cleanup
+                        try:
+                            os.remove(audio_path)
+                        except:
+                            pass
+                        
+                        if result['error']:
+                            return ('error', f"[{folder_name}] Audio {filename}: {result['error']}")
+                        
+                        # PRINT TRANSCRIPT PREVIEW
+                        transcript = result['transcript']
+                        print(f"\n{'='*80}")
+                        print(f"AUDIO FILE TRANSCRIPT EXTRACTED: {filename}")
+                        print(f"{'='*80}")
+                        print(f"Length: {len(transcript):,} characters")
+                        print(f"Words: {result['stats'].get('word_count', 0):,}")
+                        if result['stats'].get('actual_duration'):
+                            print(f"Duration: {result['stats']['actual_duration']/60:.1f} minutes")
+                        print(f"Language: {result['stats'].get('detected_language', 'unknown')}")
+                        print(f"\nPREVIEW (first 500 chars):")
+                        print(f"{'-'*80}")
+                        print(transcript[:500])
+                        if len(transcript) > 500:
+                            print(f"... (truncated, {len(transcript) - 500:,} more characters)")
+                        print(f"{'='*80}\n")
+                        
+                        return (folder_type if folder_type == 'personal' else 'inspiration', {
+                            'folder_name': folder_name,
+                            'source': filename,
+                            'transcript': transcript,
+                            'stats': result['stats'],
+                            'type': 'audio_file'
+                        })
+                    
+                    except Exception as e:
+                        if os.path.exists(audio_path):
+                            try:
+                                os.remove(audio_path)
+                            except:
+                                pass
+                        return ('error', f"[{folder_name}] Audio error {filename}: {str(e)}")
                 
                 # VIDEO FILE
                 elif item_type == 'video_file':
@@ -5103,6 +5195,7 @@ def whole_script():
                 'inspiration_sources': len(processed_inspiration),
                 'documents': len(processed_documents),
                 'video_files': len([v for v in processed_inspiration + processed_personal if v.get('type') == 'local_video']),
+                'audio_files': len([v for v in processed_inspiration + processed_personal if v.get('type') == 'audio_file']),
                 'instagram_reels': len([v for v in processed_inspiration + processed_personal if v.get('type') == 'instagram']),
                 'facebook_videos': len([v for v in processed_inspiration + processed_personal if v.get('type') == 'facebook'])
             },

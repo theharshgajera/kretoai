@@ -1677,8 +1677,7 @@ class EnhancedScriptGenerator:
         - Include natural transitions and conversational flow.
         - Write exactly what should be spoken, nothing more.
         **OUTPUT FORMAT:**
-        # [VIDEO TITLE]
-        ## HOOK (0-15 seconds)
+        ## HOOK (0- seconds)
         [Pure spoken content - exactly what the creator will say]
         ## INTRODUCTION (15-45 seconds)
         [Pure spoken content - exactly what the creator will say]
@@ -1688,9 +1687,10 @@ class EnhancedScriptGenerator:
         ### Section 2: [Title] (Timing: X:XX - X:XX)
         [Pure spoken content - exactly what the creator will say]
         [Continue for all main sections...]
-        ## CONCLUSION (Last 30-60 seconds)
+        ## CONCLUSION 
         [Pure spoken content - exactly what the creator will say]
         ---
+        make sure script doesn't exceed duration given.
         **SCRIPT NOTES (Optional Reference):**
         - Key document sources referenced
         - Main authority points covered

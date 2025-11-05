@@ -1639,10 +1639,24 @@ class EnhancedScriptGenerator:
         **USER'S SPECIFIC REQUEST:**
         {user_prompt}
         **TARGET DURATION:** {target_duration}
+
+         CRITICAL DURATION REQUIREMENTS:
+        - Speaking pace: 2.5 words per second (150 words per minute)
+        - For {target_duration}: Write MAXIMUM {max_words} words total
+        - Count every single word as you write
+        - When you reach {max_words} words, STOP IMMEDIATELY
+        - Do NOT write beyond this word count under any circumstances
+
         **SCRIPT GENERATION INSTRUCTIONS:**
         Create a complete, speech-only YouTube script that:
+
         1. **MAINTAINS AUTHENTIC VOICE:** Use the creator's natural speaking style, vocabulary, and personality traits identified in the style profile.
-        2. **ADHERES TO TARGET DURATION:** {duration_instruction}
+
+        2. **STRICTLY ADHERES TO WORD LIMIT:** 
+       - Maximum {max_words} words for the ENTIRE script
+       - This includes hook, introduction, main content, and conclusion
+       - Stop writing the moment you reach this limit
+       - {duration_instruction}
         3. **INTEGRATES DOCUMENT KNOWLEDGE AS AUTHORITY:**
            - Use document insights as the core foundation for claims.
            - Weave in specific data, statistics, and expert findings to substantiate all major points.

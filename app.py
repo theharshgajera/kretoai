@@ -1622,12 +1622,13 @@ def video_outliers():
             return jsonify({"error": "No competitors provided"}), 400
 
         youtube = build("youtube", "v3", developerKey=YOUTUBE_API_KEY)
-
         latest_videos_all = []
         popular_videos_all = []
 
+        # ------------------------------------------------------------------
+        # 1. FETCH & CLEAN (unchanged)
+        # ------------------------------------------------------------------
         for ch_id in channel_ids:
-            # Channel info
             ch_resp = youtube.channels().list(part="snippet,statistics", id=ch_id).execute()
             if not ch_resp.get("items"):
                 continue
@@ -1635,34 +1636,27 @@ def video_outliers():
             ch_title = ch_info["snippet"]["title"]
             subs_count = int(ch_info["statistics"].get("subscriberCount", 1))
 
-            # Fetch latest videos
+            # latest
             search_resp = youtube.search().list(
-                part="snippet",
-                channelId=ch_id,
-                type="video",
-                videoDuration="medium",
-                order="date",
-                maxResults=50
+                part="snippet", channelId=ch_id, type="video",
+                videoDuration="medium", order="date", maxResults=50
             ).execute()
             video_ids = [item["id"]["videoId"] for item in search_resp.get("items", [])]
             latest_videos = fetch_video_details(youtube, video_ids)
 
-            # Fetch popular videos
+            # popular
             search_resp_pop = youtube.search().list(
-                part="snippet",
-                channelId=ch_id,
-                type="video",
-                order="viewCount",
-                maxResults=50
+                part="snippet", channelId=ch_id, type="video",
+                order="viewCount", maxResults=50
             ).execute()
             popular_ids = [item["id"]["videoId"] for item in search_resp_pop.get("items", [])]
             popular_videos = fetch_video_details(youtube, popular_ids)
 
-            # Compute average recent views for latest videos
-            if latest_videos:
-                avg_recent_views = sum(int(v["statistics"].get("viewCount", 0)) for v in latest_videos) / len(latest_videos)
-            else:
-                avg_recent_views = 1
+            # avg recent views
+            avg_recent_views = (
+                sum(int(v["statistics"].get("viewCount", 0)) for v in latest_videos) / len(latest_videos)
+                if latest_videos else 1
+            )
 
             def clean_video(v):
                 views = int(v["statistics"].get("viewCount", 0))
@@ -1686,44 +1680,100 @@ def video_outliers():
             latest_videos_all.extend([clean_video(v) for v in latest_videos[:50]])
             popular_videos_all.extend([clean_video(v) for v in popular_videos[:50]])
 
-        # Sorting and merging based on your 4-rule pattern
-        latest_videos_all.sort(key=lambda x: x["views"], reverse=True)  # latest most viewed
-        popular_videos_all.sort(key=lambda x: x["views"])  # least performing
+        # ------------------------------------------------------------------
+        # 2. PRE-SORT (unchanged)
+        # ------------------------------------------------------------------
+        latest_videos_all.sort(key=lambda x: x["views"], reverse=True)   # most-viewed first
+        popular_videos_all.sort(key=lambda x: x["views"])               # least-viewed first
 
         final_list = []
-        channel_counter = {}  # track per channel per batch of 24
-
+        channel_counter = {}      # key = f"{channel_id}_{batch_index}"
         batch_size = 24
         i = 0
+        MAX_TOTAL = 200
+
+        # ------------------------------------------------------------------
+        # 3. ORIGINAL MERGE LOOP (with deadlock detection)
+        # ------------------------------------------------------------------
         while latest_videos_all or popular_videos_all:
-            for lst_type in ["latest", "popular"]:
-                if lst_type == "latest" and latest_videos_all:
-                    v = latest_videos_all.pop(0)
-                elif lst_type == "popular" and popular_videos_all:
-                    v = popular_videos_all.pop(0)
-                else:
+            added_this_round = 0
+
+            for lst_type in ("latest", "popular"):
+                if i >= MAX_TOTAL:
+                    break
+
+                src = latest_videos_all if lst_type == "latest" else popular_videos_all
+                if not src:
                     continue
 
-                # enforce max 2 videos per channel per 24 videos
+                v = src.pop(0)
+
                 batch_index = i // batch_size
                 key = f"{v['channel_id']}_{batch_index}"
                 if channel_counter.get(key, 0) >= 2:
-                    # push to later
-                    if lst_type == "latest":
-                        latest_videos_all.append(v)
-                    else:
-                        popular_videos_all.append(v)
+                    # push back for later attempt
+                    src.append(v)
                     continue
 
                 final_list.append(v)
                 channel_counter[key] = channel_counter.get(key, 0) + 1
                 i += 1
+                added_this_round += 1
 
-                if i >= 200:  # max total videos
-                    break
-            if i >= 200:
+            # ------------------------------------------------------------------
+            # 4. DEAD-LOCK → FALLBACK ROUND-ROBIN
+            # ------------------------------------------------------------------
+            if added_this_round == 0 and (latest_videos_all or popular_videos_all):
+                # Build per-channel queues that still have videos
+                from collections import defaultdict, deque
+
+                channel_latest = defaultdict(deque)
+                channel_popular = defaultdict(deque)
+
+                for v in latest_videos_all:
+                    channel_latest[v["channel_id"]].append(v)
+                for v in popular_videos_all:
+                    channel_popular[v["channel_id"]].append(v)
+
+                all_channels = set(channel_latest) | set(channel_popular)
+
+                while i < MAX_TOTAL and all_channels:
+                    placed = False
+                    for ch in list(all_channels):
+                        # try latest first, then popular
+                        src_q = channel_latest[ch] or channel_popular[ch]
+                        if not src_q:
+                            all_channels.discard(ch)
+                            continue
+
+                        candidate = src_q.popleft()
+                        batch_index = i // batch_size
+                        key = f"{candidate['channel_id']}_{batch_index}"
+
+                        if channel_counter.get(key, 0) >= 2:
+                            # put it back and skip this channel for now
+                            src_q.appendleft(candidate)
+                            continue
+
+                        final_list.append(candidate)
+                        channel_counter[key] = channel_counter.get(key, 0) + 1
+                        i += 1
+                        placed = True
+                        # remove channel if both queues are empty now
+                        if not channel_latest[ch] and not channel_popular[ch]:
+                            all_channels.discard(ch)
+                        break   # one video per outer iteration
+
+                    if not placed:
+                        # No channel could give a video → true deadlock, break out
+                        break
+
+            if i >= MAX_TOTAL:
                 break
 
+        # ------------------------------------------------------------------
+        # 5. RETURN
+        # ------------------------------------------------------------------
         return jsonify({
             "success": True,
             "total_videos": len(final_list),

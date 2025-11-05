@@ -1875,7 +1875,8 @@ def comp_analysis():
                     "multiplier": multiplier,
                     "avg_recent_views": round(avg_recent_views, 2),
                     "thumbnail_url": v["snippet"]["thumbnails"]["high"]["url"],
-                    "url": f"https://www.youtube.com/watch?v={v['id']}"
+                    "url": f"https://www.youtube.com/watch?v={v['id']}",
+                    "published_at": v["snippet"]["publishedAt"]
                 })
 
             # Add competitor with its videos

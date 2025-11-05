@@ -1860,6 +1860,9 @@ def video_outliers():
                     "multiplier": round(views / avg_recent_views, 2) if avg_recent_views else 0,
                     "thumbnail_url": v["snippet"]["thumbnails"].get("high", {}).get("url"),
                     "url": f"https://www.youtube.com/watch?v={v['id']}",
+                    "subscriber_count": subs_count,
+                    "published_at": v["snippet"].get("publishedAt", "")
+                    
                 }
 
             latest_videos_all.extend([clean_video(v) for v in latest_videos[:50]])

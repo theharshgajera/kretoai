@@ -1439,7 +1439,12 @@ def channel_outliers_by_id():
             ).execute()
 
             comp_video_ids = [v["contentDetails"]["videoId"] for v in comp_uploads_resp.get("items", [])]
-            comp_videos = fetch_video_details(youtube, comp_video_ids)
+            
+            comp_videos_resp = youtube.videos().list(
+                part="contentDetails,snippet,statistics",
+                id=",".join(comp_video_ids)
+            ).execute()
+            comp_videos = comp_videos_resp.get("items", [])
 
             if not comp_videos:
                 continue

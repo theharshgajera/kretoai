@@ -1669,6 +1669,7 @@ def video_outliers():
                     "channel_title": ch_title,
                     "views": views,
                     "subscriber_count": subs_count,
+                    "published_at": v["snippet"].get("publishedAt", ""),
                     "views_formatted": format_number(views),
                     "duration_seconds": duration,
                     "avg_recent_views": round(avg_recent_views, 2),

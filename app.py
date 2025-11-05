@@ -1251,7 +1251,6 @@ from datetime import datetime
 import os
 import isodate  # pip install isodate
 
-app = Flask(__name__)
 
 # 🔑 Your API keys (set them in your environment)
 YOUTUBE_API_KEY = os.getenv("YOUTUBE_API_KEY")
@@ -3073,16 +3072,16 @@ def update_script():
 
 
 
-@app.route('/health', methods=['GET'])
-def health_check():
-    """Health check endpoint"""
-    return jsonify({
-        'status': 'healthy',
-        'timestamp': datetime.now().isoformat(),
-        'version': '2.0-simplified',
-        'upload_folder': UPLOAD_FOLDER,
-        'upload_folder_exists': os.path.exists(UPLOAD_FOLDER)
-    })
+# @app.route('/health', methods=['GET'])
+# def health_check():
+#     """Health check endpoint"""
+#     return jsonify({
+#         'status': 'healthy',
+#         'timestamp': datetime.now().isoformat(),
+#         'version': '2.0-simplified',
+#         'upload_folder': UPLOAD_FOLDER,
+#         'upload_folder_exists': os.path.exists(UPLOAD_FOLDER)
+#     })
 
 
 # @app.route('/api/script_generation', methods=['POST'])

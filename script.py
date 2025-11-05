@@ -1639,24 +1639,10 @@ class EnhancedScriptGenerator:
         **USER'S SPECIFIC REQUEST:**
         {user_prompt}
         **TARGET DURATION:** {target_duration}
-
-         CRITICAL DURATION REQUIREMENTS:
-        - Speaking pace: 2.5 words per second (150 words per minute)
-        - For {target_duration}: Write MAXIMUM {max_words} words total
-        - Count every single word as you write
-        - When you reach {max_words} words, STOP IMMEDIATELY
-        - Do NOT write beyond this word count under any circumstances
-
         **SCRIPT GENERATION INSTRUCTIONS:**
         Create a complete, speech-only YouTube script that:
-
         1. **MAINTAINS AUTHENTIC VOICE:** Use the creator's natural speaking style, vocabulary, and personality traits identified in the style profile.
-
-        2. **STRICTLY ADHERES TO WORD LIMIT:** 
-       - Maximum {max_words} words for the ENTIRE script
-       - This includes hook, introduction, main content, and conclusion
-       - Stop writing the moment you reach this limit
-       - {duration_instruction}
+        2. **ADHERES TO TARGET DURATION:** {duration_instruction}
         3. **INTEGRATES DOCUMENT KNOWLEDGE AS AUTHORITY:**
            - Use document insights as the core foundation for claims.
            - Weave in specific data, statistics, and expert findings to substantiate all major points.
@@ -1690,64 +1676,21 @@ class EnhancedScriptGenerator:
         - Just pure, natural speech as if the creator is talking directly to the camera.
         - Include natural transitions and conversational flow.
         - Write exactly what should be spoken, nothing more.
-        **OUTPUT FORMAT - ADJUST BASED ON DURATION:**
-
-For 30 seconds or less (max 75 words):
-# [VIDEO TITLE]
-## HOOK (0-6 seconds) - 15 words max
-[Pure spoken content]
-## MAIN CONTENT (6-24 seconds) - 45 words max
-[Pure spoken content]
-## CONCLUSION (24-30 seconds) - 15 words max
-[Pure spoken content]
-
-For 31-60 seconds (max 150 words):
-# [VIDEO TITLE]
-## HOOK (0-8 seconds) - 20 words max
-[Pure spoken content]
-## MAIN CONTENT (8-50 seconds) - 105 words max
-[Pure spoken content]
-## CONCLUSION (50-60 seconds) - 25 words max
-[Pure spoken content]
-
-For 61-120 seconds (max 300 words):
-# [VIDEO TITLE]
-## HOOK (0-10 seconds) - 25 words max
-[Pure spoken content]
-## INTRODUCTION (10-25 seconds) - 40 words max
-[Pure spoken content]
-## MAIN CONTENT (25-105 seconds) - 200 words max
-### Section 1: [Title]
-[Pure spoken content]
-### Section 2: [Title]
-[Pure spoken content]
-## CONCLUSION (105-120 seconds) - 35 words max
-[Pure spoken content]
-
-For 2+ minutes:
-# [VIDEO TITLE]
-## HOOK (0-15 seconds)
-[Pure spoken content]
-## INTRODUCTION (15-45 seconds)
-[Pure spoken content]
-## MAIN CONTENT
-### Section 1: [Title] (Timing: X:XX - X:XX)
-[Pure spoken content]
-### Section 2: [Title] (Timing: X:XX - X:XX)
-[Pure spoken content]
-[Continue for all main sections...]
-## CONCLUSION (Last 30-60 seconds)
-[Pure spoken content]
-
- CONCLUSION REQUIREMENTS:
-- Write ONLY what the creator says to wrap up the topic
-- NO generic YouTube advice like "subscribe" or "hit the bell"
-- NO production notes or suggestions for the creator
-- Just the final spoken words that conclude the topic
-- Stay within your word count allocation
-
-FINAL REMINDER: 
-Total word count MUST NOT exceed {max_words} words. Count as you write and STOP at the limit.
+        **OUTPUT FORMAT:**
+        ## HOOK (0- seconds)
+        [Pure spoken content - exactly what the creator will say]
+        ## INTRODUCTION (15-45 seconds)
+        [Pure spoken content - exactly what the creator will say]
+        ## MAIN CONTENT
+        ### Section 1: [Title] (Timing: X:XX - X:XX)
+        [Pure spoken content - exactly what the creator will say]
+        ### Section 2: [Title] (Timing: X:XX - X:XX)
+        [Pure spoken content - exactly what the creator will say]
+        [Continue for all main sections...]
+        ## CONCLUSION 
+        [Pure spoken content - exactly what the creator will say]
+        ---
+        make sure script doesn't exceed duration given.
         **SCRIPT NOTES (Optional Reference):**
         - Key document sources referenced
         - Main authority points covered

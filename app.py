@@ -1914,9 +1914,23 @@ def video_outliers():
             if i >= 200:
                 break
 
-        # ✅ If infinite loop avoided forcibly
-        if iteration_count >= max_iterations:
-            app.logger.warning("Max iteration limit reached — returning partial results to avoid infinite loop")
+        # ✅ If we hit the iteration limit and still need more videos, fill randomly
+        if iteration_count >= max_iterations and len(final_list) < 200:
+            app.logger.warning(f"Max iteration limit reached with only {len(final_list)} videos — filling remaining slots randomly")
+            
+            # Combine remaining videos
+            remaining_videos = latest_videos_all + popular_videos_all
+            
+            # Remove duplicates (videos already in final_list)
+            final_video_ids = {v["video_id"] for v in final_list}
+            remaining_videos = [v for v in remaining_videos if v["video_id"] not in final_video_ids]
+            
+            # Shuffle and add to reach 200
+            import random
+            random.shuffle(remaining_videos)
+            
+            needed = 200 - len(final_list)
+            final_list.extend(remaining_videos[:needed])
 
         return jsonify({
             "success": True,

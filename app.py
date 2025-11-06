@@ -1798,6 +1798,9 @@ def video_outliers():
         latest_videos_all = []
         popular_videos_all = []
 
+        # ✅ Fixed per-channel cap
+        per_channel_cap = 10  # Hardcoded limit per channel
+
         for ch_id in channel_ids:
             # Channel info
             ch_resp = youtube.channels().list(
@@ -1811,39 +1814,37 @@ def video_outliers():
             ch_title = ch_info["snippet"]["title"]
             subs_count = int(ch_info["statistics"].get("subscriberCount", 1))
 
-            # Fetch latest videos
+            # Fetch latest medium-length videos
             search_resp = youtube.search().list(
                 part="snippet",
                 channelId=ch_id,
                 type="video",
-                videoDuration="medium",
                 order="date",
-                maxResults=50
+                videoDuration="medium",
+                maxResults=per_channel_cap
             ).execute()
 
             video_ids = [item["id"]["videoId"] for item in search_resp.get("items", [])]
             latest_videos = fetch_video_details(youtube, video_ids)
 
-            # Fetch popular videos
+            # Fetch popular medium-length videos
             search_resp_pop = youtube.search().list(
                 part="snippet",
                 channelId=ch_id,
                 type="video",
                 order="viewCount",
                 videoDuration="medium",
-                maxResults=50
+                maxResults=per_channel_cap
             ).execute()
 
             popular_ids = [item["id"]["videoId"] for item in search_resp_pop.get("items", [])]
             popular_videos = fetch_video_details(youtube, popular_ids)
 
             # Compute average recent views
-            if latest_videos:
-                avg_recent_views = sum(
-                    int(v["statistics"].get("viewCount", 0)) for v in latest_videos
-                ) / len(latest_videos)
-            else:
-                avg_recent_views = 1
+            avg_recent_views = (
+                sum(int(v["statistics"].get("viewCount", 0)) for v in latest_videos) / len(latest_videos)
+                if latest_videos else 1
+            )
 
             def clean_video(v):
                 views = int(v["statistics"].get("viewCount", 0))
@@ -1863,15 +1864,18 @@ def video_outliers():
                     "url": f"https://www.youtube.com/watch?v={v['id']}",
                     "subscriber_count": subs_count,
                     "published_at": v["snippet"].get("publishedAt", "")
-                    
                 }
 
-            latest_videos_all.extend([clean_video(v) for v in latest_videos[:50]])
-            popular_videos_all.extend([clean_video(v) for v in popular_videos[:50]])
+            # ✅ If a channel has fewer videos than cap, take all available
+            latest_videos_all.extend([clean_video(v) for v in latest_videos])
+            popular_videos_all.extend([clean_video(v) for v in popular_videos])
 
         # Sorting
-        latest_videos_all.sort(key=lambda x: x["views"], reverse=True)  # Most viewed recent
-        popular_videos_all.sort(key=lambda x: x["views"])  # Least viewed popular
+        latest_videos_all.sort(key=lambda x: x["views"], reverse=True)
+        popular_videos_all.sort(key=lambda x: x["views"])
+
+        # ✅ Dynamic max_total_videos based on channels and cap
+        max_total_videos = len(channel_ids) * per_channel_cap
 
         final_list = []
         channel_counter = {}
@@ -1879,7 +1883,7 @@ def video_outliers():
         i = 0
 
         # ✅ Infinite loop protection
-        max_iterations = 5000
+        max_iterations = 10000
         iteration_count = 0
 
         while (latest_videos_all or popular_videos_all) and iteration_count < max_iterations:
@@ -1893,12 +1897,12 @@ def video_outliers():
                 else:
                     continue
 
-                # ✅ Per-channel batching rule
+                # Per-channel batching rule
                 batch_index = i // batch_size
                 key = f"{v['channel_id']}_{batch_index}"
 
                 if channel_counter.get(key, 0) >= 2:
-                    # push to end instead of infinite loop
+                    # Push back instead of breaking the loop
                     if lst_type == "latest":
                         latest_videos_all.append(v)
                     else:
@@ -1909,28 +1913,26 @@ def video_outliers():
                 channel_counter[key] = channel_counter.get(key, 0) + 1
                 i += 1
 
-                if i >= 200:
+                # ✅ Stop once we hit the target number of videos (but not before)
+                if i >= max_total_videos:
                     break
 
-            if i >= 200:
+            if i >= max_total_videos:
                 break
 
-        # ✅ If we hit the iteration limit and still need more videos, fill randomly
-        if iteration_count >= max_iterations and len(final_list) < 200:
-            app.logger.warning(f"Max iteration limit reached with only {len(final_list)} videos — filling remaining slots randomly")
-            
-            # Combine remaining videos
+        # ✅ Safety fallback if iteration cap hit early
+        if iteration_count >= max_iterations and len(final_list) < max_total_videos:
+            app.logger.warning(
+                f"Max iteration limit reached with {len(final_list)} videos — filling remaining slots randomly"
+            )
+
             remaining_videos = latest_videos_all + popular_videos_all
-            
-            # Remove duplicates (videos already in final_list)
             final_video_ids = {v["video_id"] for v in final_list}
             remaining_videos = [v for v in remaining_videos if v["video_id"] not in final_video_ids]
-            
-            # Shuffle and add to reach 200
+
             import random
             random.shuffle(remaining_videos)
-            
-            needed = 200 - len(final_list)
+            needed = max_total_videos - len(final_list)
             final_list.extend(remaining_videos[:needed])
 
         return jsonify({
@@ -1942,6 +1944,7 @@ def video_outliers():
     except Exception as e:
         app.logger.error(f"Video outliers error: {str(e)}")
         return jsonify({"error": str(e)}), 500
+
 
 @app.route("/api/comp_analysis", methods=["POST"])
 def comp_analysis():

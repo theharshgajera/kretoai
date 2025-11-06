@@ -4800,9 +4800,10 @@ def generate_script_from_title_endpoint():
     except Exception as e:
         print(f"Error in generate_script_from_title_endpoint: {str(e)}")
         return jsonify({'success': False, 'error': f'An error occurred: {str(e)}'}), 500
-@app.route('/api/whole_script', methods=['POST'])
-def whole_script():
-    """ULTRA-OPTIMIZED: Fast script generation with parallel processing + TRANSCRIPT PREVIEW + INSTAGRAM + FACEBOOK + AUDIO SUPPORT"""
+
+@app.route('/api/generate-complete-script', methods=['POST'])
+def generate_complete_script():
+    """ULTRA-OPTIMIZED: Fast script generation with parallel processing + ALL MEDIA TYPES"""
     user_id = request.remote_addr
     print(f"\n{'='*60}")
     print(f"FAST SCRIPT GENERATION: {user_id}")
@@ -4831,9 +4832,14 @@ def whole_script():
             uploaded_videos = request.files.getlist('video_files[]')
             uploaded_audio = request.files.getlist('audio_files[]')
             uploaded_docs = request.files.getlist('documents[]')
+            uploaded_images = request.files.getlist('image_files[]')  # NEW
+            
             youtube_urls = request.form.getlist('youtube_urls[]')
             instagram_urls = request.form.getlist('instagram_urls[]')
             facebook_urls = request.form.getlist('facebook_urls[]')
+            tiktok_urls = request.form.getlist('tiktok_urls[]')  # NEW
+            
+            text_inputs = request.form.getlist('text_inputs[]')  # NEW
             
             # Process uploaded video files
             if uploaded_videos:
@@ -4877,6 +4883,20 @@ def whole_script():
                 if doc_folder['items']:
                     folders.append(doc_folder)
             
+            # === NEW: Process uploaded image files ===
+            if uploaded_images:
+                image_folder = {'name': 'Images', 'type': 'document', 'items': []}
+                for img in uploaded_images:
+                    if img.filename:
+                        import base64
+                        image_folder['items'].append({
+                            'type': 'image_file',
+                            'filename': img.filename,
+                            'data': base64.b64encode(img.read()).decode('utf-8')
+                        })
+                if image_folder['items']:
+                    folders.append(image_folder)
+            
             # Process YouTube URLs
             if youtube_urls:
                 yt_folder = {'name': 'YouTube', 'type': 'inspiration', 'items': []}
@@ -4903,6 +4923,29 @@ def whole_script():
                         fb_folder['items'].append({'type': 'facebook_url', 'url': url.strip()})
                 if fb_folder['items']:
                     folders.append(fb_folder)
+            
+            # === NEW: Process TikTok URLs ===
+            if tiktok_urls:
+                tiktok_folder = {'name': 'TikTok', 'type': 'inspiration', 'items': []}
+                for url in tiktok_urls:
+                    if url and url.strip():
+                        tiktok_folder['items'].append({'type': 'tiktok_url', 'url': url.strip()})
+                if tiktok_folder['items']:
+                    folders.append(tiktok_folder)
+            
+            # === NEW: Process Direct Text Inputs ===
+            if text_inputs:
+                text_folder = {'name': 'Text Inputs', 'type': 'document', 'items': []}
+                for idx, text_content in enumerate(text_inputs):
+                    if text_content and text_content.strip():
+                        text_folder['items'].append({
+                            'type': 'text_input',
+                            'content': text_content.strip(),
+                            'name': f"Text Input {idx + 1}"
+                        })
+                if text_folder['items']:
+                    folders.append(text_folder)
+        
         else:
             return jsonify({'error': 'Unsupported content type'}), 415
         
@@ -4922,7 +4965,7 @@ def whole_script():
         # ========================================
         
         def process_item(folder_name, folder_type, item, item_idx):
-            """Process a single item (video/audio/doc/youtube/instagram/facebook)"""
+            """Process a single item (video/audio/doc/youtube/instagram/facebook/tiktok/image/text)"""
             item_type = item.get('type')
             
             try:
@@ -4936,7 +4979,6 @@ def whole_script():
                         if result['error']:
                             return ('error', f"[{folder_name}] YouTube {url}: {result['error']}")
                         
-                        # PRINT TRANSCRIPT PREVIEW
                         transcript = result['transcript']
                         print(f"\n{'='*80}")
                         print(f"YOUTUBE TRANSCRIPT EXTRACTED: {url}")
@@ -5001,6 +5043,40 @@ def whole_script():
                         })
                     return ('error', f"[{folder_name}] Invalid Facebook URL")
                 
+                # === NEW: TIKTOK ===
+                # elif item_type == 'tiktok_url':
+                #     url = item.get('url', '').strip()
+                #     if url and tiktok_processor.validate_tiktok_url(url):
+                #         print(f"\n[{folder_name}] Processing TikTok: {url}")
+                #         result = tiktok_processor.process_tiktok_url(url)
+                        
+                #         if result['error']:
+                #             return ('error', f"[{folder_name}] TikTok {url}: {result['error']}")
+                        
+                #         transcript = result['transcript']
+                #         print(f"\n{'='*80}")
+                #         print(f"TIKTOK TRANSCRIPT EXTRACTED: {url}")
+                #         print(f"{'='*80}")
+                #         print(f"Length: {len(transcript):,} characters")
+                #         print(f"Words: {result['stats'].get('word_count', 0):,}")
+                #         if result['stats'].get('actual_duration'):
+                #             print(f"Duration: {result['stats']['actual_duration']/60:.1f} minutes")
+                #         print(f"\nPREVIEW (first 500 chars):")
+                #         print(f"{'-'*80}")
+                #         print(transcript[:500])
+                #         if len(transcript) > 500:
+                #             print(f"... (truncated, {len(transcript) - 500:,} more characters)")
+                #         print(f"{'='*80}\n")
+                        
+                #         return (folder_type if folder_type == 'personal' else 'inspiration', {
+                #             'folder_name': folder_name,
+                #             'url': url,
+                #             'transcript': transcript,
+                #             'stats': result['stats'],
+                #             'type': 'tiktok'
+                #         })
+                #     return ('error', f"[{folder_name}] Invalid TikTok URL")
+                
                 # AUDIO FILE
                 elif item_type == 'audio_file':
                     filename = item.get('filename', 'audio.mp3')
@@ -5014,7 +5090,6 @@ def whole_script():
                     
                     print(f"\n[{folder_name}] Processing Audio File: {filename}")
                     
-                    # Save temp file
                     safe_user_id = user_id.replace('.', '_').replace(':', '_')
                     audio_path = os.path.join(
                         UPLOAD_FOLDER,
@@ -5031,7 +5106,6 @@ def whole_script():
                         
                         result = audio_processor.process_audio_file(audio_path, filename)
                         
-                        # Cleanup
                         try:
                             os.remove(audio_path)
                         except:
@@ -5040,7 +5114,6 @@ def whole_script():
                         if result['error']:
                             return ('error', f"[{folder_name}] Audio {filename}: {result['error']}")
                         
-                        # PRINT TRANSCRIPT PREVIEW
                         transcript = result['transcript']
                         print(f"\n{'='*80}")
                         print(f"AUDIO FILE TRANSCRIPT EXTRACTED: {filename}")
@@ -5086,7 +5159,6 @@ def whole_script():
                     
                     print(f"\n[{folder_name}] Processing Video File: {filename}")
                     
-                    # Save temp file
                     safe_user_id = user_id.replace('.', '_').replace(':', '_')
                     video_path = os.path.join(
                         UPLOAD_FOLDER,
@@ -5103,7 +5175,6 @@ def whole_script():
                         
                         result = video_processor.process_video_content(video_path, 'local')
                         
-                        # Cleanup
                         try:
                             os.remove(video_path)
                         except:
@@ -5112,7 +5183,6 @@ def whole_script():
                         if result['error']:
                             return ('error', f"[{folder_name}] Video {filename}: {result['error']}")
                         
-                        # PRINT TRANSCRIPT PREVIEW
                         transcript = result['transcript']
                         print(f"\n{'='*80}")
                         print(f"VIDEO FILE TRANSCRIPT EXTRACTED: {filename}")
@@ -5156,7 +5226,6 @@ def whole_script():
                     
                     print(f"\n[{folder_name}] Processing Document: {filename}")
                     
-                    # Save temp file
                     safe_user_id = user_id.replace('.', '_').replace(':', '_')
                     file_path = os.path.join(
                         UPLOAD_FOLDER,
@@ -5173,7 +5242,6 @@ def whole_script():
                         
                         result = document_processor.process_document(file_path, filename)
                         
-                        # Cleanup
                         try:
                             os.remove(file_path)
                         except:
@@ -5182,7 +5250,6 @@ def whole_script():
                         if result['error']:
                             return ('error', f"[{folder_name}] Doc {filename}: {result['error']}")
                         
-                        # PRINT DOCUMENT TEXT PREVIEW
                         doc_text = result['text']
                         print(f"\n{'='*80}")
                         print(f"DOCUMENT TEXT EXTRACTED: {filename}")
@@ -5211,6 +5278,106 @@ def whole_script():
                             except:
                                 pass
                         return ('error', f"[{folder_name}] Doc error {filename}: {str(e)}")
+                
+                # === NEW: IMAGE FILE ===
+                elif item_type == 'image_file':
+                    filename = item.get('filename', 'image.jpg')
+                    file_data = item.get('data')
+                    
+                    if not image_processor.is_supported_image_format(filename):
+                        return ('error', f"[{folder_name}] Unsupported image format: {filename}")
+                    
+                    if not file_data:
+                        return ('error', f"[{folder_name}] No data: {filename}")
+                    
+                    print(f"\n[{folder_name}] Processing Image: {filename}")
+                    
+                    safe_user_id = user_id.replace('.', '_').replace(':', '_')
+                    image_path = os.path.join(
+                        UPLOAD_FOLDER,
+                        f"temp_{safe_user_id}_{int(time.time())}_{item_idx}_{secure_filename(filename)}"
+                    )
+                    
+                    try:
+                        import base64
+                        image_bytes = base64.b64decode(file_data)
+                        with open(image_path, 'wb') as f:
+                            f.write(image_bytes)
+                        
+                        print(f"  Saved: {len(image_bytes):,} bytes ({len(image_bytes)/(1024*1024):.2f} MB)")
+                        
+                        result = image_processor.process_image_with_gemini(image_path, filename)
+                        
+                        try:
+                            os.remove(image_path)
+                        except:
+                            pass
+                        
+                        if result['error']:
+                            return ('error', f"[{folder_name}] Image {filename}: {result['error']}")
+                        
+                        extracted_text = result['text']
+                        print(f"\n{'='*80}")
+                        print(f"IMAGE TEXT EXTRACTED: {filename}")
+                        print(f"{'='*80}")
+                        print(f"Length: {len(extracted_text):,} characters")
+                        print(f"Words: {result['stats'].get('word_count', 0):,}")
+                        print(f"\nPREVIEW (first 500 chars):")
+                        print(f"{'-'*80}")
+                        print(extracted_text[:500])
+                        if len(extracted_text) > 500:
+                            print(f"... (truncated, {len(extracted_text) - 500:,} more characters)")
+                        print(f"{'='*80}\n")
+                        
+                        return ('document', {
+                            'folder_name': folder_name,
+                            'filename': filename,
+                            'text': extracted_text,
+                            'stats': result['stats']
+                        })
+                    
+                    except Exception as e:
+                        if os.path.exists(image_path):
+                            try:
+                                os.remove(image_path)
+                            except:
+                                pass
+                        return ('error', f"[{folder_name}] Image error {filename}: {str(e)}")
+                
+                # === NEW: TEXT INPUT ===
+                elif item_type == 'text_input':
+                    text_content = item.get('content', '').strip()
+                    text_name = item.get('name', 'Text Input')
+                    
+                    if not text_content:
+                        return ('error', f"[{folder_name}] Empty text input")
+                    
+                    print(f"\n[{folder_name}] Processing Text: {text_name}")
+                    
+                    result = text_processor.process_text_input(text_content, text_name)
+                    
+                    if result['error']:
+                        return ('error', f"[{folder_name}] Text {text_name}: {result['error']}")
+                    
+                    processed_text = result['text']
+                    print(f"\n{'='*80}")
+                    print(f"TEXT INPUT PROCESSED: {text_name}")
+                    print(f"{'='*80}")
+                    print(f"Length: {len(processed_text):,} characters")
+                    print(f"Words: {result['stats'].get('word_count', 0):,}")
+                    print(f"\nPREVIEW (first 500 chars):")
+                    print(f"{'-'*80}")
+                    print(processed_text[:500])
+                    if len(processed_text) > 500:
+                        print(f"... (truncated, {len(processed_text) - 500:,} more characters)")
+                    print(f"{'='*80}\n")
+                    
+                    return ('document', {
+                        'folder_name': folder_name,
+                        'source_name': text_name,
+                        'text': processed_text,
+                        'stats': result['stats']
+                    })
                 
                 return ('error', f"[{folder_name}] Unknown type: {item_type}")
             
@@ -5285,7 +5452,6 @@ def whole_script():
                 transcripts = [v['transcript'] for v in processed_personal]
                 result = script_generator.analyze_creator_style(transcripts)
                 
-                # PRINT STYLE ANALYSIS
                 print(f"\n{'='*80}")
                 print(f"STYLE ANALYSIS COMPLETE")
                 print(f"{'='*80}")
@@ -5302,7 +5468,6 @@ def whole_script():
                 transcripts = [v['transcript'] for v in processed_inspiration]
                 result = script_generator.analyze_inspiration_content(transcripts)
                 
-                # PRINT INSPIRATION ANALYSIS
                 print(f"\n{'='*80}")
                 print(f"INSPIRATION ANALYSIS COMPLETE")
                 print(f"{'='*80}")
@@ -5319,7 +5484,6 @@ def whole_script():
                 texts = [d['text'] for d in processed_documents]
                 result = script_generator.analyze_documents(texts)
                 
-                # PRINT DOCUMENT ANALYSIS
                 print(f"\n{'='*80}")
                 print(f"DOCUMENT ANALYSIS COMPLETE")
                 print(f"{'='*80}")
@@ -5359,7 +5523,6 @@ def whole_script():
             target_minutes
         )
         
-        # PRINT FINAL SCRIPT
         print(f"\n{'='*80}")
         print(f"FINAL SCRIPT GENERATED")
         print(f"{'='*80}")
@@ -5418,7 +5581,10 @@ def whole_script():
                 'video_files': len([v for v in processed_inspiration + processed_personal if v.get('type') == 'local_video']),
                 'audio_files': len([v for v in processed_inspiration + processed_personal if v.get('type') == 'audio_file']),
                 'instagram_reels': len([v for v in processed_inspiration + processed_personal if v.get('type') == 'instagram']),
-                'facebook_videos': len([v for v in processed_inspiration + processed_personal if v.get('type') == 'facebook'])
+                'facebook_videos': len([v for v in processed_inspiration + processed_personal if v.get('type') == 'facebook']),
+                'tiktok_videos': len([v for v in processed_inspiration + processed_personal if v.get('type') == 'tiktok']),
+                'images': len([d for d in processed_documents if d.get('stats', {}).get('source_type') == 'image']),
+                'text_inputs': len([d for d in processed_documents if d.get('stats', {}).get('source_type') == 'text_input'])
             },
             'errors': errors if errors else None,
             'analysis_quality': 'premium' if (processed_personal and processed_inspiration and processed_documents) else 
@@ -5447,6 +5613,7 @@ def whole_script():
         print(f"Traceback:\n{traceback.format_exc()}")
         print(f"{'='*60}\n")
         return jsonify({'error': f'Script generation failed: {str(e)}'}), 500
+
 @app.route("/api/shorts_videos", methods=["POST"])
 def shorts_videos():
     try:

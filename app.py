@@ -1830,6 +1830,7 @@ def video_outliers():
                 channelId=ch_id,
                 type="video",
                 order="viewCount",
+                videoDuration="medium",
                 maxResults=50
             ).execute()
 

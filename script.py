@@ -1629,74 +1629,92 @@ class EnhancedScriptGenerator:
         """
 
         self.enhanced_script_template = """
-        You are an expert YouTube script writer creating a professional, engaging, and deeply informative script. Your primary goal is to establish the creator as an authority by providing expert-level knowledge.
+        You are an expert YouTube script writer creating a STRICTLY TIMED script with EXACT duration control.
+
         **CREATOR'S AUTHENTIC STYLE PROFILE:**
         {style_profile}
+
         **TOPIC INSIGHTS FROM INSPIRATION CONTENT:**
         {inspiration_summary}
+
         **DOCUMENT KNOWLEDGE BASE:**
         {document_insights}
+
         **USER'S SPECIFIC REQUEST:**
         {user_prompt}
+
         **TARGET DURATION:** {target_duration}
+
+        **CRITICAL DURATION REQUIREMENTS:**
+        {duration_instruction}
+
+        **WORD COUNT TARGET:** {word_count_target} words (STRICT: between {min_words}-{max_words} words)
+
         **SCRIPT GENERATION INSTRUCTIONS:**
-        Create a complete, speech-only YouTube script that:
-        1. **MAINTAINS AUTHENTIC VOICE:** Use the creator's natural speaking style, vocabulary, and personality traits identified in the style profile.
-        2. **ADHERES TO TARGET DURATION:** {duration_instruction}
+
+        1. **STRICT TIMING ENFORCEMENT (MOST IMPORTANT):**
+        - You MUST write EXACTLY {word_count_target} words (±5% tolerance allowed)
+        - Speaking pace: 150 words per minute
+        - Total duration: {target_seconds} seconds
+        - COUNT YOUR WORDS as you write and STOP at {word_count_target} words
+        - If you exceed {max_words} words, the video will be TOO LONG
+        - If you write less than {min_words} words, the video will be TOO SHORT
+
+        2. **MAINTAINS AUTHENTIC VOICE:**
+        - Use the creator's natural speaking style, vocabulary, and personality traits identified in the style profile
+        - Keep their unique catchphrases and speaking patterns
+
         3. **INTEGRATES DOCUMENT KNOWLEDGE AS AUTHORITY:**
-           - Use document insights as the core foundation for claims.
-           - Weave in specific data, statistics, and expert findings to substantiate all major points.
-           - Reference key concepts and methodologies from the documents to build credibility.
-           - Explain complex topics using the structured knowledge from the documents.
-          
+        - Use document insights as the core foundation for claims
+        - Weave in specific data, statistics, and expert findings to substantiate all major points
+        - Reference key concepts and methodologies from the documents to build credibility
+        - Explain complex topics using the structured knowledge from the documents
+
         4. **LEVERAGES INSPIRATION INSIGHTS FOR ENGAGEMENT:**
-           - Address trending discussions or common questions identified.
-           - Use successful presentation techniques (like analogies or storytelling) from the analysis.
-           - Apply proven engagement strategies to keep the audience hooked.
-        5. **FOLLOWS A DEEP-DIVE STRUCTURE:**
-           - **Hook (0-15 seconds):** Grab attention with a surprising fact, a common misconception, or a powerful question that promises deep insight.
-           - **Introduction (15-45 seconds):** Clearly state the topic and promise the viewer they will gain a comprehensive understanding by the end. Establish authority early.
-           - **Main Content Sections:** Structure the body logically, moving from foundational knowledge to more complex ideas. Each section should be a mini deep-dive.
-           - **Conclusion:** Provide a strong summary of the key insights and offer a clear, actionable takeaway that empowers the viewer with their new knowledge.
-        6. **PRIORITIZES DEPTH & EXPERT KNOWLEDGE (DEEP DIVE):**
-           - **Go Beyond the Obvious:** For each main point, do not just state the fact. Explain the 'why' and 'how'. Explore the context, implications, and underlying principles.
-           - **Address Nuance and Misconceptions:** Actively identify and correct common misunderstandings about the topic. Discuss edge cases or nuances that a beginner wouldn't know.
-           - **Build a Learning Path:** Structure the script to logically build concepts. Start with the foundational 'what is it', move to 'how it works', and then to 'how you can apply it' or 'what it means for you'.
-           - **Provide Actionable Value:** Ensure every section delivers significant, actionable takeaways, not just passive information. The viewer should feel smarter and more capable after watching.
+        - Address trending discussions or common questions identified
+        - Use successful presentation techniques (like analogies or storytelling) from the analysis
+        - Apply proven engagement strategies to keep the audience hooked
+
+        5. **STRUCTURE WITH PRECISE TIMING:**
+        - Hook (0-{hook_duration} seconds): Approximately {hook_words} words
+        - Introduction ({hook_duration}-{intro_end} seconds): Approximately {intro_words} words
+        - Main Content ({intro_end}-{main_end} seconds): Approximately {main_words} words
+        - Conclusion ({main_end}-{target_seconds} seconds): Approximately {conclusion_words} words
+
+        6. **PRIORITIZES DEPTH & EXPERT KNOWLEDGE:**
+        - Go beyond the obvious - explain the 'why' and 'how'
+        - Address nuance and misconceptions
+        - Build a learning path from foundational to complex concepts
+        - Provide actionable value in every section
+
         7. **MAINTAINS ENGAGEMENT:**
-           - Use the creator's proven engagement techniques.
-           - Ask rhetorical and engaging questions to make the audience think.
-           - Apply storytelling methods that make complex data memorable and relatable.
-        **CRITICAL OUTPUT REQUIREMENTS:**
-        - Provide ONLY the spoken words that will be said in the video.
-        - NO production notes, NO visual directions, NO camera instructions.
-        - NO tone descriptions like "(Tone shifts, more empathetic)".
-        - NO bracketed instructions like "[Production Note: ...]".
-        - NO asterisk annotations like "*[Expert Insight: ...]".
-        - Just pure, natural speech as if the creator is talking directly to the camera.
-        - Include natural transitions and conversational flow.
-        - Write exactly what should be spoken, nothing more.
-        **OUTPUT FORMAT:**
-        ## HOOK (0- seconds)
-        [Pure spoken content - exactly what the creator will say]
-        ## INTRODUCTION (15-45 seconds)
-        [Pure spoken content - exactly what the creator will say]
-        ## MAIN CONTENT
-        ### Section 1: [Title] (Timing: X:XX - X:XX)
-        [Pure spoken content - exactly what the creator will say]
-        ### Section 2: [Title] (Timing: X:XX - X:XX)
-        [Pure spoken content - exactly what the creator will say]
-        [Continue for all main sections...]
-        ## CONCLUSION 
-        [Pure spoken content - exactly what the creator will say]
-        ---
-        make sure script doesn't exceed duration given.
-        **SCRIPT NOTES (Optional Reference):**
-        - Key document sources referenced
-        - Main authority points covered
-        - Core topics addressed
-        Remember: Write ONLY what will be spoken. No visual cues, no production notes, no tone directions, no bracketed annotations. Just the actual words the creator will say to their audience.
-        Generate the complete speech-only script now.
+        - Use the creator's proven engagement techniques
+        - Ask rhetorical and engaging questions
+        - Apply storytelling methods that make complex data memorable
+
+        **CRITICAL OUTPUT FORMAT - TIMESTAMPS AND SPEECH ONLY:**
+
+        **FORMAT RULES:**
+        - Use ONLY this format: [MM:SS-MM:SS] Spoken words here
+        - NO section headers like "# TITLE" or "## HOOK" or "### Section"
+        - NO production notes, NO visual directions, NO camera instructions
+        - NO tone descriptions like "(Tone shifts, more empathetic)"
+        - NO bracketed instructions like "[Production Note: ...]"
+        - NO asterisk annotations like "*[Expert Insight: ...]"
+        - NO markdown formatting except timestamps
+        - ONLY timestamps in format [MM:SS-MM:SS] followed by spoken dialogue
+        - Each timestamp segment should be 10-20 seconds of content (25-50 words)
+        - Start at [00:00] and end at exactly [{target_minutes}:{target_seconds_remainder:02d}]
+
+        **YOUR TASK:**
+        - Generate a script that is EXACTLY {word_count_target} words (between {min_words}-{max_words} words)
+        - Use ONLY the [MM:SS-MM:SS] timestamp format followed by spoken words
+        - End at EXACTLY {target_seconds} seconds
+        - Count your words carefully and stop when you reach the target
+        - Write as if the creator is speaking directly to the camera
+        - Make it engaging, informative, and true to the creator's style
+
+        Generate the strictly timed, timestamp-only script now.
         """
 
     def analyze_creator_style(self, personal_transcripts):
@@ -1841,25 +1859,92 @@ class EnhancedScriptGenerator:
             return f"Error analyzing documents: {str(e)}"
 
     def generate_enhanced_script(self, style_profile, inspiration_summary, document_insights, user_prompt, target_minutes=None):
-        """Generate script with all available knowledge sources"""
-        print("Starting enhanced script generation...")
+        """Generate script with STRICT duration control"""
+        print("Starting enhanced script generation with strict timing...")
 
+        # Calculate precise word counts based on target duration
         if target_minutes:
-            target_duration = f"Approximately {target_minutes} minutes"
-            duration_instruction = f"Structure the script to fit approximately {target_minutes} minutes of video content (roughly {target_minutes * 150} words, assuming 150 words per minute speaking pace). Adjust content density and pacing accordingly."
+            target_seconds = int(target_minutes * 60)
+            words_per_minute = 150
+            word_count_target = int(target_minutes * words_per_minute)
+            min_words = int(word_count_target * 0.95)  # 5% tolerance
+            max_words = int(word_count_target * 1.05)
+            
+            # Section timing breakdown (proportional to total duration)
+            hook_duration = min(15, int(target_seconds * 0.15))
+            intro_end = min(45, int(target_seconds * 0.25))
+            main_end = int(target_seconds * 0.85)
+            
+            # Word allocation per section
+            hook_words = int(hook_duration / 60 * words_per_minute)
+            intro_words = int((intro_end - hook_duration) / 60 * words_per_minute)
+            main_words = int((main_end - intro_end) / 60 * words_per_minute)
+            conclusion_words = int((target_seconds - main_end) / 60 * words_per_minute)
+            
+            target_duration = f"EXACTLY {target_minutes} minutes ({target_seconds} seconds)"
+            duration_instruction = f"""
+YOU MUST CREATE A SCRIPT THAT IS EXACTLY {target_minutes} MINUTES LONG.
+- Total words required: {word_count_target} words (acceptable range: {min_words}-{max_words} words)
+- Speaking pace: 150 words per minute
+- Total duration: {target_seconds} seconds
+- If you write MORE than {max_words} words, the video will be TOO LONG and exceed the time limit
+- If you write LESS than {min_words} words, the video will be TOO SHORT and won't fill the time
+- Count your words AS YOU WRITE and STOP when you reach {word_count_target} words
+- This is a STRICT requirement - the duration MUST match exactly
+"""
         else:
-            target_duration = "No specific duration requirement"
-            duration_instruction = "Create a comprehensive script with appropriate length for the topic, typically 8-12 minutes for in-depth content."
+            # Default to 10 minutes if no duration specified
+            target_seconds = 600
+            words_per_minute = 150
+            word_count_target = 1500
+            min_words = 1425
+            max_words = 1575
+            hook_duration = 15
+            intro_end = 45
+            main_end = 510
+            hook_words = 38
+            intro_words = 75
+            main_words = 1275
+            conclusion_words = 112
+            target_minutes = 10
+            
+            target_duration = "Approximately 10 minutes (600 seconds)"
+            duration_instruction = f"""
+Create a comprehensive script that is approximately 10 minutes long.
+- Target: {word_count_target} words (between {min_words}-{max_words} words)
+- Speaking pace: 150 words per minute
+"""
 
+        # Calculate for template
+        target_minutes_int = int(target_minutes) if target_minutes else 10
+        target_seconds_remainder = target_seconds % 60
+
+        # Format the enhanced prompt with all parameters
         enhanced_prompt = self.enhanced_script_template.format(
             style_profile=style_profile,
             inspiration_summary=inspiration_summary,
             document_insights=document_insights,
             user_prompt=user_prompt,
             target_duration=target_duration,
-            duration_instruction=duration_instruction
+            duration_instruction=duration_instruction,
+            word_count_target=word_count_target,
+            min_words=min_words,
+            max_words=max_words,
+            target_seconds=target_seconds,
+            target_minutes=target_minutes_int,
+            target_seconds_remainder=target_seconds_remainder,
+            hook_duration=hook_duration,
+            intro_end=intro_end,
+            main_end=main_end,
+            hook_words=hook_words,
+            intro_words=intro_words,
+            main_words=main_words,
+            conclusion_words=conclusion_words
         )
+        
         print(f"Enhanced prompt prepared: {len(enhanced_prompt)} characters")
+        print(f"Target Duration: {target_duration}")
+        print(f"Target Word Count: {word_count_target} words (range: {min_words}-{max_words})")
 
         try:
             print("Generating script with Gemini model...")
@@ -1868,18 +1953,57 @@ class EnhancedScriptGenerator:
                 enhanced_prompt,
                 generation_config=genai.types.GenerationConfig(
                     temperature=0.7,
-                    max_output_tokens=4000
+                    max_output_tokens=word_count_target + 1000  # Extra buffer for formatting
                 )
             )
 
             if response.text:
-                print(f"Script generated: {len(response.text)} characters")
-                print("\n\n" + "="*40)
-                print("GENERATED SCRIPT:")
-                print("="*40)
-                print(response.text)
-                print("="*40 + "\n\n")
-                return response.text
+                script = response.text.strip()
+                
+                # Validate word count
+                actual_words = len(script.split())
+                print(f"Script generated: {actual_words} words (target: {word_count_target}, range: {min_words}-{max_words})")
+                
+                # If script is too long, truncate intelligently
+                if actual_words > max_words:
+                    print(f"⚠️ WARNING: Script too long ({actual_words} words)! Truncating to {word_count_target} words...")
+                    words = script.split()
+                    
+                    # Truncate to target word count
+                    truncated_script = ' '.join(words[:word_count_target])
+                    
+                    # Add a proper ending timestamp
+                    ending_minutes = target_seconds // 60
+                    ending_seconds = target_seconds % 60
+                    truncated_script += f"\n\n[{ending_minutes:02d}:{ending_seconds:02d}] Thanks for watching!"
+                    
+                    script = truncated_script
+                    actual_words = len(script.split())
+                    print(f"✓ Script truncated to {actual_words} words")
+                
+                # If script is too short, warn but don't modify
+                elif actual_words < min_words:
+                    print(f"⚠️ WARNING: Script too short ({actual_words} words, minimum: {min_words})")
+                    print(f"   Consider regenerating for better timing accuracy")
+                else:
+                    print(f"✓ Script length perfect: {actual_words} words (within target range)")
+                
+                # Calculate actual duration
+                actual_duration_seconds = (actual_words / 150) * 60
+                actual_duration_minutes = actual_duration_seconds / 60
+                print(f"✓ Estimated actual duration: {actual_duration_minutes:.1f} minutes ({actual_duration_seconds:.0f} seconds)")
+                
+                print(f"\n{'='*40}")
+                print(f"GENERATED SCRIPT")
+                print(f"{'='*40}")
+                print(f"Word Count: {actual_words} words")
+                print(f"Target Duration: {target_minutes} minutes" if target_minutes else "10 minutes")
+                print(f"Estimated Duration: {actual_duration_minutes:.1f} minutes")
+                print(f"{'='*40}")
+                print(script[:500] + "..." if len(script) > 500 else script)
+                print(f"{'='*40}\n")
+                
+                return script
             else:
                 print("Empty response from script generation.")
                 return "Error: Could not generate script - empty response"

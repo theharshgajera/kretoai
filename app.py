@@ -1799,7 +1799,7 @@ def video_outliers():
         popular_videos_all = []
 
         # ✅ Fixed per-channel cap
-        per_channel_cap = 10  # Hardcoded limit per channel
+        per_channel_cap = 20  # Hardcoded limit per channel
 
         for ch_id in channel_ids:
             # Channel info

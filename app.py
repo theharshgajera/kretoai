@@ -4801,8 +4801,8 @@ def generate_script_from_title_endpoint():
         print(f"Error in generate_script_from_title_endpoint: {str(e)}")
         return jsonify({'success': False, 'error': f'An error occurred: {str(e)}'}), 500
 
-@app.route('/api/generate-complete-script', methods=['POST'])
-def generate_complete_script():
+@app.route('/api/whole_script', methods=['POST'])
+def whole_script():
     """ULTRA-OPTIMIZED: Fast script generation with parallel processing + ALL MEDIA TYPES"""
     user_id = request.remote_addr
     print(f"\n{'='*60}")

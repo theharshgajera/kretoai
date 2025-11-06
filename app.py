@@ -2039,9 +2039,14 @@ def comp_analysis():
 
             comp_info = comp_resp["items"][0]
             comp_title = comp_data["title"]
-            comp_subs = int(comp_info["statistics"].get("subscriberCount", 1))
+            comp_subs = int(comp_info["statistics"].get("subscriberCount", 0))
+
+            # ✅ Skip competitors with fewer than 1000 subscribers
+            if comp_subs < 1000:
+                continue
+
             comp_uploads = comp_info["contentDetails"]["relatedPlaylists"]["uploads"]
-            comp_thumbnail = comp_info["snippet"]["thumbnails"]["high"]["url"]  # ✅ profile picture
+            comp_thumbnail = comp_info["snippet"]["thumbnails"]["high"]["url"]
 
             # Fetch up to 5 recent uploads
             comp_uploads_resp = youtube.playlistItems().list(
@@ -2093,7 +2098,7 @@ def comp_analysis():
                 "subscriber_count": comp_subs,
                 "avg_recent_views": round(avg_recent_views, 2),
                 "frequency": comp_data.get("count", 0),
-                "thumbnail_url": comp_thumbnail,  # ✅ competitor profile picture
+                "thumbnail_url": comp_thumbnail,
                 "videos": video_data
             })
 
@@ -2104,13 +2109,14 @@ def comp_analysis():
             "success": True,
             "channel_id": channel_id,
             "channel_title": channel_title,
-            "channel_thumbnail": channel_thumbnail,  # ✅ input channel thumbnail
+            "channel_thumbnail": channel_thumbnail,
             "competitors": competitors_data
         })
 
     except Exception as e:
         app.logger.error(f"Channel outliers error: {str(e)}")
         return jsonify({"error": str(e)}), 500
+
 
 
 @app.route('/api/generate_titles', methods=['POST'])

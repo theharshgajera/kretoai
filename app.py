@@ -4805,8 +4805,9 @@ def generate_script_from_title_endpoint():
         print(f"Error in generate_script_from_title_endpoint: {str(e)}")
         return jsonify({'success': False, 'error': f'An error occurred: {str(e)}'}), 500
 
-@app.route('/api/whole_script', methods=['POST'])
-def whole_script():
+
+@app.route('/api/generate-complete-script', methods=['POST'])
+def generate_complete_script():
     """ULTRA-OPTIMIZED: Fast script generation with parallel processing + ALL MEDIA TYPES"""
     user_id = request.remote_addr
     print(f"\n{'='*60}")
@@ -4815,6 +4816,8 @@ def whole_script():
     
     try:
         from concurrent.futures import ThreadPoolExecutor, as_completed
+        import requests
+        import base64
         
         # Parse request
         content_type = request.content_type or ''
@@ -4824,9 +4827,218 @@ def whole_script():
         
         if 'application/json' in content_type:
             data = request.json or {}
-            folders = data.get('folders', [])
             prompt = data.get('prompt', '').strip()
             target_minutes = data.get('minutes')
+            
+            # ========================================
+            # HANDLE JSON SCHEMA - URLs and Text
+            # ========================================
+            
+            # YouTube URLs
+            youtube_urls = data.get('youtube_urls', [])
+            if youtube_urls and isinstance(youtube_urls, list):
+                yt_folder = {'name': 'YouTube', 'type': 'inspiration', 'items': []}
+                for url in youtube_urls:
+                    if url and isinstance(url, str) and url.strip():
+                        yt_folder['items'].append({'type': 'youtube_url', 'url': url.strip()})
+                if yt_folder['items']:
+                    folders.append(yt_folder)
+                    print(f"Added {len(yt_folder['items'])} YouTube URLs")
+            
+            # Instagram URLs
+            instagram_urls = data.get('instagram_urls', [])
+            if instagram_urls and isinstance(instagram_urls, list):
+                insta_folder = {'name': 'Instagram', 'type': 'inspiration', 'items': []}
+                for url in instagram_urls:
+                    if url and isinstance(url, str) and url.strip():
+                        insta_folder['items'].append({'type': 'instagram_url', 'url': url.strip()})
+                if insta_folder['items']:
+                    folders.append(insta_folder)
+                    print(f"Added {len(insta_folder['items'])} Instagram URLs")
+            
+            # Facebook URLs
+            facebook_urls = data.get('facebook_urls', [])
+            if facebook_urls and isinstance(facebook_urls, list):
+                fb_folder = {'name': 'Facebook', 'type': 'inspiration', 'items': []}
+                for url in facebook_urls:
+                    if url and isinstance(url, str) and url.strip():
+                        fb_folder['items'].append({'type': 'facebook_url', 'url': url.strip()})
+                if fb_folder['items']:
+                    folders.append(fb_folder)
+                    print(f"Added {len(fb_folder['items'])} Facebook URLs")
+            
+            # TikTok URLs
+            tiktok_urls = data.get('tiktok_urls', [])
+            if tiktok_urls and isinstance(tiktok_urls, list):
+                tiktok_folder = {'name': 'TikTok', 'type': 'inspiration', 'items': []}
+                for url in tiktok_urls:
+                    if url and isinstance(url, str) and url.strip():
+                        tiktok_folder['items'].append({'type': 'tiktok_url', 'url': url.strip()})
+                if tiktok_folder['items']:
+                    folders.append(tiktok_folder)
+                    print(f"Added {len(tiktok_folder['items'])} TikTok URLs")
+            
+            # Video Files (Download from URLs)
+            video_files = data.get('video_files', [])
+            if video_files and isinstance(video_files, list):
+                video_folder = {'name': 'Videos', 'type': 'inspiration', 'items': []}
+                for idx, video_url in enumerate(video_files):
+                    if video_url and isinstance(video_url, str) and video_url.strip():
+                        try:
+                            print(f"Downloading video {idx+1}/{len(video_files)}: {video_url[:50]}...")
+                            response = requests.get(video_url, timeout=60)
+                            if response.status_code == 200:
+                                filename = video_url.split('/')[-1].split('?')[0] or f'video_{idx+1}.mp4'
+                                video_data = base64.b64encode(response.content).decode('utf-8')
+                                video_folder['items'].append({
+                                    'type': 'video_file',
+                                    'filename': filename,
+                                    'data': video_data
+                                })
+                                print(f"  ✓ Downloaded: {len(response.content):,} bytes")
+                            else:
+                                print(f"  ✗ Failed: HTTP {response.status_code}")
+                        except Exception as e:
+                            print(f"  ✗ Error downloading video {video_url}: {e}")
+                if video_folder['items']:
+                    folders.append(video_folder)
+                    print(f"Added {len(video_folder['items'])} video files")
+            
+            # Audio Files (Download from URLs)
+            audio_files = data.get('audio_files', [])
+            if audio_files and isinstance(audio_files, list):
+                audio_folder = {'name': 'Audio Files', 'type': 'inspiration', 'items': []}
+                for idx, audio_url in enumerate(audio_files):
+                    if audio_url and isinstance(audio_url, str) and audio_url.strip():
+                        try:
+                            print(f"Downloading audio {idx+1}/{len(audio_files)}: {audio_url[:50]}...")
+                            response = requests.get(audio_url, timeout=60)
+                            if response.status_code == 200:
+                                filename = audio_url.split('/')[-1].split('?')[0] or f'audio_{idx+1}.mp3'
+                                audio_data = base64.b64encode(response.content).decode('utf-8')
+                                audio_folder['items'].append({
+                                    'type': 'audio_file',
+                                    'filename': filename,
+                                    'data': audio_data
+                                })
+                                print(f"  ✓ Downloaded: {len(response.content):,} bytes")
+                            else:
+                                print(f"  ✗ Failed: HTTP {response.status_code}")
+                        except Exception as e:
+                            print(f"  ✗ Error downloading audio {audio_url}: {e}")
+                if audio_folder['items']:
+                    folders.append(audio_folder)
+                    print(f"Added {len(audio_folder['items'])} audio files")
+            
+            # Image Files (Download from URLs)
+            image_files = data.get('image_files', [])
+            if image_files and isinstance(image_files, list):
+                image_folder = {'name': 'Images', 'type': 'document', 'items': []}
+                for idx, image_url in enumerate(image_files):
+                    if image_url and isinstance(image_url, str) and image_url.strip():
+                        try:
+                            print(f"Downloading image {idx+1}/{len(image_files)}: {image_url[:50]}...")
+                            response = requests.get(image_url, timeout=30)
+                            if response.status_code == 200:
+                                filename = image_url.split('/')[-1].split('?')[0] or f'image_{idx+1}.jpg'
+                                image_data = base64.b64encode(response.content).decode('utf-8')
+                                image_folder['items'].append({
+                                    'type': 'image_file',
+                                    'filename': filename,
+                                    'data': image_data
+                                })
+                                print(f"  ✓ Downloaded: {len(response.content):,} bytes")
+                            else:
+                                print(f"  ✗ Failed: HTTP {response.status_code}")
+                        except Exception as e:
+                            print(f"  ✗ Error downloading image {image_url}: {e}")
+                if image_folder['items']:
+                    folders.append(image_folder)
+                    print(f"Added {len(image_folder['items'])} image files")
+            
+            # Documents (Download from URLs)
+            documents = data.get('documents', [])
+            if documents and isinstance(documents, list):
+                doc_folder = {'name': 'Documents', 'type': 'document', 'items': []}
+                for idx, doc_url in enumerate(documents):
+                    if doc_url and isinstance(doc_url, str) and doc_url.strip():
+                        try:
+                            print(f"Downloading document {idx+1}/{len(documents)}: {doc_url[:50]}...")
+                            response = requests.get(doc_url, timeout=60)
+                            if response.status_code == 200:
+                                filename = doc_url.split('/')[-1].split('?')[0] or f'document_{idx+1}.pdf'
+                                doc_data = base64.b64encode(response.content).decode('utf-8')
+                                doc_folder['items'].append({
+                                    'type': 'document',
+                                    'filename': filename,
+                                    'data': doc_data
+                                })
+                                print(f"  ✓ Downloaded: {len(response.content):,} bytes")
+                            else:
+                                print(f"  ✗ Failed: HTTP {response.status_code}")
+                        except Exception as e:
+                            print(f"  ✗ Error downloading document {doc_url}: {e}")
+                if doc_folder['items']:
+                    folders.append(doc_folder)
+                    print(f"Added {len(doc_folder['items'])} documents")
+            
+            # ========================================
+            # TEXT INPUTS - NEW SCHEMA
+            # ========================================
+        
+            text_inputs_data = data.get('text_inputs')
+
+            if text_inputs_data:
+                text_folder = {'name': 'Text Inputs', 'type': 'document', 'items': []}
+                
+                # Case 1: Array of objects [{"content": "..."}, {"content": "..."}]
+                if isinstance(text_inputs_data, list):
+                    for idx, text_item in enumerate(text_inputs_data):
+                        if isinstance(text_item, dict):
+                            text_content = text_item.get('content', '').strip()
+                            if text_content:
+                                text_folder['items'].append({
+                                    'type': 'text_input',
+                                    'content': text_content,
+                                    'name': f"Text Input {idx + 1}"
+                                })
+                                print(f"Added text input {idx+1} (object format): {len(text_content)} chars")
+                        elif isinstance(text_item, str) and text_item.strip():
+                            # Support direct strings in array too
+                            text_folder['items'].append({
+                                'type': 'text_input',
+                                'content': text_item.strip(),
+                                'name': f"Text Input {idx + 1}"
+                            })
+                            print(f"Added text input {idx+1} (string format): {len(text_item)} chars")
+                
+                # Case 2: Object with content array {"content": ["...", "..."]}
+                elif isinstance(text_inputs_data, dict):
+                    text_content_array = text_inputs_data.get('content', [])
+                    
+                    if isinstance(text_content_array, list):
+                        for idx, text_content in enumerate(text_content_array):
+                            if text_content and isinstance(text_content, str) and text_content.strip():
+                                text_folder['items'].append({
+                                    'type': 'text_input',
+                                    'content': text_content.strip(),
+                                    'name': f"Text Input {idx + 1}"
+                                })
+                                print(f"Added text input {idx+1} (nested array format): {len(text_content)} chars")
+                
+                # Case 3: Direct string (single text input)
+                elif isinstance(text_inputs_data, str) and text_inputs_data.strip():
+                    text_folder['items'].append({
+                        'type': 'text_input',
+                        'content': text_inputs_data.strip(),
+                        'name': "Text Input 1"
+                    })
+                    print(f"Added text input 1 (direct string): {len(text_inputs_data)} chars")
+                
+                # Add folder if we got any items
+                if text_folder['items']:
+                    folders.append(text_folder)
+                    print(f"✓ Added {len(text_folder['items'])} text inputs total")
         
         elif 'multipart/form-data' in content_type:
             prompt = request.form.get('prompt', '').strip()
@@ -4836,21 +5048,20 @@ def whole_script():
             uploaded_videos = request.files.getlist('video_files[]')
             uploaded_audio = request.files.getlist('audio_files[]')
             uploaded_docs = request.files.getlist('documents[]')
-            uploaded_images = request.files.getlist('image_files[]')  # NEW
+            uploaded_images = request.files.getlist('image_files[]')
             
             youtube_urls = request.form.getlist('youtube_urls[]')
             instagram_urls = request.form.getlist('instagram_urls[]')
             facebook_urls = request.form.getlist('facebook_urls[]')
-            tiktok_urls = request.form.getlist('tiktok_urls[]')  # NEW
+            tiktok_urls = request.form.getlist('tiktok_urls[]')
             
-            text_inputs = request.form.getlist('text_inputs[]')  # NEW
+            text_inputs = request.form.getlist('text_inputs[]')
             
             # Process uploaded video files
             if uploaded_videos:
                 video_folder = {'name': 'Videos', 'type': 'inspiration', 'items': []}
                 for vf in uploaded_videos:
                     if vf.filename:
-                        import base64
                         video_folder['items'].append({
                             'type': 'video_file',
                             'filename': vf.filename,
@@ -4864,7 +5075,6 @@ def whole_script():
                 audio_folder = {'name': 'Audio Files', 'type': 'inspiration', 'items': []}
                 for af in uploaded_audio:
                     if af.filename:
-                        import base64
                         audio_folder['items'].append({
                             'type': 'audio_file',
                             'filename': af.filename,
@@ -4878,7 +5088,6 @@ def whole_script():
                 doc_folder = {'name': 'Documents', 'type': 'document', 'items': []}
                 for df in uploaded_docs:
                     if df.filename:
-                        import base64
                         doc_folder['items'].append({
                             'type': 'document',
                             'filename': df.filename,
@@ -4887,12 +5096,11 @@ def whole_script():
                 if doc_folder['items']:
                     folders.append(doc_folder)
             
-            # === NEW: Process uploaded image files ===
+            # Process uploaded image files
             if uploaded_images:
                 image_folder = {'name': 'Images', 'type': 'document', 'items': []}
                 for img in uploaded_images:
                     if img.filename:
-                        import base64
                         image_folder['items'].append({
                             'type': 'image_file',
                             'filename': img.filename,
@@ -4928,7 +5136,7 @@ def whole_script():
                 if fb_folder['items']:
                     folders.append(fb_folder)
             
-            # === NEW: Process TikTok URLs ===
+            # Process TikTok URLs
             if tiktok_urls:
                 tiktok_folder = {'name': 'TikTok', 'type': 'inspiration', 'items': []}
                 for url in tiktok_urls:
@@ -4937,7 +5145,7 @@ def whole_script():
                 if tiktok_folder['items']:
                     folders.append(tiktok_folder)
             
-            # === NEW: Process Direct Text Inputs ===
+            # Process Direct Text Inputs
             if text_inputs:
                 text_folder = {'name': 'Text Inputs', 'type': 'document', 'items': []}
                 for idx, text_content in enumerate(text_inputs):
@@ -5047,39 +5255,26 @@ def whole_script():
                         })
                     return ('error', f"[{folder_name}] Invalid Facebook URL")
                 
-                # === NEW: TIKTOK ===
-                # elif item_type == 'tiktok_url':
-                #     url = item.get('url', '').strip()
-                #     if url and tiktok_processor.validate_tiktok_url(url):
-                #         print(f"\n[{folder_name}] Processing TikTok: {url}")
-                #         result = tiktok_processor.process_tiktok_url(url)
+                # TIKTOK
+                elif item_type == 'tiktok_url':
+                    url = item.get('url', '').strip()
+                    # if url and tiktok_processor.validate_tiktok_url(url):
+                    #     print(f"\n[{folder_name}] Processing TikTok: {url}")
+                    #     result = tiktok_processor.process_tiktok_url(url)
                         
-                #         if result['error']:
-                #             return ('error', f"[{folder_name}] TikTok {url}: {result['error']}")
+                    #     if result['error']:
+                    #         return ('error', f"[{folder_name}] TikTok {url}: {result['error']}")
                         
-                #         transcript = result['transcript']
-                #         print(f"\n{'='*80}")
-                #         print(f"TIKTOK TRANSCRIPT EXTRACTED: {url}")
-                #         print(f"{'='*80}")
-                #         print(f"Length: {len(transcript):,} characters")
-                #         print(f"Words: {result['stats'].get('word_count', 0):,}")
-                #         if result['stats'].get('actual_duration'):
-                #             print(f"Duration: {result['stats']['actual_duration']/60:.1f} minutes")
-                #         print(f"\nPREVIEW (first 500 chars):")
-                #         print(f"{'-'*80}")
-                #         print(transcript[:500])
-                #         if len(transcript) > 500:
-                #             print(f"... (truncated, {len(transcript) - 500:,} more characters)")
-                #         print(f"{'='*80}\n")
+                    #     transcript = result['transcript']
                         
-                #         return (folder_type if folder_type == 'personal' else 'inspiration', {
-                #             'folder_name': folder_name,
-                #             'url': url,
-                #             'transcript': transcript,
-                #             'stats': result['stats'],
-                #             'type': 'tiktok'
-                #         })
-                #     return ('error', f"[{folder_name}] Invalid TikTok URL")
+                    #     return (folder_type if folder_type == 'personal' else 'inspiration', {
+                    #         'folder_name': folder_name,
+                    #         'url': url,
+                    #         'transcript': transcript,
+                    #         'stats': result['stats'],
+                    #         'type': 'tiktok'
+                    #     })
+                    return ('error', f"[{folder_name}] TikTok processing not implemented")
                 
                 # AUDIO FILE
                 elif item_type == 'audio_file':
@@ -5101,7 +5296,6 @@ def whole_script():
                     )
                     
                     try:
-                        import base64
                         audio_bytes = base64.b64decode(file_data)
                         with open(audio_path, 'wb') as f:
                             f.write(audio_bytes)
@@ -5119,20 +5313,6 @@ def whole_script():
                             return ('error', f"[{folder_name}] Audio {filename}: {result['error']}")
                         
                         transcript = result['transcript']
-                        print(f"\n{'='*80}")
-                        print(f"AUDIO FILE TRANSCRIPT EXTRACTED: {filename}")
-                        print(f"{'='*80}")
-                        print(f"Length: {len(transcript):,} characters")
-                        print(f"Words: {result['stats'].get('word_count', 0):,}")
-                        if result['stats'].get('actual_duration'):
-                            print(f"Duration: {result['stats']['actual_duration']/60:.1f} minutes")
-                        print(f"Language: {result['stats'].get('detected_language', 'unknown')}")
-                        print(f"\nPREVIEW (first 500 chars):")
-                        print(f"{'-'*80}")
-                        print(transcript[:500])
-                        if len(transcript) > 500:
-                            print(f"... (truncated, {len(transcript) - 500:,} more characters)")
-                        print(f"{'='*80}\n")
                         
                         return (folder_type if folder_type == 'personal' else 'inspiration', {
                             'folder_name': folder_name,
@@ -5170,7 +5350,6 @@ def whole_script():
                     )
                     
                     try:
-                        import base64
                         video_bytes = base64.b64decode(file_data)
                         with open(video_path, 'wb') as f:
                             f.write(video_bytes)
@@ -5188,18 +5367,6 @@ def whole_script():
                             return ('error', f"[{folder_name}] Video {filename}: {result['error']}")
                         
                         transcript = result['transcript']
-                        print(f"\n{'='*80}")
-                        print(f"VIDEO FILE TRANSCRIPT EXTRACTED: {filename}")
-                        print(f"{'='*80}")
-                        print(f"Length: {len(transcript):,} characters")
-                        print(f"Words: {result['stats'].get('word_count', 0):,}")
-                        print(f"Duration: {result['stats'].get('actual_duration', 0)/60:.1f} minutes")
-                        print(f"\nPREVIEW (first 500 chars):")
-                        print(f"{'-'*80}")
-                        print(transcript[:500])
-                        if len(transcript) > 500:
-                            print(f"... (truncated, {len(transcript) - 500:,} more characters)")
-                        print(f"{'='*80}\n")
                         
                         return (folder_type if folder_type == 'personal' else 'inspiration', {
                             'folder_name': folder_name,
@@ -5237,7 +5404,6 @@ def whole_script():
                     )
                     
                     try:
-                        import base64
                         doc_bytes = base64.b64decode(file_data)
                         with open(file_path, 'wb') as f:
                             f.write(doc_bytes)
@@ -5255,18 +5421,6 @@ def whole_script():
                             return ('error', f"[{folder_name}] Doc {filename}: {result['error']}")
                         
                         doc_text = result['text']
-                        print(f"\n{'='*80}")
-                        print(f"DOCUMENT TEXT EXTRACTED: {filename}")
-                        print(f"{'='*80}")
-                        print(f"Length: {len(doc_text):,} characters")
-                        print(f"Words: {result['stats'].get('word_count', 0):,}")
-                        print(f"Pages (est): {result['stats'].get('page_estimate', 0)}")
-                        print(f"\nPREVIEW (first 500 chars):")
-                        print(f"{'-'*80}")
-                        print(doc_text[:500])
-                        if len(doc_text) > 500:
-                            print(f"... (truncated, {len(doc_text) - 500:,} more characters)")
-                        print(f"{'='*80}\n")
                         
                         return ('document', {
                             'folder_name': folder_name,
@@ -5283,7 +5437,7 @@ def whole_script():
                                 pass
                         return ('error', f"[{folder_name}] Doc error {filename}: {str(e)}")
                 
-                # === NEW: IMAGE FILE ===
+                # IMAGE FILE
                 elif item_type == 'image_file':
                     filename = item.get('filename', 'image.jpg')
                     file_data = item.get('data')
@@ -5303,7 +5457,6 @@ def whole_script():
                     )
                     
                     try:
-                        import base64
                         image_bytes = base64.b64decode(file_data)
                         with open(image_path, 'wb') as f:
                             f.write(image_bytes)
@@ -5321,17 +5474,6 @@ def whole_script():
                             return ('error', f"[{folder_name}] Image {filename}: {result['error']}")
                         
                         extracted_text = result['text']
-                        print(f"\n{'='*80}")
-                        print(f"IMAGE TEXT EXTRACTED: {filename}")
-                        print(f"{'='*80}")
-                        print(f"Length: {len(extracted_text):,} characters")
-                        print(f"Words: {result['stats'].get('word_count', 0):,}")
-                        print(f"\nPREVIEW (first 500 chars):")
-                        print(f"{'-'*80}")
-                        print(extracted_text[:500])
-                        if len(extracted_text) > 500:
-                            print(f"... (truncated, {len(extracted_text) - 500:,} more characters)")
-                        print(f"{'='*80}\n")
                         
                         return ('document', {
                             'folder_name': folder_name,
@@ -5348,7 +5490,7 @@ def whole_script():
                                 pass
                         return ('error', f"[{folder_name}] Image error {filename}: {str(e)}")
                 
-                # === NEW: TEXT INPUT ===
+                # TEXT INPUT
                 elif item_type == 'text_input':
                     text_content = item.get('content', '').strip()
                     text_name = item.get('name', 'Text Input')
@@ -5364,17 +5506,6 @@ def whole_script():
                         return ('error', f"[{folder_name}] Text {text_name}: {result['error']}")
                     
                     processed_text = result['text']
-                    print(f"\n{'='*80}")
-                    print(f"TEXT INPUT PROCESSED: {text_name}")
-                    print(f"{'='*80}")
-                    print(f"Length: {len(processed_text):,} characters")
-                    print(f"Words: {result['stats'].get('word_count', 0):,}")
-                    print(f"\nPREVIEW (first 500 chars):")
-                    print(f"{'-'*80}")
-                    print(processed_text[:500])
-                    if len(processed_text) > 500:
-                        print(f"... (truncated, {len(processed_text) - 500:,} more characters)")
-                    print(f"{'='*80}\n")
                     
                     return ('document', {
                         'folder_name': folder_name,

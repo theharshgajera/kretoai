@@ -2627,6 +2627,125 @@ def ideas_by_channel_id():
     except Exception as e:
         app.logger.error(f"Ideas by channel ID error: {str(e)}")
         return jsonify({'error': f'An error occurred: {str(e)}'}), 500
+@app.route('/api/short_ideas_by_channel_id', methods=['POST'])
+def short_ideas_by_channel_id():
+    """Fetch the last 15 videos (including Shorts) from a YouTube channel by channel ID."""
+    try:
+        data = request.get_json()
+        app.logger.debug(f"Received data: {data}")
+        channel_id = data.get('channel_id')
+
+        if not channel_id:
+            return jsonify({'error': 'Channel ID is required'}), 400
+        channel_id = channel_id.strip()
+        if not channel_id:
+            return jsonify({'error': 'Channel ID cannot be empty'}), 400
+
+        if YOUTUBE_API_KEY == 'YOUR_YOUTUBE_API_KEY':
+            app.logger.error("YouTube API key not configured.")
+            return jsonify({'error': 'YouTube API key not configured'}), 500
+
+        # Build YouTube API client
+        youtube = build('youtube', 'v3', developerKey=YOUTUBE_API_KEY)
+
+        # Verify channel exists and fetch statistics
+        channel_request = youtube.channels().list(part='snippet,statistics', id=channel_id)
+        channel_response = channel_request.execute()
+        if not channel_response.get('items'):
+            app.logger.error(f"Channel not found for ID: {channel_id}")
+            return jsonify({'error': 'Channel not found'}), 404
+        channel_title = channel_response['items'][0]['snippet']['title']
+        subscriber_count = int(channel_response['items'][0]['statistics'].get('subscriberCount', 0))
+
+        # Fetch the last 15 videos
+        search_request = youtube.search().list(
+            part='id',
+            channelId=channel_id,
+            order='date',
+            maxResults=50,
+            type='video',
+            videoDuration="short"
+        )
+        search_response = search_request.execute()
+
+        if not search_response.get('items'):
+            app.logger.error(f"No videos found for channel ID: {channel_id}")
+            return jsonify({'error': 'No videos found for the channel'}), 404
+
+        # Get video details
+        video_ids = [item['id']['videoId'] for item in search_response['items']]
+        video_details_request = youtube.videos().list(
+            part='snippet,statistics,contentDetails',
+            id=','.join(video_ids)
+        )
+        video_details_response = video_details_request.execute()
+
+        videos = []
+        total_views = 0
+        for item in video_details_response.get('items', []):
+            try:
+                duration = item['contentDetails']['duration']
+                duration_seconds = parse_duration(duration)
+                views = int(item['statistics'].get('viewCount', 0))
+                likes = int(item['statistics'].get('likeCount', 0))
+                comments = int(item['statistics'].get('commentCount', 0))
+                engagement_rate = (likes + comments) / views if views > 0 else 0
+                try:
+                    pub_date = datetime.datetime.strptime(item['snippet']['publishedAt'], '%Y-%m-%dT%H:%M:%SZ')
+                    video_age_days = (datetime.datetime.utcnow() - pub_date).days
+                except:
+                    video_age_days = 0
+
+                multiplier = engagement_rate * (views / 1000) if views > 0 else 0
+                total_views += views
+                video = {
+                    'video_id': item['id'],
+                    'title': item['snippet']['title'],
+                    'channel_id': item['snippet']['channelId'],
+                    'channel_title': item['snippet']['channelTitle'],
+                    'views': views,
+                    'views_formatted': format_number(views),
+                    'likes': likes,
+                    'likes_formatted': format_number(likes),
+                    'comments': comments,
+                    'comments_formatted': format_number(comments),
+                    'duration': duration,
+                    'duration_seconds': duration_seconds,
+                    'url': f"https://www.youtube.com/watch?v={item['id']}",
+                    'published_at': item['snippet']['publishedAt'],
+                    'thumbnail_url': item['snippet']['thumbnails']['high']['url'],
+                    'engagement_rate': round(engagement_rate, 4),
+                    'video_age_days': video_age_days,
+                    'language': item['snippet'].get('defaultLanguage', 'en'),
+                    'multiplier': round(multiplier, 4),
+                    'channel_avg_views': int(total_views / len(videos) + 1) if videos else 0,
+                    'channel_avg_views_formatted': format_number(int(total_views / len(videos) + 1)) if videos else '0',
+                    'subscriber_count': subscriber_count
+                }
+                videos.append(video)
+            except KeyError as e:
+                app.logger.error(f"Missing key {e} in video details for video ID: {item.get('id', 'unknown')}")
+                continue
+
+        # Sort by published date (most recent first)
+        videos.sort(key=lambda x: x['published_at'], reverse=True)
+        videos = videos[:50]  # Ensure max 15 videos
+
+        app.logger.info(f"Found {len(videos)} videos for channel {channel_id}")
+        return jsonify({
+            'success': True,
+            'channel_id': channel_id,
+            'channel_title': channel_title,
+            'total_results': len(videos),
+            'videos': videos
+        })
+
+    except HttpError as e:
+        app.logger.error(f"YouTube API error in ideas_by_channel_id for channel {channel_id}: {str(e)}")
+        return jsonify({'error': f'YouTube API error: {str(e)}'}), 503
+    except Exception as e:
+        app.logger.error(f"Ideas by channel ID error: {str(e)}")
+        return jsonify({'error': f'An error occurred: {str(e)}'}), 500
 
 @app.route('/api/get_viral_thumbnails', methods=['POST'])
 def viral_thumbnails():

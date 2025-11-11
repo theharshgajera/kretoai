@@ -2610,7 +2610,7 @@ def ideas_by_channel_id():
 
         # Sort by published date (most recent first)
         videos.sort(key=lambda x: x['published_at'], reverse=True)
-        videos = videos[:15]  # Ensure max 15 videos
+        videos = videos[:50]  # Ensure max 15 videos
 
         app.logger.info(f"Found {len(videos)} videos for channel {channel_id}")
         return jsonify({

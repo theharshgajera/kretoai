@@ -2543,8 +2543,9 @@ def ideas_by_channel_id():
             part='id',
             channelId=channel_id,
             order='date',
-            maxResults=15,
-            type='video'
+            maxResults=50,
+            type='video',
+            videoDuration="medium"
         )
         search_response = search_request.execute()
 

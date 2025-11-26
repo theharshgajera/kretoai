@@ -1847,7 +1847,7 @@ def video_outliers():
                 if latest_videos else 1
             )
 
-            def clean_video(v):
+            def clean_video(v, list_type):
                 views = int(v["statistics"].get("viewCount", 0))
                 duration = parse_duration(v.get("contentDetails", {}).get("duration", "PT0S"))
 

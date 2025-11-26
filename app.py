@@ -5990,7 +5990,7 @@ def shorts_videos():
                 if len(trending_videos) >= 10:
                     break
 
-            def format_video(v):
+            def format_video(v, list_type):
                 duration_str = v.get("contentDetails", {}).get("duration", "")
                 duration = parse_duration(duration_str)
                 views = int(v["statistics"].get("viewCount", 0))
@@ -6030,7 +6030,8 @@ def shorts_videos():
                     "url": f"https://www.youtube.com/watch?v={v['id']}",
                     "language": language,
                     "published_date": published_at,
-                    "published_date_friendly": published_date_friendly
+                    "published_date_friendly": published_date_friendly,
+                    "list_type": list_type
                 }
 
             channel_data = {
@@ -6039,8 +6040,8 @@ def shorts_videos():
                 "subscriber_count": subs_count,
                 "avg_recent_views": round(avg_recent_views, 2),
                 "avg_recent_views_formatted": format_number(round(avg_recent_views, 0)),
-                "trending": [format_video(v) for v in trending_videos],
-                "popular": [format_video(v) for v in popular_videos]
+                "trending": [format_video(v, "trending") for v in trending_videos],
+                popular": [format_video(v, "popular") for v in popular_videos] 
             }
 
             channel_videos.append(channel_data)

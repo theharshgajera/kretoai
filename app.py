@@ -1675,6 +1675,7 @@ def merge_videos(latest_videos, popular_videos):
 #                     "multiplier": round(views / avg_recent_views, 2) if avg_recent_views > 0 else 0,
 #                     "thumbnail_url": v["snippet"]["thumbnails"].get("high", {}).get("url"),
 #                     "url": f"https://www.youtube.com/watch?v={v['id']}"
+
 #                 }
 
 #             latest_videos_all.extend([clean_video(v) for v in latest_videos[:50]])
@@ -1863,12 +1864,13 @@ def video_outliers():
                     "thumbnail_url": v["snippet"]["thumbnails"].get("high", {}).get("url"),
                     "url": f"https://www.youtube.com/watch?v={v['id']}",
                     "subscriber_count": subs_count,
+                    "list_type": list_type,
                     "published_at": v["snippet"].get("publishedAt", "")
                 }
 
             # ✅ If a channel has fewer videos than cap, take all available
-            latest_videos_all.extend([clean_video(v) for v in latest_videos])
-            popular_videos_all.extend([clean_video(v) for v in popular_videos])
+            latest_videos_all.extend([clean_video(v, "latest") for v in latest_videos])
+            popular_videos_all.extend([clean_video(v, "popular") for v in popular_videos])
 
         # Sorting
         latest_videos_all.sort(key=lambda x: x["views"], reverse=True)

@@ -6041,7 +6041,7 @@ def shorts_videos():
                 "avg_recent_views": round(avg_recent_views, 2),
                 "avg_recent_views_formatted": format_number(round(avg_recent_views, 0)),
                 "trending": [format_video(v, "trending") for v in trending_videos],
-                popular": [format_video(v, "popular") for v in popular_videos] 
+                "popular": [format_video(v, "popular") for v in popular_videos] 
             }
 
             channel_videos.append(channel_data)

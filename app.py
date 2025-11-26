@@ -4870,7 +4870,10 @@ def shorts_by_channel_id():
                 if len(latest_videos) >= 5:
                     break
 
-            for v in top_videos + latest_videos:
+            # --- Start: New separate loops to assign 'list_type' and handle duplicates ---
+
+            # 1. Process Top 5 videos
+            for v in top_videos:
                 duration = safe_duration(v)
                 views = int(v["statistics"].get("viewCount", 0))
                 multiplier = round(views / avg_recent_views, 2) if avg_recent_views > 0 else 0
@@ -4887,9 +4890,37 @@ def shorts_by_channel_id():
                     "multiplier": multiplier,
                     "avg_recent_views": round(avg_recent_views, 2),
                     "thumbnail_url": v["snippet"]["thumbnails"]["high"]["url"],
-                    "url": f"https://www.youtube.com/watch?v={v['id']}"
+                    "url": f"https://www.youtube.com/watch?v={v['id']}",
+                    "list_type": "top_shorts" # Correct list type
                 })
 
+            # Prepare IDs to prevent duplication
+            top_video_ids = {v["id"] for v in top_videos}
+
+            # 2. Process Latest Outlier videos (Skip if already in top_videos)
+            for v in latest_videos:
+                if v["id"] in top_video_ids:
+                    continue
+                    
+                duration = safe_duration(v)
+                views = int(v["statistics"].get("viewCount", 0))
+                multiplier = round(views / avg_recent_views, 2) if avg_recent_views > 0 else 0
+
+                all_videos.append({
+                    "video_id": v["id"],
+                    "title": v["snippet"]["title"],
+                    "channel_id": comp_id,
+                    "channel_title": comp_title,
+                    "competitor_frequency": comp_data.get("count", 0),
+                    "views": views,
+                    "views_formatted": format_number(views),
+                    "duration_seconds": duration,
+                    "multiplier": multiplier,
+                    "avg_recent_views": round(avg_recent_views, 2),
+                    "thumbnail_url": v["snippet"]["thumbnails"]["high"]["url"],
+                    "url": f"https://www.youtube.com/watch?v={v['id']}",
+                    "list_type": "latest_outlier_shorts" # Correct list type
+                })
             if len(all_videos) >= 200:
                 break
 

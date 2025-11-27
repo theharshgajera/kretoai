@@ -14,7 +14,7 @@ from youtube_api import get_viral_thumbnails
 from youtube_transcript_api import YouTubeTranscriptApi
 from youtube_transcript_api._errors import TranscriptsDisabled, NoTranscriptFound, VideoUnavailable
 import isodate
-from script_generate import generate_script_from_title
+from script_generate import generate_script_from_titleshorts
 from thumbnail_review import review_thumbnail
 import base64
 import googleapiclient.discovery
@@ -6040,7 +6040,7 @@ def shorts_videos():
                 "subscriber_count": subs_count,
                 "avg_recent_views": round(avg_recent_views, 2),
                 "avg_recent_views_formatted": format_number(round(avg_recent_views, 0)),
-                "trending": [format_video(v, "trending") for v in trending_videos],
+                "latest": [format_video(v, "latest") for v in trending_videos],
                 "popular": [format_video(v, "popular") for v in popular_videos] 
             }
 

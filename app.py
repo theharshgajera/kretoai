@@ -5981,9 +5981,7 @@ def shorts_videos():
                 reverse=True
             )[:10]
 
-            # ---------------------------------------------------------
-            # CHANGE 1: Get Latest Videos (Simple slice, no calculation)
-            # ---------------------------------------------------------
+            # Latest Shorts (Simply the first 10, as search is ordered by date)
             latest_videos = comp_videos[:10]
 
             def format_video(v, list_type):
@@ -6036,9 +6034,7 @@ def shorts_videos():
                 "subscriber_count": subs_count,
                 "avg_recent_views": round(avg_recent_views, 2),
                 "avg_recent_views_formatted": format_number(round(avg_recent_views, 0)),
-                # ---------------------------------------------------------
-                # CHANGE 2: Use "latest" key and pass "latest" list type
-                # ---------------------------------------------------------
+                # THIS WAS THE FIX: Use 'latest_videos' here, not 'trending_videos'
                 "latest": [format_video(v, "latest") for v in latest_videos],
                 "popular": [format_video(v, "popular") for v in popular_videos] 
             }
@@ -6051,9 +6047,7 @@ def shorts_videos():
 
         for i in range(max_videos_per_type):
             for j, channel in enumerate(channel_videos):
-                # ---------------------------------------------------------
-                # CHANGE 3: Look for "latest" in channel dict, NOT "trending"
-                # ---------------------------------------------------------
+                # Using 'latest' key here now
                 if j % 2 == 0 and i < len(channel["latest"]):
                     all_videos.append(channel["latest"][i])
                 elif j % 2 == 1 and i < len(channel["popular"]):

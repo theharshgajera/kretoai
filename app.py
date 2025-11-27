@@ -5981,14 +5981,10 @@ def shorts_videos():
                 reverse=True
             )[:10]
 
-            # Trending Shorts: top 10 above average
-            trending_videos = []
-            for v in comp_videos[:20]:  # look at first 20 recent videos
-                views = int(v["statistics"].get("viewCount", 0))
-                if avg_recent_views > 0 and (views / avg_recent_views) > 1:
-                    trending_videos.append(v)
-                if len(trending_videos) >= 10:
-                    break
+            # ---------------------------------------------------------
+            # CHANGE 1: Get Latest Videos (Simple slice, no calculation)
+            # ---------------------------------------------------------
+            latest_videos = comp_videos[:10]
 
             def format_video(v, list_type):
                 duration_str = v.get("contentDetails", {}).get("duration", "")
@@ -6040,20 +6036,26 @@ def shorts_videos():
                 "subscriber_count": subs_count,
                 "avg_recent_views": round(avg_recent_views, 2),
                 "avg_recent_views_formatted": format_number(round(avg_recent_views, 0)),
-                "latest": [format_video(v, "latest") for v in trending_videos],
+                # ---------------------------------------------------------
+                # CHANGE 2: Use "latest" key and pass "latest" list type
+                # ---------------------------------------------------------
+                "latest": [format_video(v, "latest") for v in latest_videos],
                 "popular": [format_video(v, "popular") for v in popular_videos] 
             }
 
             channel_videos.append(channel_data)
 
-        # Interleave trending/popular Shorts across channels
+        # Interleave latest/popular Shorts across channels
         all_videos = []
-        max_videos_per_type = 10  # now 10
+        max_videos_per_type = 10 
 
         for i in range(max_videos_per_type):
             for j, channel in enumerate(channel_videos):
-                if j % 2 == 0 and i < len(channel["trending"]):
-                    all_videos.append(channel["trending"][i])
+                # ---------------------------------------------------------
+                # CHANGE 3: Look for "latest" in channel dict, NOT "trending"
+                # ---------------------------------------------------------
+                if j % 2 == 0 and i < len(channel["latest"]):
+                    all_videos.append(channel["latest"][i])
                 elif j % 2 == 1 and i < len(channel["popular"]):
                     all_videos.append(channel["popular"][i])
                 if len(all_videos) >= 200:

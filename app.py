@@ -251,7 +251,35 @@ def get_channel_shorts_details(channel_id, max_results=50):
         app.logger.error(f"Error fetching Shorts for channel {channel_id}: {str(e)}")
         return []
 
+def calculate_hours_since_published(published_at_iso_string):
+    """
+    Calculates the total hours elapsed since a video was published.
 
+    :param published_at_iso_string: The video's publication time string (e.g., '2025-12-10T15:30:00Z').
+    :return: The number of hours elapsed (float).
+    """
+    try:
+        # 1. Parse the ISO 8601 string into a timezone-aware datetime object
+        published_time = dateutil.parser.isoparse(published_at_iso_string)
+        
+        # 2. Get the current time, ensuring it is also timezone-aware (UTC)
+        #    We use UTC/timezone.utc to match the 'Z' in the YouTube string
+        current_time = datetime.now(timezone.utc)
+        
+        # 3. Calculate the difference (timedelta)
+        time_difference = current_time - published_time
+        
+        # 4. Convert the total difference into hours
+        total_seconds = time_difference.total_seconds()
+        total_hours = total_seconds / 3600.0 # 3600 seconds in an hour
+        
+        # Videos published in the future (rare, but for safety) should return 0 or 1
+        return max(1.0, total_hours) 
+        
+    except Exception as e:
+        # Handle cases where the string might be invalid or missing
+        print(f"Error parsing date: {e}")
+        return 1.0 # Return a default of 1 hour to prevent division by zero
 def get_channel_videos_details(channel_id, max_results=50):
     """Fetch up to 50 videos from a channel, excluding Shorts, with detailed stats."""
     youtube = build('youtube', 'v3', developerKey=YOUTUBE_API_KEY)

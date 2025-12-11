@@ -1829,7 +1829,7 @@ def video_outliers():
         popular_videos_all = []
 
         # ✅ Fixed per-channel cap
-        per_channel_cap = 20  # Hardcoded limit per channel
+        per_channel_cap = 20 
 
         for ch_id in channel_ids:
             # Channel info
@@ -1870,38 +1870,99 @@ def video_outliers():
             popular_ids = [item["id"]["videoId"] for item in search_resp_pop.get("items", [])]
             popular_videos = fetch_video_details(youtube, popular_ids)
 
-            # Compute average recent views
-            avg_recent_views = (
-                sum(int(v["statistics"].get("viewCount", 0)) for v in latest_videos) / len(latest_videos)
-                if latest_videos else 1
-            )
+            # ---------------------------------------------------------
+            # 1. CALCULATE ROBUST AVERAGE (Your New Logic)
+            # ---------------------------------------------------------
+            
+            # A. Filter for videos > 168 hours old
+            baseline_videos_views = []
+            for v in latest_videos:
+                pub_iso = v["snippet"].get("publishedAt")
+                age_hours = calculate_hours_since_published(pub_iso)
+                if age_hours > 168:
+                    baseline_videos_views.append(int(v["statistics"].get("viewCount", 0)))
+            
+            # B. Take avg of top 5 most recent valid videos
+            # (Note: latest_videos is already sorted by date desc)
+            baseline_sample = baseline_videos_views[:5]
+            
+            if baseline_sample:
+                calculated_avg = sum(baseline_sample) / len(baseline_sample)
+            else:
+                # Fallback if channel has NO videos older than 7 days
+                # We use the raw average of whatever is available, or 0
+                all_views = [int(v["statistics"].get("viewCount", 0)) for v in latest_videos]
+                calculated_avg = sum(all_views) / len(all_views) if all_views else 0
+
+            # C. Calculate Subscriber Threshold
+            if subs_count < 100000:
+                sub_threshold = subs_count * 0.10 # 10%
+            else:
+                sub_threshold = subs_count * 0.05 # 5%
+
+            # D. Final Average (The lesser of the two)
+            # Ensure we don't divide by zero later if calculated_avg is 0
+            if calculated_avg == 0:
+                final_avg_views = sub_threshold
+            else:
+                final_avg_views = min(calculated_avg, sub_threshold)
+                
+            # Safety for very small channels/edge cases
+            final_avg_views = max(1, final_avg_views)
+
+            # ---------------------------------------------------------
 
             def clean_video(v, list_type):
-                views = int(v["statistics"].get("viewCount", 0))
+                current_views = int(v["statistics"].get("viewCount", 0))
                 duration = parse_duration(v.get("contentDetails", {}).get("duration", "PT0S"))
+                pub_iso = v["snippet"].get("publishedAt", "")
+                
+                # --- NEW MULTIPLIER LOGIC ---
+                hours_old = calculate_hours_since_published(pub_iso)
+                
+                # If video is young (< 168 hours), project potential views
+                if hours_old < 168:
+                    # potential = current * (168 / age)
+                    # e.g., 10k views in 24 hours -> 10k * (7) = 70k potential
+                    # Added max(1, ...) to avoid division by zero
+                    projected_views = current_views * (168 / max(0.1, hours_old))
+                    effective_views_for_calc = projected_views
+                    is_projected = True
+                else:
+                    effective_views_for_calc = current_views
+                    is_projected = False
+
+                multiplier = round(effective_views_for_calc / final_avg_views, 2)
+                # -----------------------------
 
                 return {
                     "video_id": v["id"],
                     "title": v["snippet"]["title"],
                     "channel_id": ch_id,
                     "channel_title": ch_title,
-                    "views": views,
-                    "views_formatted": format_number(views),
+                    "views": current_views,
+                    "views_formatted": format_number(current_views),
                     "duration_seconds": duration,
-                    "avg_recent_views": round(avg_recent_views, 2),
-                    "multiplier": round(views / avg_recent_views, 2) if avg_recent_views else 0,
+                    
+                    # Debugging fields (optional, but helpful to see)
+                    "avg_recent_views": round(final_avg_views, 2),
+                    "hours_since_published": round(hours_old, 1),
+                    "projected_views": round(effective_views_for_calc) if is_projected else None,
+                    
+                    "multiplier": multiplier,
                     "thumbnail_url": v["snippet"]["thumbnails"].get("high", {}).get("url"),
                     "url": f"https://www.youtube.com/watch?v={v['id']}",
                     "subscriber_count": subs_count,
                     "list_type": list_type,
-                    "published_at": v["snippet"].get("publishedAt", "")
+                    "published_at": pub_iso
                 }
 
             # ✅ If a channel has fewer videos than cap, take all available
             latest_videos_all.extend([clean_video(v, "latest") for v in latest_videos])
             popular_videos_all.extend([clean_video(v, "popular") for v in popular_videos])
 
-        # Sorting
+        # Sorting (We still sort by raw views for display, or you could sort by multiplier)
+        # Assuming you want to keep the "Visual" sorting by raw views:
         latest_videos_all.sort(key=lambda x: x["views"], reverse=True)
         popular_videos_all.sort(key=lambda x: x["views"])
 
@@ -1933,7 +1994,6 @@ def video_outliers():
                 key = f"{v['channel_id']}_{batch_index}"
 
                 if channel_counter.get(key, 0) >= 2:
-                    # Push back instead of breaking the loop
                     if lst_type == "latest":
                         latest_videos_all.append(v)
                     else:
@@ -1944,19 +2004,17 @@ def video_outliers():
                 channel_counter[key] = channel_counter.get(key, 0) + 1
                 i += 1
 
-                # ✅ Stop once we hit the target number of videos (but not before)
                 if i >= max_total_videos:
                     break
 
             if i >= max_total_videos:
                 break
 
-        # ✅ Safety fallback if iteration cap hit early
+        # ✅ Safety fallback
         if iteration_count >= max_iterations and len(final_list) < max_total_videos:
             app.logger.warning(
-                f"Max iteration limit reached with {len(final_list)} videos — filling remaining slots randomly"
+                f"Max iteration limit reached with {len(final_list)} videos"
             )
-
             remaining_videos = latest_videos_all + popular_videos_all
             final_video_ids = {v["video_id"] for v in final_list}
             remaining_videos = [v for v in remaining_videos if v["video_id"] not in final_video_ids]
@@ -1970,14 +2028,11 @@ def video_outliers():
             "success": True,
             "total_videos": len(final_list),
             "videos": final_list
-
-
         })
 
     except Exception as e:
         app.logger.error(f"Video outliers error: {str(e)}")
         return jsonify({"error": str(e)}), 500
-
 
 
 @app.route("/api/comp_analysis", methods=["POST"])

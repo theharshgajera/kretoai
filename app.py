@@ -7,7 +7,8 @@ from sklearn import logger
 import io
 import logging
 from isodate import parse_duration
-from datetime import datetime
+from datetime import datetime, timezone
+import dateutil.parser
 from uuid import uuid4
 import json
 from youtube_api import get_viral_thumbnails

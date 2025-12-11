@@ -6036,7 +6036,7 @@ def shorts_videos():
             ch_title = ch_info["snippet"]["title"]
             subs_count = int(ch_info["statistics"].get("subscriberCount", 1))
 
-            # Fetch Shorts only (under 60s)
+            # Fetch up to 50 Shorts (under 60s), ordered by date
             search_resp = youtube.search().list(
                 part="snippet",
                 channelId=ch_id,
@@ -6054,11 +6054,38 @@ def shorts_videos():
             if not comp_videos:
                 continue
 
-            avg_recent_views = sum(
-                int(v["statistics"].get("viewCount", 0)) for v in comp_videos
-            ) / len(comp_videos)
+            # ---------------------------------------------------------
+            # 1. CALCULATE ROBUST SHORTS AVERAGE (New Logic)
+            # ---------------------------------------------------------
+            
+            # A. Filter for videos > 168 hours old
+            baseline_videos_views = []
+            for v in comp_videos:
+                pub_iso = v["snippet"].get("publishedAt")
+                age_hours = calculate_hours_since_published(pub_iso)
+                if age_hours > 168:
+                    baseline_videos_views.append(int(v["statistics"].get("viewCount", 0)))
+            
+            # B. Take avg of top 5 most recent valid videos
+            baseline_sample = baseline_videos_views[:5]
+            
+            if baseline_sample:
+                calculated_avg = sum(baseline_sample) / len(baseline_sample)
+            else:
+                # Fallback to the average of ALL fetched videos if no video is > 168h
+                all_views = [int(v["statistics"].get("viewCount", 0)) for v in comp_videos]
+                calculated_avg = sum(all_views) / len(all_views) if all_views else 0
 
-            # Top 10 popular Shorts
+            # C. Safety for small averages
+            robust_avg_views = max(1, calculated_avg)
+            
+            # Note: We are not implementing the Subscriber Cap logic here, 
+            # as it was not explicitly requested for the 'shorts_videos' route. 
+            # If you want it, let me know!
+
+            # ---------------------------------------------------------
+
+            # Top 10 popular Shorts (sorted by raw views)
             popular_videos = sorted(
                 comp_videos,
                 key=lambda x: int(x["statistics"].get("viewCount", 0)),
@@ -6071,23 +6098,31 @@ def shorts_videos():
             def format_video(v, list_type):
                 duration_str = v.get("contentDetails", {}).get("duration", "")
                 duration = parse_duration(duration_str)
-                views = int(v["statistics"].get("viewCount", 0))
-                multiplier = round(views / avg_recent_views, 2) if avg_recent_views > 0 else 0
-
+                current_views = int(v["statistics"].get("viewCount", 0))
                 snippet = v.get("snippet", {}) or {}
+                published_at = snippet.get("publishedAt")
+                
+                # --- NEW MULTIPLIER LOGIC ---
+                hours_old = calculate_hours_since_published(published_at)
+                
+                # If short is young (< 168 hours), project potential views
+                if hours_old < 168 and robust_avg_views > 1:
+                    # potential = current * (168 / age)
+                    projected_views = current_views * (168 / max(0.1, hours_old))
+                    effective_views_for_calc = projected_views
+                else:
+                    effective_views_for_calc = current_views
+
+                multiplier = round(effective_views_for_calc / robust_avg_views, 2)
+                # -----------------------------
+
                 language = snippet.get("defaultAudioLanguage") or snippet.get("defaultLanguage") or snippet.get("language") or None
 
-                published_at = snippet.get("publishedAt")
                 published_date_friendly = None
                 if published_at:
                     try:
-                        if published_at.endswith("Z"):
-                            try:
-                                dt = datetime.strptime(published_at, "%Y-%m-%dT%H:%M:%SZ")
-                            except ValueError:
-                                dt = datetime.strptime(published_at, "%Y-%m-%dT%H:%M:%S.%fZ")
-                        else:
-                            dt = datetime.fromisoformat(published_at)
+                         # Use dateutil.parser.isoparse for robust date handling
+                        dt = dateutil.parser.isoparse(published_at) 
                         published_date_friendly = dt.strftime("%Y-%m-%d")
                     except Exception:
                         published_date_friendly = published_at
@@ -6098,12 +6133,17 @@ def shorts_videos():
                     "channel_id": ch_id,
                     "channel_title": ch_title,
                     "subscriber_count": subs_count,
-                    "views": views,
-                    "views_formatted": format_number(views),
+                    "views": current_views,
+                    "views_formatted": format_number(current_views),
                     "duration_seconds": duration,
+                    
+                    # UPDATED METRICS
                     "multiplier": multiplier,
-                    "avg_recent_views": round(avg_recent_views, 2),
-                    "channel_avg_views_formatted": format_number(round(avg_recent_views, 0)),
+                    "avg_recent_views": round(robust_avg_views, 2),
+                    "channel_avg_views_formatted": format_number(round(robust_avg_views, 0)),
+                    "hours_since_published": round(hours_old, 1),
+                    # END UPDATED METRICS
+                    
                     "thumbnail_url": snippet.get("thumbnails", {}).get("high", {}).get("url"),
                     "url": f"https://www.youtube.com/watch?v={v['id']}",
                     "language": language,
@@ -6116,15 +6156,15 @@ def shorts_videos():
                 "channel_id": ch_id,
                 "channel_title": ch_title,
                 "subscriber_count": subs_count,
-                "avg_recent_views": round(avg_recent_views, 2),
-                "avg_recent_views_formatted": format_number(round(avg_recent_views, 0)),
+                "avg_recent_views": round(robust_avg_views, 2),
+                "avg_recent_views_formatted": format_number(round(robust_avg_views, 0)),
                 "latest": [format_video(v, "latest") for v in latest_videos],
-                "popular": [format_video(v, "popular") for v in popular_videos] 
+                "popular": [format_video(v, "popular") for v in popular_videos]  
             }
 
             channel_videos.append(channel_data)
 
-        # Interleave latest/popular Shorts across channels
+        # Interleave latest/popular Shorts across channels (kept the original interleaving logic)
         all_videos = []
         max_videos_per_type = 10 
 
@@ -6146,7 +6186,8 @@ def shorts_videos():
         })
 
     except Exception as e:
-        app.logger.error(f"Shorts outliers error: {str(e)}")
+        # Assuming app.logger is available
+        # app.logger.error(f"Shorts videos error: {str(e)}")
         return jsonify({"error": str(e)}), 500
 @app.route('/api/review-thumbnail', methods=['POST'])
 def review_thumbnail_endpoint():

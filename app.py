@@ -2163,15 +2163,40 @@ def comp_analysis():
             comp_uploads = comp_info["contentDetails"]["relatedPlaylists"]["uploads"]
             comp_thumbnail = comp_info["snippet"]["thumbnails"]["high"]["url"]
 
-            # Fetch up to 5 recent uploads
+            # Fetch recent uploads (up to 15 to allow filtering)
             comp_uploads_resp = youtube.playlistItems().list(
                 part="contentDetails",
                 playlistId=comp_uploads,
-                maxResults=5
+                maxResults=15
             ).execute()
 
             comp_video_ids = [v["contentDetails"]["videoId"] for v in comp_uploads_resp.get("items", [])]
-            comp_videos = fetch_video_details(youtube, comp_video_ids)
+            all_comp_videos = fetch_video_details(youtube, comp_video_ids)
+
+            def filter_by_duration(videos, min_dur=None, max_dur=None):
+                filtered = []
+                for v in videos:
+                    duration = parse_duration(v.get("contentDetails", {}).get("duration", ""))
+                    if (min_dur is None or duration >= min_dur) and (max_dur is None or duration <= max_dur):
+                        filtered.append(v)
+                return filtered
+
+            # 1️⃣ Medium videos (4–10 min)
+            comp_videos = filter_by_duration(all_comp_videos, min_dur=240, max_dur=600)
+
+            # 2️⃣ Fallback to long videos (>10 min)
+            if len(comp_videos) < 5:
+                long_videos = filter_by_duration(all_comp_videos, min_dur=600)
+                comp_videos.extend([v for v in long_videos if v not in comp_videos])
+
+            # 3️⃣ Fallback to short videos (<4 min)
+            if len(comp_videos) < 5:
+                short_videos = filter_by_duration(all_comp_videos, max_dur=240)
+                comp_videos.extend([v for v in short_videos if v not in comp_videos])
+
+            # Limit to 5 videos
+            comp_videos = comp_videos[:5]
+
 
             if not comp_videos:
                 continue

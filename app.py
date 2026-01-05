@@ -5092,8 +5092,8 @@ def generate_script_from_title_endpoint():
         return jsonify({'success': False, 'error': f'An error occurred: {str(e)}'}), 500
 
 
-@app.route('/api/whole_script', methods=['POST'])
-def whole_script():
+@app.route('/api/generate-complete-script', methods=['POST'])
+def generate_complete_script():
     """ULTRA-OPTIMIZED: Fast script generation with parallel processing + ALL MEDIA TYPES"""
     user_id = request.remote_addr
     print(f"\n{'='*60}")
@@ -5116,9 +5116,17 @@ def whole_script():
             prompt = data.get('prompt', '').strip()
             target_minutes = data.get('minutes')
             
-            # ========================================
-            # HANDLE JSON SCHEMA - URLs and Text
-            # ========================================
+            # =================================================================
+            # 1. SUPPORT "FOLDERS" MODE (The JSON format you sent)
+            # =================================================================
+            existing_folders = data.get('folders', [])
+            if existing_folders and isinstance(existing_folders, list):
+                print(f"✓ Detected {len(existing_folders)} folders provided directly in JSON")
+                folders.extend(existing_folders)
+
+            # =================================================================
+            # 2. SUPPORT "INDIVIDUAL" MODE (Backward compatibility)
+            # =================================================================
             
             # YouTube URLs
             youtube_urls = data.get('youtube_urls', [])
@@ -5129,7 +5137,7 @@ def whole_script():
                         yt_folder['items'].append({'type': 'youtube_url', 'url': url.strip()})
                 if yt_folder['items']:
                     folders.append(yt_folder)
-                    print(f"Added {len(yt_folder['items'])} YouTube URLs")
+                    print(f"Added {len(yt_folder['items'])} YouTube URLs from flat list")
             
             # Instagram URLs
             instagram_urls = data.get('instagram_urls', [])
@@ -5140,7 +5148,7 @@ def whole_script():
                         insta_folder['items'].append({'type': 'instagram_url', 'url': url.strip()})
                 if insta_folder['items']:
                     folders.append(insta_folder)
-                    print(f"Added {len(insta_folder['items'])} Instagram URLs")
+                    print(f"Added {len(insta_folder['items'])} Instagram URLs from flat list")
             
             # Facebook URLs
             facebook_urls = data.get('facebook_urls', [])
@@ -5151,7 +5159,7 @@ def whole_script():
                         fb_folder['items'].append({'type': 'facebook_url', 'url': url.strip()})
                 if fb_folder['items']:
                     folders.append(fb_folder)
-                    print(f"Added {len(fb_folder['items'])} Facebook URLs")
+                    print(f"Added {len(fb_folder['items'])} Facebook URLs from flat list")
             
             # TikTok URLs
             tiktok_urls = data.get('tiktok_urls', [])
@@ -5162,7 +5170,7 @@ def whole_script():
                         tiktok_folder['items'].append({'type': 'tiktok_url', 'url': url.strip()})
                 if tiktok_folder['items']:
                     folders.append(tiktok_folder)
-                    print(f"Added {len(tiktok_folder['items'])} TikTok URLs")
+                    print(f"Added {len(tiktok_folder['items'])} TikTok URLs from flat list")
             
             # Video Files (Download from URLs)
             video_files = data.get('video_files', [])

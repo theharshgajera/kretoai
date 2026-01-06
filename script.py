@@ -1970,97 +1970,140 @@ class EnhancedScriptGenerator:
         """
 
         # === FIXED: ADDING MISSING CHAT MODIFICATION PROMPT ===
+        self.chat_modification_prompt = """
+        You are an expert YouTube script editor.  
+        You have the **full original script**, the **creator’s style profile**, **topic insights**, and **document insights**.
+
+        **CURRENT SCRIPT:**
+        {current_script}
+
+        **CREATOR STYLE PROFILE:**
+        {style_profile}
+
+        **TOPIC INSIGHTS:**
+        {topic_insights}
+
+        **DOCUMENT INSIGHTS:**
+        {document_insights}
+
+        **USER REQUEST:**
+        {user_message}
+
+        **INSTRUCTIONS**
+        1. Keep the exact same markdown structure (# TITLE, ## HOOK, ### Section …).
+        2. Preserve the creator’s authentic voice (tone, phrasing, catch-phrases).
+        3. Apply the user’s request **exactly** (add, remove, re-word).
+        4. Do **not** add any production notes, visual cues, or tone descriptions.
+        5. Return **only** the spoken words (pure speech).
+
+        Generate the **updated script** now.
+        """
+
         self.enhanced_script_template = """
-You are an expert YouTube script writer creating a STRICTLY TIMED script with EXACT duration control.
+        You are an expert YouTube script writer creating a STRICTLY TIMED script with EXACT duration control.
 
-**CREATOR'S AUTHENTIC STYLE PROFILE:**
-{style_profile}
+        **CREATOR'S AUTHENTIC STYLE PROFILE:**
+        {style_profile}
 
-**TOPIC INSIGHTS FROM INSPIRATION CONTENT:**
-{inspiration_summary}
+        **TOPIC INSIGHTS FROM INSPIRATION CONTENT:**
+        {inspiration_summary}
 
-**DOCUMENT KNOWLEDGE BASE:**
-{document_insights}
+        **DOCUMENT KNOWLEDGE BASE:**
+        {document_insights}
 
-**USER'S SPECIFIC REQUEST:**
-{user_prompt}
+        **USER'S SPECIFIC REQUEST:**
+        {user_prompt}
 
-**TARGET DURATION:** {target_duration}
+        **TARGET DURATION:** {target_duration}
 
-**CRITICAL DURATION REQUIREMENTS:**
-{duration_instruction}
+        **CRITICAL DURATION REQUIREMENTS:**
+        {duration_instruction}
 
-**WORD COUNT TARGET:** {word_count_target} words (STRICT: between {min_words}-{max_words} words)
+        **WORD COUNT TARGET:** {word_count_target} words (STRICT: between {min_words}-{max_words} words)
 
-**SCRIPT GENERATION INSTRUCTIONS:**
+        **SCRIPT GENERATION INSTRUCTIONS:**
 
-1. **STRICT TIMING ENFORCEMENT (MOST IMPORTANT):**
-- You MUST write EXACTLY {word_count_target} words (±5% tolerance allowed)
-- Speaking pace: 150 words per minute
-- Total duration: {target_seconds} seconds
-- COUNT YOUR WORDS as you write and STOP at {word_count_target} words
-- If you exceed {max_words} words, the video will be TOO LONG
-- If you write less than {min_words} words, the video will be TOO SHORT
+        1. **STRICT TIMING ENFORCEMENT (MOST IMPORTANT):**
+        - You MUST write EXACTLY {word_count_target} words (±5% tolerance allowed)
+        - Speaking pace: 150 words per minute
+        - Total duration: {target_seconds} seconds
+        - COUNT YOUR WORDS as you write and STOP at {word_count_target} words
+        - If you exceed {max_words} words, the video will be TOO LONG
+        - If you write less than {min_words} words, the video will be TOO SHORT
 
-2. **MAINTAINS AUTHENTIC VOICE:**
-- Use the creator's natural speaking style, vocabulary, and personality traits identified in the style profile
-- Keep their unique catchphrases and speaking patterns
+        2. **MAINTAINS AUTHENTIC VOICE:**
+        - Use the creator's natural speaking style, vocabulary, and personality traits identified in the style profile
+        - Keep their unique catchphrases and speaking patterns
 
-3. **INTEGRATES DOCUMENT KNOWLEDGE AS AUTHORITY:**
-- Use document insights as the core foundation for claims
-- Weave in specific data, statistics, and expert findings to substantiate all major points
-- Reference key concepts and methodologies from the documents to build credibility
-- Explain complex topics using the structured knowledge from the documents
+        3. **INTEGRATES DOCUMENT KNOWLEDGE AS AUTHORITY:**
+        - Use document insights as the core foundation for claims
+        - Weave in specific data, statistics, and expert findings to substantiate all major points
+        - Reference key concepts and methodologies from the documents to build credibility
+        - Explain complex topics using the structured knowledge from the documents
 
-4. **LEVERAGES INSPIRATION INSIGHTS FOR ENGAGEMENT:**
-- Address trending discussions or common questions identified
-- Use successful presentation techniques (like analogies or storytelling) from the analysis
-- Apply proven engagement strategies to keep the audience hooked
+        4. **LEVERAGES INSPIRATION INSIGHTS FOR ENGAGEMENT:**
+        - Address trending discussions or common questions identified
+        - Use successful presentation techniques (like analogies or storytelling) from the analysis
+        - Apply proven engagement strategies to keep the audience hooked
 
-5. **STRUCTURE WITH PRECISE TIMING:**
-- Hook (0-{hook_duration} seconds): Approximately {hook_words} words
-- Introduction ({hook_duration}-{intro_end} seconds): Approximately {intro_words} words
-- Main Content ({intro_end}-{main_end} seconds): Approximately {main_words} words
-- Conclusion ({main_end}-{target_seconds} seconds): Approximately {conclusion_words} words
+        5. **STRUCTURE WITH PRECISE TIMING:**
+        - Hook (0-{hook_duration} seconds): Approximately {hook_words} words
+        - Introduction ({hook_duration}-{intro_end} seconds): Approximately {intro_words} words
+        - Main Content ({intro_end}-{main_end} seconds): Approximately {main_words} words
+        - Conclusion ({main_end}-{target_seconds} seconds): Approximately {conclusion_words} words
 
-6. **PRIORITIZES DEPTH & EXPERT KNOWLEDGE:**
-- Go beyond the obvious - explain the 'why' and 'how'
-- Address nuance and misconceptions
-- Build a learning path from foundational to complex concepts
-- Provide actionable value in every section
+        6. **PRIORITIZES DEPTH & EXPERT KNOWLEDGE:**
+        - Go beyond the obvious - explain the 'why' and 'how'
+        - Address nuance and misconceptions
+        - Build a learning path from foundational to complex concepts
+        - Provide actionable value in every section
+                
+        7. **MAINTAINS ENGAGEMENT:**
+        - Use the creator's proven engagement techniques
+        - Ask rhetorical and engaging questions
+        - Apply storytelling methods that make complex data memorable
 
-7. **MAINTAINS ENGAGEMENT:**
-- Use the creator's proven engagement techniques
-- Ask rhetorical and engaging questions
-- Apply storytelling methods that make complex data memorable
+        8. **HOOK REQUIREMENTS (CRITICAL):**
+        - First timestamp [00:00-00:XX] must START with immediate impact
+        - NO greetings like "Hey everyone", "Hi there", "What's up", etc.
+        - Open with: shocking statement, intriguing question, bold claim, or surprising fact
+        - Hook must grab attention in first 3 seconds
+        - Examples of good hooks: "Netflix in 2026 will be overflowing...", "Tired of endless scrolling?", "What if I told you..."
 
-**CRITICAL OUTPUT FORMAT - STRUCTURED MARKDOWN WITH TIMESTAMPS:**
+        **CRITICAL OUTPUT FORMAT - TIMESTAMPS AND SPEECH ONLY:**
 
-**FORMAT RULES:**
-- Start with: # [Video Title]
-- Then: ## HOOK
-- Then: ## INTRODUCTION
-- Then: ## MAIN CONTENT (with ### subsections as needed)
-- Then: ## CONCLUSION
-- Within each section, use timestamps: [MM:SS-MM:SS] Spoken words here
-- Each timestamp segment should be 10-20 seconds of content (25-50 words)
-- NO production notes, NO visual directions, NO camera instructions
-- NO tone descriptions like "(Tone shifts, more empathetic)"
-- NO bracketed instructions like "[Production Note: ...]"
-- NO asterisk annotations like "*[Expert Insight: ...]"
-- ONLY section headers (using #, ##, ###) and timestamps [MM:SS-MM:SS] followed by spoken dialogue
-- Start at [00:00] and end at exactly [{target_minutes}:{target_seconds_remainder:02d}]
+        **FORMAT RULES:**
+        - Start with a bold title line: **[Your Creative Title Here]**
+        - Follow with blank line
+        - Then use STRICTLY CONTINUOUS timestamps: [MM:SS-MM:SS] Spoken words here
+        - Timestamps MUST be sequential and continuous (e.g., [00:00-00:15], [00:15-00:30], [00:30-00:50])
+        - NO section headers like "# TITLE" or "## HOOK" or "### Section" 
+        - You MAY use **BOLD** for the title and important emphasis words in the script
+        - NO production notes, NO visual directions, NO camera instructions
+        - NO tone descriptions like "(Tone shifts, more empathetic)"
+        - NO bracketed instructions like "[Production Note: ...]"
+        - NO asterisk annotations like "*[Expert Insight: ...]"
+        - Each timestamp segment should be 10-20 seconds of content (25-50 words)
+        - Start at [00:00-00:XX] and end at exactly [{target_minutes}:{target_seconds_remainder:02d}]
+        - EVERY timestamp must pick up EXACTLY where the previous one ended (no gaps, no overlaps)
+        
+      **YOUR TASK:**
+        - Start with: **[Creative Title]** (bold, engaging title on its own line)
+        - Follow immediately with the hook timestamp starting at [00:00-00:XX]
+        - DO NOT start with greetings like "Hey everyone" or "Hi there" - jump straight into the hook
+        - Generate a script that is EXACTLY {word_count_target} words (between {min_words}-{max_words} words)
+        - Use CONTINUOUS timestamps: [00:00-00:15], [00:15-00:32], [00:32-00:50], etc.
+        - CRITICAL: Each new timestamp MUST start where the previous ended (maintain continuity)
+        - End at EXACTLY [{target_minutes}:{target_seconds_remainder:02d}]
+        - You may use **bold** for title and key emphasis words
+        - The first timestamp [00:00-00:XX] should immediately hook viewers with an intriguing statement or question
+        - NO casual greetings - start with impact and intrigue
+        - Count your words carefully and stop when you reach the target
+        - Write as if the creator is speaking directly to the camera
+        - Make it engaging, informative, and true to the creator's style
 
-**YOUR TASK:**
-- Generate a script that is EXACTLY {word_count_target} words (between {min_words}-{max_words} words)
-- Use proper markdown structure with # headers and [MM:SS-MM:SS] timestamps
-- End at EXACTLY {target_seconds} seconds
-- Count your words carefully and stop when you reach the target
-- Write as if the creator is speaking directly to the camera
-- Make it engaging, informative, and true to the creator's style
-
-Generate the strictly timed, structured markdown script now.
-"""
+        Generate the strictly timed, timestamp-only script now.
+        """
 
     def analyze_creator_style(self, personal_transcripts):
         """Analyze creator style from personal videos"""
@@ -2079,7 +2122,7 @@ Generate the strictly timed, structured markdown script now.
 
         try:
             print("Generating style analysis with Gemini model...")
-            model = genai.GenerativeModel("gemini-1.5-pro")
+            model = genai.GenerativeModel("gemini-2.0-flash")
             response = model.generate_content(
                 self.style_analysis_prompt + combined_transcripts,
                 generation_config=genai.types.GenerationConfig(

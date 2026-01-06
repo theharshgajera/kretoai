@@ -4,12 +4,11 @@ from flask_cors import CORS
 import google.generativeai as genai
 from googleapiclient.discovery import build
 from sklearn import logger
-import io
 import logging
 from isodate import parse_duration
-from datetime import datetime, timezone
-import dateutil.parser
+from datetime import datetime
 from uuid import uuid4
+import multiprocessing
 import json
 from youtube_api import get_viral_thumbnails
 from youtube_transcript_api import YouTubeTranscriptApi
@@ -22,7 +21,6 @@ import googleapiclient.discovery
 import os
 from googleapiclient.errors import HttpError
 import re
-from youtube_thumbnail_similarity import find_similar_videos_enhanced
 import socket
 from datetime import datetime, timedelta
 import requests
@@ -49,6 +47,15 @@ from pathlib import Path
 
 load_dotenv()
 
+# Optimize moviepy for faster video processing
+os.environ['IMAGEIO_FFMPEG_EXE'] = 'ffmpeg'
+
+# Threading configuration for parallel processing
+MAX_WORKERS = min(5, (multiprocessing.cpu_count() or 1) + 2)
+
+print(f"✓ Server optimized: {MAX_WORKERS} parallel workers available")
+print(f"✓ CPU cores: {multiprocessing.cpu_count()}")
+
 # ========================================
 # CONFIGURE UPLOAD FOLDER FIRST
 # ========================================
@@ -68,6 +75,11 @@ CORS(app)
 # Set app config immediately
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 app.config['MAX_CONTENT_LENGTH'] = MAX_CONTENT_LENGTH
+# Performance optimizations
+app.config['SEND_FILE_MAX_AGE_DEFAULT'] = 0
+app.config['JSONIFY_PRETTYPRINT_REGULAR'] = False
+app.config['JSON_SORT_KEYS'] = False
+
 app.secret_key = os.getenv("FLASK_SECRET_KEY", "your-secret-key-here")
 
 # Configure logging
@@ -79,11 +91,14 @@ from script import (
     DocumentProcessor, 
     VideoProcessor, 
     EnhancedScriptGenerator,
+    audio_processor,
     facebook_processor,
+    image_processor,
     instagram_processor,
+    text_processor,
+    # tiktok_processor,
     user_data
 )
-
 
 # Initialize processors
 document_processor = DocumentProcessor()
@@ -95,8 +110,10 @@ YOUTUBE_API_KEY = os.getenv('YOUTUBE_API_KEY', 'your_youtube_api_key')
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY', 'your_gemini_api_key')
 ACCESS_TOKEN = os.getenv('TRENDING_ACCESS_TOKEN', 'your_secure_token_123')
 
-genai.configure(api_key=GEMINI_API_KEY)
-
+genai.configure(
+    api_key=GEMINI_API_KEY,
+    transport='rest'  # REST for better performance
+)
 
 
 def parse_duration(duration):
@@ -251,35 +268,7 @@ def get_channel_shorts_details(channel_id, max_results=50):
         app.logger.error(f"Error fetching Shorts for channel {channel_id}: {str(e)}")
         return []
 
-def calculate_hours_since_published(published_at_iso_string):
-    """
-    Calculates the total hours elapsed since a video was published.
 
-    :param published_at_iso_string: The video's publication time string (e.g., '2025-12-10T15:30:00Z').
-    :return: The number of hours elapsed (float).
-    """
-    try:
-        # 1. Parse the ISO 8601 string into a timezone-aware datetime object
-        published_time = dateutil.parser.isoparse(published_at_iso_string)
-        
-        # 2. Get the current time, ensuring it is also timezone-aware (UTC)
-        #    We use UTC/timezone.utc to match the 'Z' in the YouTube string
-        current_time = datetime.now(timezone.utc)
-        
-        # 3. Calculate the difference (timedelta)
-        time_difference = current_time - published_time
-        
-        # 4. Convert the total difference into hours
-        total_seconds = time_difference.total_seconds()
-        total_hours = total_seconds / 3600.0 # 3600 seconds in an hour
-        
-        # Videos published in the future (rare, but for safety) should return 0 or 1
-        return max(1.0, total_hours) 
-        
-    except Exception as e:
-        # Handle cases where the string might be invalid or missing
-        print(f"Error parsing date: {e}")
-        return 1.0 # Return a default of 1 hour to prevent division by zero
 def get_channel_videos_details(channel_id, max_results=50):
     """Fetch up to 50 videos from a channel, excluding Shorts, with detailed stats."""
     youtube = build('youtube', 'v3', developerKey=YOUTUBE_API_KEY)
@@ -1220,38 +1209,32 @@ def trending_outliers():
         app.logger.error(f"Trending outliers error: {str(e)}")
         return jsonify({'success': False, 'error': f'An error occurred: {str(e)}'}), 500
         
+        
+from youtube_thumbnail_similarity import find_similar_videos_enhanced
 
 @app.route('/api/similar-thumbnails', methods=['POST'])
 def get_similar_thumbnails():
-    """API endpoint to get similar thumbnails with full video details."""
+    """API endpoint to get similar thumbnails for a given video ID"""
     try:
         data = request.get_json()
-        app.logger.debug(f"Received request data: {data}")
         video_id = data.get('video_id')
         if not video_id:
-            app.logger.error("Missing video_id in request")
-            return jsonify({'success': False, 'error': 'Video ID is required'}), 400
-        similarity_threshold = float(data.get('similarity_threshold', 0.70))
-        video_url = f"https://www.youtube.com/watch?v={video_id}"
-        result_data, _, error = find_similar_videos_enhanced(
-            video_url,
-            max_results=150,
-            top_similar=50,
-            similarity_threshold=similarity_threshold
-        )
+            return jsonify({'error': 'Video ID is required'}), 400
+
+        # Use the find_similar_videos_enhanced function
+        result_data, _, error = find_similar_videos_enhanced(f"https://www.youtube.com/watch?v={video_id}")
         if error:
-            app.logger.error(f"Similarity analysis failed: {error}")
-            return jsonify({'success': False, 'error': error}), 400
-        app.logger.info(f"Returning {len(result_data['similar_videos'])} similar videos for video_id: {video_id}")
-        return jsonify({
-            'success': True,
-            'input_video': result_data['input_video'],
-            'similar_videos': result_data['similar_videos'],
-            'processing_stats': result_data['processing_stats']
-        })
+            return jsonify({'error': error}), 400
+
+        return jsonify(result_data)
+    
     except Exception as e:
-        app.logger.error(f"Error in get_similar_thumbnails: {str(e)}")
-        return jsonify({'success': False, 'error': f'Internal server error: {str(e)}'}), 500
+        print(f"Error in get_similar_thumbnails: {str(e)}")
+        print(traceback.format_exc())
+        return jsonify({
+            'success': False,
+            'error': f'An error occurred: {str(e)}'
+        }), 500
 
 @app.route('/api/stats', methods=['GET'])
 def get_stats():
@@ -1264,14 +1247,14 @@ def get_stats():
         app.logger.error(f"Stats error: {str(e)}")
         return jsonify({'success': False, 'error': f'An error occurred: {str(e)}'}), 500
 
-@app.route('/api/health', methods=['GET'])
-def health_check():
-    """Health check endpoint."""
-    return jsonify({
-        'status': 'healthy',
-        'service': 'YouTube Title Generation and Outlier Detection Tool',
-        'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S IST')
-    })
+# @app.route('/api/health', methods=['GET'])
+# def health_check():
+#     """Health check endpoint."""
+#     return jsonify({
+#         'status': 'healthy',
+#         'service': 'YouTube Title Generation and Outlier Detection Tool',
+#         'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S IST')
+#     })
 from flask import Flask, request, jsonify
 import googleapiclient.discovery
 import googleapiclient.errors
@@ -1280,6 +1263,7 @@ from datetime import datetime
 import os
 import isodate  # pip install isodate
 
+# app = Flask(__name__)
 
 # 🔑 Your API keys (set them in your environment)
 YOUTUBE_API_KEY = os.getenv("YOUTUBE_API_KEY")
@@ -1468,12 +1452,7 @@ def channel_outliers_by_id():
             ).execute()
 
             comp_video_ids = [v["contentDetails"]["videoId"] for v in comp_uploads_resp.get("items", [])]
-            
-            comp_videos_resp = youtube.videos().list(
-                part="contentDetails,snippet,statistics",
-                id=",".join(comp_video_ids)
-            ).execute()
-            comp_videos = comp_videos_resp.get("items", [])
+            comp_videos = fetch_video_details(youtube, comp_video_ids)
 
             if not comp_videos:
                 continue
@@ -1543,298 +1522,21 @@ def channel_outliers_by_id():
     except Exception as e:
         app.logger.error(f"Channel outliers error: {str(e)}")
         return jsonify({"error": str(e)}), 500
-
-
-
-
-# ------------------ Fetch Videos ------------------
-def get_channel_videos(youtube, channel_id, order_by):
-    """Fetch videos from a given channel with proper error handling."""
-    videos = []
-    next_page_token = None
-    total_fetched = 0
-
-    try:
-        while len(videos) < 50:  # limit for one channel
-            search_response = youtube.search().list(
-                part="snippet",
-                channelId=channel_id,
-                maxResults=50,
-                order=order_by,
-                type="video",
-                pageToken=next_page_token
-            ).execute()
-
-            video_ids = [item["id"]["videoId"] for item in search_response.get("items", [])]
-            if not video_ids:
-                break
-
-            video_response = youtube.videos().list(
-                part="snippet,statistics,contentDetails",
-                id=",".join(video_ids)
-            ).execute()
-
-            for video in video_response.get("items", []):
-                snippet = video.get("snippet", {})
-                stats = video.get("statistics", {})
-                videos.append({
-                    "video_id": video["id"],
-                    "title": snippet.get("title"),
-                    "publishedAt": snippet.get("publishedAt"),
-                    "channelId": snippet.get("channelId"),
-                    "channelTitle": snippet.get("channelTitle"),
-                    "views": int(stats.get("viewCount", 0)),
-                    "likes": int(stats.get("likeCount", 0)),
-                    "thumbnails": snippet.get("thumbnails", {}),
-                    "url": f"https://www.youtube.com/watch?v={video['id']}"
-                })
-
-            total_fetched += len(video_ids)
-            next_page_token = search_response.get("nextPageToken")
-            if not next_page_token:
-                break
-
-    except Exception as e:
-        print(f"❌ Error fetching videos for {channel_id}: {e}")
-        traceback.print_exc()
-
-    print(f"✅ {len(videos)} videos fetched from {channel_id} ({order_by})")
-    return videos
-
-
-# ------------------ Merge Logic ------------------
-def merge_videos(latest_videos, popular_videos):
-    final = []
-    used_ids = set()
-
-    latest_by_views = sorted(latest_videos, key=lambda x: x["views"], reverse=True)
-    latest_by_date = sorted(latest_videos, key=lambda x: x["publishedAt"])
-    popular_by_views = sorted(popular_videos, key=lambda x: x["views"], reverse=True)
-    popular_by_date = sorted(popular_videos, key=lambda x: x["publishedAt"], reverse=True)
-
-    while any([latest_by_views, latest_by_date, popular_by_views, popular_by_date]):
-        for lst in [latest_by_views, popular_by_date, latest_by_date, popular_by_views]:
-            if lst:
-                vid = lst.pop(0) if lst in [latest_by_views, popular_by_date] else lst.pop()
-                if vid["video_id"] not in used_ids:
-                    final.append(vid)
-                    used_ids.add(vid["video_id"])
-        if len(final) >= 400:
-            break
-
-    # enforce 2 videos per channel per 24 batch
-    adjusted = []
-    for i in range(0, len(final), 24):
-        segment = final[i:i + 24]
-        counts = {}
-        valid = []
-        overflow = []
-        for v in segment:
-            c = v["channelId"]
-            if counts.get(c, 0) < 2:
-                valid.append(v)
-                counts[c] = counts.get(c, 0) + 1
-            else:
-                overflow.append(v)
-        adjusted.extend(valid)
-        adjusted.extend(overflow)
-    return adjusted[:400]
-
-
-# ------------------ Endpoint ------------------
-# @app.route("/api/video_outliers", methods=["POST"])
-# def video_outliers():
-#     try:
-#         data = request.get_json()
-#         channel_ids = data.get("channel_ids") or data.get("competitors", [])
-#         if not channel_ids:
-#             return jsonify({"error": "No competitors provided"}), 400
-
-#         youtube = build("youtube", "v3", developerKey=YOUTUBE_API_KEY)
-#         latest_videos_all = []
-#         popular_videos_all = []
-
-#         # ------------------------------------------------------------------
-#         # 1. FETCH & CLEAN (unchanged)
-#         # ------------------------------------------------------------------
-#         for ch_id in channel_ids:
-#             ch_resp = youtube.channels().list(part="snippet,statistics", id=ch_id).execute()
-#             if not ch_resp.get("items"):
-#                 continue
-#             ch_info = ch_resp["items"][0]
-#             ch_title = ch_info["snippet"]["title"]
-#             subs_count = int(ch_info["statistics"].get("subscriberCount", 1))
-
-#             # latest
-#             search_resp = youtube.search().list(
-#                 part="snippet", channelId=ch_id, type="video",
-#                 videoDuration="medium", order="date", maxResults=50
-#             ).execute()
-#             video_ids = [item["id"]["videoId"] for item in search_resp.get("items", [])]
-#             latest_videos = fetch_video_details(youtube, video_ids)
-
-#             # popular
-#             search_resp_pop = youtube.search().list(
-#                 part="snippet", channelId=ch_id, type="video",
-#                 order="viewCount", maxResults=50
-#             ).execute()
-#             popular_ids = [item["id"]["videoId"] for item in search_resp_pop.get("items", [])]
-#             popular_videos = fetch_video_details(youtube, popular_ids)
-
-#             # avg recent views
-#             avg_recent_views = (
-#                 sum(int(v["statistics"].get("viewCount", 0)) for v in latest_videos) / len(latest_videos)
-#                 if latest_videos else 1
-#             )
-
-#             def clean_video(v):
-#                 views = int(v["statistics"].get("viewCount", 0))
-#                 duration = parse_duration(v.get("contentDetails", {}).get("duration", "PT0S"))
-#                 return {
-#                     "video_id": v["id"],
-#                     "title": v["snippet"]["title"],
-#                     "channel_id": ch_id,
-#                     "channel_title": ch_title,
-#                     "views": views,
-#                     "subscriber_count": subs_count,
-#                     "published_at": v["snippet"].get("publishedAt", ""),
-#                     "views_formatted": format_number(views),
-#                     "duration_seconds": duration,
-#                     "avg_recent_views": round(avg_recent_views, 2),
-#                     "multiplier": round(views / avg_recent_views, 2) if avg_recent_views > 0 else 0,
-#                     "thumbnail_url": v["snippet"]["thumbnails"].get("high", {}).get("url"),
-#                     "url": f"https://www.youtube.com/watch?v={v['id']}"
-
-#                 }
-
-#             latest_videos_all.extend([clean_video(v) for v in latest_videos[:50]])
-#             popular_videos_all.extend([clean_video(v) for v in popular_videos[:50]])
-
-#         # ------------------------------------------------------------------
-#         # 2. PRE-SORT (unchanged)
-#         # ------------------------------------------------------------------
-#         latest_videos_all.sort(key=lambda x: x["views"], reverse=True)   # most-viewed first
-#         popular_videos_all.sort(key=lambda x: x["views"])               # least-viewed first
-
-#         final_list = []
-#         channel_counter = {}      # key = f"{channel_id}_{batch_index}"
-#         batch_size = 24
-#         i = 0
-#         MAX_TOTAL = 200
-
-#         # ------------------------------------------------------------------
-#         # 3. ORIGINAL MERGE LOOP (with deadlock detection)
-#         # ------------------------------------------------------------------
-#         while latest_videos_all or popular_videos_all:
-#             added_this_round = 0
-
-#             for lst_type in ("latest", "popular"):
-#                 if i >= MAX_TOTAL:
-#                     break
-
-#                 src = latest_videos_all if lst_type == "latest" else popular_videos_all
-#                 if not src:
-#                     continue
-
-#                 v = src.pop(0)
-
-#                 batch_index = i // batch_size
-#                 key = f"{v['channel_id']}_{batch_index}"
-#                 if channel_counter.get(key, 0) >= 2:
-#                     # push back for later attempt
-#                     src.append(v)
-#                     continue
-
-#                 final_list.append(v)
-#                 channel_counter[key] = channel_counter.get(key, 0) + 1
-#                 i += 1
-#                 added_this_round += 1
-
-#             # ------------------------------------------------------------------
-#             # 4. DEAD-LOCK → FALLBACK ROUND-ROBIN
-#             # ------------------------------------------------------------------
-#             if added_this_round == 0 and (latest_videos_all or popular_videos_all):
-#                 # Build per-channel queues that still have videos
-#                 from collections import defaultdict, deque
-
-#                 channel_latest = defaultdict(deque)
-#                 channel_popular = defaultdict(deque)
-
-#                 for v in latest_videos_all:
-#                     channel_latest[v["channel_id"]].append(v)
-#                 for v in popular_videos_all:
-#                     channel_popular[v["channel_id"]].append(v)
-
-#                 all_channels = set(channel_latest) | set(channel_popular)
-
-#                 while i < MAX_TOTAL and all_channels:
-#                     placed = False
-#                     for ch in list(all_channels):
-#                         # try latest first, then popular
-#                         src_q = channel_latest[ch] or channel_popular[ch]
-#                         if not src_q:
-#                             all_channels.discard(ch)
-#                             continue
-
-#                         candidate = src_q.popleft()
-#                         batch_index = i // batch_size
-#                         key = f"{candidate['channel_id']}_{batch_index}"
-
-#                         if channel_counter.get(key, 0) >= 2:
-#                             # put it back and skip this channel for now
-#                             src_q.appendleft(candidate)
-#                             continue
-
-#                         final_list.append(candidate)
-#                         channel_counter[key] = channel_counter.get(key, 0) + 1
-#                         i += 1
-#                         placed = True
-#                         # remove channel if both queues are empty now
-#                         if not channel_latest[ch] and not channel_popular[ch]:
-#                             all_channels.discard(ch)
-#                         break   # one video per outer iteration
-
-#                     if not placed:
-#                         # No channel could give a video → true deadlock, break out
-#                         break
-
-#             if i >= MAX_TOTAL:
-#                 break
-
-#         # ------------------------------------------------------------------
-#         # 5. RETURN
-#         # ------------------------------------------------------------------
-#         return jsonify({
-#             "success": True,
-#             "total_videos": len(final_list),
-#             "videos": final_list
-#         })
-
-#     except Exception as e:
-#         app.logger.error(f"Video outliers error: {str(e)}")
-#         return jsonify({"error": str(e)}), 500
-
-
 @app.route("/api/video_outliers", methods=["POST"])
 def video_outliers():
     try:
         data = request.get_json()
-        channel_ids = data.get("channel_ids") or data.get("competitors", [])
+        channel_ids = data.get("channel_ids", [])
         if not channel_ids:
-            return jsonify({"error": "No competitors provided"}), 400
+            return jsonify({"error": "Channel IDs list is required"}), 400
 
-        youtube = build("youtube", "v3", developerKey=YOUTUBE_API_KEY)
+        youtube = googleapiclient.discovery.build("youtube", "v3", developerKey=YOUTUBE_API_KEY)
 
-        latest_videos_all = []
-        popular_videos_all = []
-
-        # ✅ Fixed per-channel cap
-        per_channel_cap = 20 
-
+        channel_videos = []
         for ch_id in channel_ids:
-            # Channel info
             ch_resp = youtube.channels().list(
-                part="snippet,statistics", id=ch_id
+                part="snippet,statistics",   # ✅ include statistics
+                id=ch_id
             ).execute()
 
             if not ch_resp.get("items"):
@@ -1842,192 +1544,120 @@ def video_outliers():
 
             ch_info = ch_resp["items"][0]
             ch_title = ch_info["snippet"]["title"]
-            subs_count = int(ch_info["statistics"].get("subscriberCount", 1))
+            subs_count = int(ch_info["statistics"].get("subscriberCount", 1))  # ✅ subscriber count
 
-            # Fetch latest medium-length videos
             search_resp = youtube.search().list(
                 part="snippet",
                 channelId=ch_id,
                 type="video",
                 order="date",
                 videoDuration="medium",
-                maxResults=per_channel_cap
+                maxResults=50
             ).execute()
 
             video_ids = [item["id"]["videoId"] for item in search_resp.get("items", [])]
-            latest_videos = fetch_video_details(youtube, video_ids)
+            if not video_ids:
+                continue
 
-            # Fetch popular medium-length videos
-            search_resp_pop = youtube.search().list(
-                part="snippet",
-                channelId=ch_id,
-                type="video",
-                order="viewCount",
-                videoDuration="medium",
-                maxResults=per_channel_cap
-            ).execute()
+            comp_videos = fetch_video_details(youtube, video_ids)
+            if not comp_videos:
+                continue
 
-            popular_ids = [item["id"]["videoId"] for item in search_resp_pop.get("items", [])]
-            popular_videos = fetch_video_details(youtube, popular_ids)
+            avg_recent_views = sum(
+                int(v["statistics"].get("viewCount", 0)) for v in comp_videos
+            ) / len(comp_videos)
 
-            # ---------------------------------------------------------
-            # 1. CALCULATE ROBUST AVERAGE (Your New Logic)
-            # ---------------------------------------------------------
-            
-            # A. Filter for videos > 168 hours old
-            baseline_videos_views = []
-            for v in latest_videos:
-                pub_iso = v["snippet"].get("publishedAt")
-                age_hours = calculate_hours_since_published(pub_iso)
-                if age_hours > 168:
-                    baseline_videos_views.append(int(v["statistics"].get("viewCount", 0)))
-            
-            # B. Take avg of top 5 most recent valid videos
-            # (Note: latest_videos is already sorted by date desc)
-            baseline_sample = baseline_videos_views[:5]
-            
-            if baseline_sample:
-                calculated_avg = sum(baseline_sample) / len(baseline_sample)
-            else:
-                # Fallback if channel has NO videos older than 7 days
-                # We use the raw average of whatever is available, or 0
-                all_views = [int(v["statistics"].get("viewCount", 0)) for v in latest_videos]
-                calculated_avg = sum(all_views) / len(all_views) if all_views else 0
+            popular_videos = sorted(
+                comp_videos,
+                key=lambda x: int(x["statistics"].get("viewCount", 0)),
+                reverse=True
+            )[:5]
 
-            # C. Calculate Subscriber Threshold
-            if subs_count < 100000:
-                sub_threshold = subs_count * 0.10 # 10%
-            else:
-                sub_threshold = subs_count * 0.05 # 5%
+            trending_videos = []
+            for v in comp_videos[:10]:
+                views = int(v["statistics"].get("viewCount", 0))
+                if avg_recent_views > 0 and (views / avg_recent_views) > 1:
+                    trending_videos.append(v)
+                if len(trending_videos) >= 5:
+                    break
 
-            # D. Final Average (The lesser of the two)
-            # Ensure we don't divide by zero later if calculated_avg is 0
-            if calculated_avg == 0:
-                final_avg_views = sub_threshold
-            else:
-                final_avg_views = min(calculated_avg, sub_threshold)
-                
-            # Safety for very small channels/edge cases
-            final_avg_views = max(1, final_avg_views)
+            channel_data = {
+                "channel_id": ch_id,
+                "channel_title": ch_title,
+                "subscriber_count": subs_count,   # ✅ include at channel level too
+                "avg_recent_views": round(avg_recent_views, 2),
+                "avg_recent_views_formatted": format_number(round(avg_recent_views, 0)),
+                "trending": [],
+                "popular": []
+            }
 
-            # ---------------------------------------------------------
+            def format_video(v):
+                duration_str = v.get("contentDetails", {}).get("duration", "")
+                duration = parse_duration(duration_str)
+                views = int(v["statistics"].get("viewCount", 0))
+                multiplier = round(views / avg_recent_views, 2) if avg_recent_views > 0 else 0
 
-            def clean_video(v, list_type):
-                current_views = int(v["statistics"].get("viewCount", 0))
-                duration = parse_duration(v.get("contentDetails", {}).get("duration", "PT0S"))
-                pub_iso = v["snippet"].get("publishedAt", "")
-                
-                # --- NEW MULTIPLIER LOGIC ---
-                hours_old = calculate_hours_since_published(pub_iso)
-                
-                # If video is young (< 168 hours), project potential views
-                if hours_old < 168:
-                    # potential = current * (168 / age)
-                    # e.g., 10k views in 24 hours -> 10k * (7) = 70k potential
-                    # Added max(1, ...) to avoid division by zero
-                    projected_views = current_views * (168 / max(0.1, hours_old))
-                    effective_views_for_calc = projected_views
-                    is_projected = True
-                else:
-                    effective_views_for_calc = current_views
-                    is_projected = False
+                snippet = v.get("snippet", {}) or {}
+                language = snippet.get("defaultAudioLanguage") or snippet.get("defaultLanguage") or snippet.get("language") or None
 
-                multiplier = round(effective_views_for_calc / final_avg_views, 2)
-                # -----------------------------
+                published_at = snippet.get("publishedAt")
+                published_date_friendly = None
+                if published_at:
+                    try:
+                        if published_at.endswith("Z"):
+                            try:
+                                dt = datetime.strptime(published_at, "%Y-%m-%dT%H:%M:%SZ")
+                            except ValueError:
+                                dt = datetime.strptime(published_at, "%Y-%m-%dT%H:%M:%S.%fZ")
+                        else:
+                            dt = datetime.fromisoformat(published_at)
+                        published_date_friendly = dt.strftime("%Y-%m-%d")
+                    except Exception:
+                        published_date_friendly = published_at
 
                 return {
                     "video_id": v["id"],
-                    "title": v["snippet"]["title"],
+                    "title": snippet.get("title"),
                     "channel_id": ch_id,
                     "channel_title": ch_title,
-                    "views": current_views,
-                    "views_formatted": format_number(current_views),
+                    "subscriber_count": subs_count,   # ✅ add here
+                    "views": views,
+                    "views_formatted": format_number(views),
                     "duration_seconds": duration,
-                    
-                    # Debugging fields (optional, but helpful to see)
-                    "avg_recent_views": round(final_avg_views, 2),
-                    "hours_since_published": round(hours_old, 1),
-                    "projected_views": round(effective_views_for_calc) if is_projected else None,
-                    
                     "multiplier": multiplier,
-                    "thumbnail_url": v["snippet"]["thumbnails"].get("high", {}).get("url"),
+                    "avg_recent_views": round(avg_recent_views, 2),
+                    "channel_avg_views_formatted": format_number(round(avg_recent_views, 0)),
+                    "thumbnail_url": snippet.get("thumbnails", {}).get("high", {}).get("url"),
                     "url": f"https://www.youtube.com/watch?v={v['id']}",
-                    "subscriber_count": subs_count,
-                    "list_type": list_type,
-                    "published_at": pub_iso
+                    "language": language,
+                    "published_date": published_at,
+                    "published_date_friendly": published_date_friendly
                 }
 
-            # ✅ If a channel has fewer videos than cap, take all available
-            latest_videos_all.extend([clean_video(v, "latest") for v in latest_videos])
-            popular_videos_all.extend([clean_video(v, "popular") for v in popular_videos])
+            channel_data["trending"] = [format_video(v) for v in trending_videos]
+            channel_data["popular"] = [format_video(v) for v in popular_videos]
 
-        # Sorting (We still sort by raw views for display, or you could sort by multiplier)
-        # Assuming you want to keep the "Visual" sorting by raw views:
-        latest_videos_all.sort(key=lambda x: x["views"], reverse=True)
-        popular_videos_all.sort(key=lambda x: x["views"])
+            channel_videos.append(channel_data)
 
-        # ✅ Dynamic max_total_videos based on channels and cap
-        max_total_videos = len(channel_ids) * per_channel_cap
+        # Interleave videos: trending/popular alternating across channels
+        all_videos = []
+        max_videos_per_type = 5
 
-        final_list = []
-        channel_counter = {}
-        batch_size = 24
-        i = 0
-
-        # ✅ Infinite loop protection
-        max_iterations = 10000
-        iteration_count = 0
-
-        while (latest_videos_all or popular_videos_all) and iteration_count < max_iterations:
-            iteration_count += 1
-
-            for lst_type in ["latest", "popular"]:
-                if lst_type == "latest" and latest_videos_all:
-                    v = latest_videos_all.pop(0)
-                elif lst_type == "popular" and popular_videos_all:
-                    v = popular_videos_all.pop(0)
-                else:
-                    continue
-
-                # Per-channel batching rule
-                batch_index = i // batch_size
-                key = f"{v['channel_id']}_{batch_index}"
-
-                if channel_counter.get(key, 0) >= 2:
-                    if lst_type == "latest":
-                        latest_videos_all.append(v)
-                    else:
-                        popular_videos_all.append(v)
-                    continue
-
-                final_list.append(v)
-                channel_counter[key] = channel_counter.get(key, 0) + 1
-                i += 1
-
-                if i >= max_total_videos:
+        for i in range(max_videos_per_type):
+            for j, channel in enumerate(channel_videos):
+                if j % 2 == 0 and i < len(channel["trending"]):
+                    all_videos.append(channel["trending"][i])
+                elif j % 2 == 1 and i < len(channel["popular"]):
+                    all_videos.append(channel["popular"][i])
+                if len(all_videos) >= 200:
                     break
-
-            if i >= max_total_videos:
+            if len(all_videos) >= 200:
                 break
-
-        # ✅ Safety fallback
-        if iteration_count >= max_iterations and len(final_list) < max_total_videos:
-            app.logger.warning(
-                f"Max iteration limit reached with {len(final_list)} videos"
-            )
-            remaining_videos = latest_videos_all + popular_videos_all
-            final_video_ids = {v["video_id"] for v in final_list}
-            remaining_videos = [v for v in remaining_videos if v["video_id"] not in final_video_ids]
-
-            import random
-            random.shuffle(remaining_videos)
-            needed = max_total_videos - len(final_list)
-            final_list.extend(remaining_videos[:needed])
 
         return jsonify({
             "success": True,
-            "total_videos": len(final_list),
-            "videos": final_list
+            "total_videos": len(all_videos),
+            "videos": all_videos[:200]
         })
 
     except Exception as e:
@@ -2045,7 +1675,7 @@ def comp_analysis():
 
         youtube = googleapiclient.discovery.build("youtube", "v3", developerKey=YOUTUBE_API_KEY)
 
-        # 1️⃣ Fetch channel info (with snippet for thumbnail)
+        # 1. Fetch channel info (with snippet for thumbnail)
         channel_resp = youtube.channels().list(
             part="snippet,statistics,contentDetails",
             id=channel_id
@@ -2060,58 +1690,36 @@ def comp_analysis():
         subs_count = int(channel_info["statistics"].get("subscriberCount", 1))
         uploads_playlist = channel_info["contentDetails"]["relatedPlaylists"]["uploads"]
 
-        # 2️⃣ Fetch up to 50 recent uploads
+        # 2. Get last 10 uploads, filter medium/long → take 10
         videos_resp = youtube.playlistItems().list(
             part="contentDetails,snippet",
             playlistId=uploads_playlist,
-            maxResults=50
+            maxResults=20
         ).execute()
 
-        # Helper to fetch filtered videos by duration
-        def get_videos_by_duration(videos_resp, min_dur=None, max_dur=None):
-            selected = []
-            for item in videos_resp.get("items", []):
-                vid_id = item["contentDetails"]["videoId"]
-                vid_details = youtube.videos().list(
-                    part="contentDetails,snippet,statistics",
-                    id=vid_id
-                ).execute()
+        candidate_videos = []
+        for item in videos_resp.get("items", []):
+            vid_id = item["contentDetails"]["videoId"]
+            vid_details = youtube.videos().list(
+                part="contentDetails,snippet,statistics",
+                id=vid_id
+            ).execute()
 
-                if not vid_details["items"]:
-                    continue
+            if not vid_details["items"]:
+                continue
 
-                v = vid_details["items"][0]
-                duration = parse_duration(v.get("contentDetails", {}).get("duration", ""))
-                if (min_dur is None or duration >= min_dur) and (max_dur is None or duration <= max_dur):
-                    selected.append({
-                        "id": vid_id,
-                        "title": v["snippet"]["title"]
-                    })
-            return selected
-
-        # 3️⃣ Progressive fallback: medium → long → short
-        candidate_videos = get_videos_by_duration(videos_resp, min_dur=240)
-        selected_duration_type = "medium"
-
-        if len(candidate_videos) < 20:
-            long_videos = get_videos_by_duration(videos_resp, min_dur=600)
-            if long_videos:
-                candidate_videos.extend([v for v in long_videos if v not in candidate_videos])
-                selected_duration_type = "long"
-
-        if len(candidate_videos) < 20:
-            short_videos = get_videos_by_duration(videos_resp, max_dur=240)
-            if short_videos:
-                candidate_videos.extend([v for v in short_videos if v not in candidate_videos])
-                selected_duration_type = "short"
-
-        # Limit to 20
-        candidate_videos = candidate_videos[:20]
+            v = vid_details["items"][0]
+            duration = parse_duration(v.get("contentDetails", {}).get("duration", ""))
+            if duration >= 240:  # medium/long only
+                candidate_videos.append({
+                    "id": vid_id,
+                    "title": v["snippet"]["title"]
+                })
 
         if not candidate_videos:
-            return jsonify({"error": "No suitable videos found for this channel"}), 404
+            return jsonify({"error": "No medium/long videos found for this channel"}), 404
 
-        # 4️⃣ Collect competitor channels with frequency count
+        # 3. Collect competitor channels with frequency count
         competitor_counts = {}
         for video in candidate_videos:
             search_resp = youtube.search().list(
@@ -2120,7 +1728,7 @@ def comp_analysis():
                 type="video",
                 maxResults=50,
                 relevanceLanguage="en",
-                videoDuration=selected_duration_type  # match the duration type used
+                videoDuration="medium"  # filter medium/long
             ).execute()
 
             for item in search_resp.get("items", []):
@@ -2141,7 +1749,7 @@ def comp_analysis():
             reverse=True
         )[:50]
 
-        # 5️⃣ For each competitor, fetch latest videos with avg views + channel thumbnail
+        # 4. For each competitor, fetch latest 4 videos with avg views + channel thumbnail
         competitors_data = []
         for comp_id, comp_data in competitors:
             comp_resp = youtube.channels().list(
@@ -2154,49 +1762,19 @@ def comp_analysis():
 
             comp_info = comp_resp["items"][0]
             comp_title = comp_data["title"]
-            comp_subs = int(comp_info["statistics"].get("subscriberCount", 0))
-
-            # Skip competitors with fewer than 1,000 subs
-            if comp_subs < 1000:
-                continue
-
+            comp_subs = int(comp_info["statistics"].get("subscriberCount", 1))
             comp_uploads = comp_info["contentDetails"]["relatedPlaylists"]["uploads"]
-            comp_thumbnail = comp_info["snippet"]["thumbnails"]["high"]["url"]
+            comp_thumbnail = comp_info["snippet"]["thumbnails"]["high"]["url"]  # ✅ profile picture
 
-            # Fetch recent uploads (up to 15 to allow filtering)
+            # Fetch up to 5 recent uploads
             comp_uploads_resp = youtube.playlistItems().list(
                 part="contentDetails",
                 playlistId=comp_uploads,
-                maxResults=15
+                maxResults=5
             ).execute()
 
             comp_video_ids = [v["contentDetails"]["videoId"] for v in comp_uploads_resp.get("items", [])]
-            all_comp_videos = fetch_video_details(youtube, comp_video_ids)
-
-            def filter_by_duration(videos, min_dur=None, max_dur=None):
-                filtered = []
-                for v in videos:
-                    duration = parse_duration(v.get("contentDetails", {}).get("duration", ""))
-                    if (min_dur is None or duration >= min_dur) and (max_dur is None or duration <= max_dur):
-                        filtered.append(v)
-                return filtered
-
-            # 1️⃣ Medium videos (4–10 min)
-            comp_videos = filter_by_duration(all_comp_videos, min_dur=240, max_dur=600)
-
-            # 2️⃣ Fallback to long videos (>10 min)
-            if len(comp_videos) < 5:
-                long_videos = filter_by_duration(all_comp_videos, min_dur=600)
-                comp_videos.extend([v for v in long_videos if v not in comp_videos])
-
-            # 3️⃣ Fallback to short videos (<4 min)
-            if len(comp_videos) < 5:
-                short_videos = filter_by_duration(all_comp_videos, max_dur=240)
-                comp_videos.extend([v for v in short_videos if v not in comp_videos])
-
-            # Limit to 5 videos
-            comp_videos = comp_videos[:5]
-
+            comp_videos = fetch_video_details(youtube, comp_video_ids)
 
             if not comp_videos:
                 continue
@@ -2206,8 +1784,10 @@ def comp_analysis():
                 int(v["statistics"].get("viewCount", 0)) for v in comp_videos
             ) / len(comp_videos)
 
+            # Latest 4 videos (no filtering)
             latest_videos = comp_videos[:4]
 
+            # Prepare video data for this competitor
             video_data = []
             for v in latest_videos:
                 duration = parse_duration(v.get("contentDetails", {}).get("duration", ""))
@@ -2225,17 +1805,17 @@ def comp_analysis():
                     "multiplier": multiplier,
                     "avg_recent_views": round(avg_recent_views, 2),
                     "thumbnail_url": v["snippet"]["thumbnails"]["high"]["url"],
-                    "url": f"https://www.youtube.com/watch?v={v['id']}",
-                    "published_at": v["snippet"]["publishedAt"]
+                    "url": f"https://www.youtube.com/watch?v={v['id']}"
                 })
 
+            # Add competitor with its videos
             competitors_data.append({
                 "id": comp_id,
                 "title": comp_title,
                 "subscriber_count": comp_subs,
                 "avg_recent_views": round(avg_recent_views, 2),
                 "frequency": comp_data.get("count", 0),
-                "thumbnail_url": comp_thumbnail,
+                "thumbnail_url": comp_thumbnail,  # ✅ competitor profile picture
                 "videos": video_data
             })
 
@@ -2246,16 +1826,13 @@ def comp_analysis():
             "success": True,
             "channel_id": channel_id,
             "channel_title": channel_title,
-            "channel_thumbnail": channel_thumbnail,
-            "video_duration_mode": selected_duration_type,  # ✅ Added for clarity
+            "channel_thumbnail": channel_thumbnail,  # ✅ input channel thumbnail
             "competitors": competitors_data
         })
 
     except Exception as e:
-        app.logger.error(f"Channel comp_analysis error: {str(e)}")
+        app.logger.error(f"Channel outliers error: {str(e)}")
         return jsonify({"error": str(e)}), 500
-
-
 
 
 @app.route('/api/generate_titles', methods=['POST'])
@@ -2744,9 +2321,8 @@ def ideas_by_channel_id():
             part='id',
             channelId=channel_id,
             order='date',
-            maxResults=50,
-            type='video',
-            videoDuration="medium"
+            maxResults=15,
+            type='video'
         )
         search_response = search_request.execute()
 
@@ -2811,126 +2387,7 @@ def ideas_by_channel_id():
 
         # Sort by published date (most recent first)
         videos.sort(key=lambda x: x['published_at'], reverse=True)
-        videos = videos[:50]  # Ensure max 15 videos
-
-        app.logger.info(f"Found {len(videos)} videos for channel {channel_id}")
-        return jsonify({
-            'success': True,
-            'channel_id': channel_id,
-            'channel_title': channel_title,
-            'total_results': len(videos),
-            'videos': videos
-        })
-
-    except HttpError as e:
-        app.logger.error(f"YouTube API error in ideas_by_channel_id for channel {channel_id}: {str(e)}")
-        return jsonify({'error': f'YouTube API error: {str(e)}'}), 503
-    except Exception as e:
-        app.logger.error(f"Ideas by channel ID error: {str(e)}")
-        return jsonify({'error': f'An error occurred: {str(e)}'}), 500
-@app.route('/api/short_ideas_by_channel_id', methods=['POST'])
-def short_ideas_by_channel_id():
-    """Fetch the last 15 videos (including Shorts) from a YouTube channel by channel ID."""
-    try:
-        data = request.get_json()
-        app.logger.debug(f"Received data: {data}")
-        channel_id = data.get('channel_id')
-
-        if not channel_id:
-            return jsonify({'error': 'Channel ID is required'}), 400
-        channel_id = channel_id.strip()
-        if not channel_id:
-            return jsonify({'error': 'Channel ID cannot be empty'}), 400
-
-        if YOUTUBE_API_KEY == 'YOUR_YOUTUBE_API_KEY':
-            app.logger.error("YouTube API key not configured.")
-            return jsonify({'error': 'YouTube API key not configured'}), 500
-
-        # Build YouTube API client
-        youtube = build('youtube', 'v3', developerKey=YOUTUBE_API_KEY)
-
-        # Verify channel exists and fetch statistics
-        channel_request = youtube.channels().list(part='snippet,statistics', id=channel_id)
-        channel_response = channel_request.execute()
-        if not channel_response.get('items'):
-            app.logger.error(f"Channel not found for ID: {channel_id}")
-            return jsonify({'error': 'Channel not found'}), 404
-        channel_title = channel_response['items'][0]['snippet']['title']
-        subscriber_count = int(channel_response['items'][0]['statistics'].get('subscriberCount', 0))
-
-        # Fetch the last 15 videos
-        search_request = youtube.search().list(
-            part='id',
-            channelId=channel_id,
-            order='date',
-            maxResults=50,
-            type='video',
-            videoDuration="short"
-        )
-        search_response = search_request.execute()
-
-        if not search_response.get('items'):
-            app.logger.error(f"No videos found for channel ID: {channel_id}")
-            return jsonify({'error': 'No videos found for the channel'}), 404
-
-        # Get video details
-        video_ids = [item['id']['videoId'] for item in search_response['items']]
-        video_details_request = youtube.videos().list(
-            part='snippet,statistics,contentDetails',
-            id=','.join(video_ids)
-        )
-        video_details_response = video_details_request.execute()
-
-        videos = []
-        total_views = 0
-        for item in video_details_response.get('items', []):
-            try:
-                duration = item['contentDetails']['duration']
-                duration_seconds = parse_duration(duration)
-                views = int(item['statistics'].get('viewCount', 0))
-                likes = int(item['statistics'].get('likeCount', 0))
-                comments = int(item['statistics'].get('commentCount', 0))
-                engagement_rate = (likes + comments) / views if views > 0 else 0
-                try:
-                    pub_date = datetime.datetime.strptime(item['snippet']['publishedAt'], '%Y-%m-%dT%H:%M:%SZ')
-                    video_age_days = (datetime.datetime.utcnow() - pub_date).days
-                except:
-                    video_age_days = 0
-
-                multiplier = engagement_rate * (views / 1000) if views > 0 else 0
-                total_views += views
-                video = {
-                    'video_id': item['id'],
-                    'title': item['snippet']['title'],
-                    'channel_id': item['snippet']['channelId'],
-                    'channel_title': item['snippet']['channelTitle'],
-                    'views': views,
-                    'views_formatted': format_number(views),
-                    'likes': likes,
-                    'likes_formatted': format_number(likes),
-                    'comments': comments,
-                    'comments_formatted': format_number(comments),
-                    'duration': duration,
-                    'duration_seconds': duration_seconds,
-                    'url': f"https://www.youtube.com/watch?v={item['id']}",
-                    'published_at': item['snippet']['publishedAt'],
-                    'thumbnail_url': item['snippet']['thumbnails']['high']['url'],
-                    'engagement_rate': round(engagement_rate, 4),
-                    'video_age_days': video_age_days,
-                    'language': item['snippet'].get('defaultLanguage', 'en'),
-                    'multiplier': round(multiplier, 4),
-                    'channel_avg_views': int(total_views / len(videos) + 1) if videos else 0,
-                    'channel_avg_views_formatted': format_number(int(total_views / len(videos) + 1)) if videos else '0',
-                    'subscriber_count': subscriber_count
-                }
-                videos.append(video)
-            except KeyError as e:
-                app.logger.error(f"Missing key {e} in video details for video ID: {item.get('id', 'unknown')}")
-                continue
-
-        # Sort by published date (most recent first)
-        videos.sort(key=lambda x: x['published_at'], reverse=True)
-        videos = videos[:50]  # Ensure max 15 videos
+        videos = videos[:15]  # Ensure max 15 videos
 
         app.logger.info(f"Found {len(videos)} videos for channel {channel_id}")
         return jsonify({
@@ -3079,2018 +2536,7 @@ def format_number(num):
     else:
         return str(num)
     
-# app.
-@app.route('/api/script_generation', methods=['POST'])
-def script_generation():
-    """Enhanced all-in-one endpoint with proper video file handling"""
-    user_id = request.remote_addr
-    print(f"\n{'='*60}")
-    print(f"Starting complete script generation for user: {user_id}")
-    print(f"{'='*60}\n")
-    
-    try:
-        # Handle both JSON and multipart form data
-        if request.content_type and 'multipart/form-data' in request.content_type:
-            data = {
-                'personal_videos': request.form.getlist('personal_videos[]'),
-                'inspiration_videos': request.form.getlist('inspiration_videos[]'),
-                'prompt': request.form.get('prompt', '').strip(),
-                'minutes': request.form.get('minutes', type=int)
-            }
-            documents = request.files.getlist('documents[]')
-            video_files = request.files.getlist('video_files[]')
-        else:
-            data = request.json or {}
-            documents = []
-            video_files = []
-        
-        personal_videos = data.get('personal_videos', [])
-        inspiration_videos = data.get('inspiration_videos', [])
-        prompt = data.get('prompt', '').strip()
-        target_minutes = data.get('minutes')
-        
-        if not prompt:
-            prompt = "Create an engaging, informative YouTube video script on a topic of general interest."
-        
-        print(f"Inputs received:")
-        print(f"  - Personal videos: {len(personal_videos)}")
-        print(f"  - Inspiration videos: {len(inspiration_videos)}")
-        print(f"  - Documents: {len(documents)}")
-        print(f"  - Video files: {len(video_files)}")
-        print(f"  - Prompt: {prompt[:100]}...")
-        print(f"  - Target minutes: {target_minutes}")
-        print(f"  - Upload folder: {UPLOAD_FOLDER}")
-        print(f"  - Upload folder exists: {os.path.exists(UPLOAD_FOLDER)}\n")
-        
-        # Initialize results
-        processed_documents = []
-        processed_personal = []
-        processed_inspiration = []
-        errors = []
-        
-        # ========================================
-        # PROCESS DOCUMENTS
-        # ========================================
-        if documents:
-            print(f"\n{'='*60}")
-            print(f"PROCESSING {len(documents)} DOCUMENTS")
-            print(f"{'='*60}\n")
-            
-            for idx, file in enumerate(documents, 1):
-                if file.filename and document_processor.allowed_file(file.filename):
-                    try:
-                        filename = secure_filename(file.filename)
-                        # Use safe filename for temp storage
-                        safe_user_id = user_id.replace('.', '_').replace(':', '_')
-                        file_path = os.path.join(
-                            UPLOAD_FOLDER, 
-                            f"temp_doc_{safe_user_id}_{int(time.time())}_{filename}"
-                        )
-                        
-                        print(f"[{idx}/{len(documents)}] Processing document: {filename}")
-                        print(f"  Saving to: {file_path}")
-                        
-                        file.save(file_path)
-                        
-                        if not os.path.exists(file_path):
-                            raise FileNotFoundError(f"Failed to save file to {file_path}")
-                        
-                        print(f"  File saved successfully: {os.path.getsize(file_path)} bytes")
-                        
-                        result = document_processor.process_document(file_path, filename)
-                        
-                        # Cleanup
-                        try:
-                            os.remove(file_path)
-                            print(f"  Cleaned up temp file")
-                        except Exception as cleanup_error:
-                            print(f"  Warning: Failed to cleanup {file_path}: {cleanup_error}")
-                        
-                        if result['error']:
-                            error_msg = f"Document {filename}: {result['error']}"
-                            errors.append(error_msg)
-                            print(f"  ❌ ERROR: {result['error']}")
-                        else:
-                            processed_documents.append({
-                                'filename': filename,
-                                'text': result['text'],
-                                'stats': result['stats']
-                            })
-                            print(f"  ✓ Success: {len(result['text'])} characters extracted")
-                            
-                    except Exception as e:
-                        error_msg = f"Document {file.filename}: {str(e)}"
-                        errors.append(error_msg)
-                        print(f"  ❌ EXCEPTION: {str(e)}")
-        
-        # ========================================
-        # PROCESS UPLOADED VIDEO FILES
-        # ========================================
-        if video_files:
-            print(f"\n{'='*60}")
-            print(f"PROCESSING {len(video_files)} UPLOADED VIDEO FILES")
-            print(f"{'='*60}\n")
-            
-            for idx, video_file in enumerate(video_files, 1):
-                if video_file.filename and video_processor.is_supported_video_format(video_file.filename):
-                    video_path = None
-                    try:
-                        filename = secure_filename(video_file.filename)
-                        # Create safe user ID and timestamp for unique filename
-                        safe_user_id = user_id.replace('.', '_').replace(':', '_')
-                        timestamp = int(time.time())
-                        video_path = os.path.join(
-                            UPLOAD_FOLDER, 
-                            f"temp_video_{safe_user_id}_{timestamp}_{filename}"
-                        )
-                        
-                        print(f"[{idx}/{len(video_files)}] Processing video: {filename}")
-                        print(f"  UPLOAD_FOLDER: {UPLOAD_FOLDER}")
-                        print(f"  Full video path: {video_path}")
-                        print(f"  Directory exists: {os.path.exists(UPLOAD_FOLDER)}")
-                        
-                        print(f"  Saving video file...")
-                        video_file.save(video_path)
-                        
-                        # Verify file was saved
-                        if not os.path.exists(video_path):
-                            raise FileNotFoundError(f"Failed to save video file to {video_path}")
-                        
-                        file_size = os.path.getsize(video_path)
-                        print(f"  ✓ File saved successfully: {file_size:,} bytes ({file_size/(1024*1024):.2f} MB)")
-                        
-                        # Process the video
-                        print(f"  Starting video content processing...")
-                        result = video_processor.process_video_content(video_path, 'local')
-                        
-                        # Cleanup
-                        try:
-                            if video_path and os.path.exists(video_path):
-                                os.remove(video_path)
-                                print(f"  Cleaned up temp video file")
-                        except Exception as cleanup_error:
-                            print(f"  Warning: Failed to cleanup {video_path}: {cleanup_error}")
-                        
-                        if result['error']:
-                            error_msg = f"Video {filename}: {result['error']}"
-                            errors.append(error_msg)
-                            print(f"  ❌ ERROR: {result['error']}")
-                        else:
-                            processed_inspiration.append({
-                                'source': filename,
-                                'transcript': result['transcript'],
-                                'stats': result['stats'],
-                                'type': 'local_video'
-                            })
-                            print(f"  ✓ Success: {len(result['transcript'])} characters transcribed")
-                            print(f"\n  TRANSCRIPT PREVIEW (first 500 chars):")
-                            print(f"  {'-'*56}")
-                            print(f"  {result['transcript'][:500]}...")
-                            print(f"  {'-'*56}\n")
-                            
-                    except Exception as e:
-                        error_msg = f"Video {video_file.filename}: {str(e)}"
-                        errors.append(error_msg)
-                        print(f"  ❌ EXCEPTION: {str(e)}")
-                        import traceback
-                        print(f"  TRACEBACK:\n{traceback.format_exc()}")
-                        
-                        # Cleanup on error
-                        try:
-                            if video_path and os.path.exists(video_path):
-                                os.remove(video_path)
-                                print(f"  Cleaned up temp video file after error")
-                        except:
-                            pass
-                else:
-                    error_msg = f"Video {video_file.filename}: Unsupported format or invalid filename"
-                    errors.append(error_msg)
-                    print(f"  ❌ Skipped: Unsupported format")
-        
-        # ========================================
-        # PROCESS PERSONAL YOUTUBE VIDEOS
-        # ========================================
-        if personal_videos:
-            print(f"\n{'='*60}")
-            print(f"PROCESSING {len(personal_videos)} PERSONAL YOUTUBE VIDEOS")
-            print(f"{'='*60}\n")
-            
-            for idx, url in enumerate(personal_videos, 1):
-                if url and video_processor.validate_youtube_url(url):
-                    print(f"[{idx}/{len(personal_videos)}] Processing: {url}")
-                    result = video_processor.process_video_content(url, 'youtube')
-                    
-                    if result['error']:
-                        error_msg = f"Personal video {url}: {result['error']}"
-                        errors.append(error_msg)
-                        print(f"  ❌ ERROR: {result['error']}")
-                    else:
-                        processed_personal.append({
-                            'url': url,
-                            'transcript': result['transcript'],
-                            'stats': result['stats'],
-                            'type': 'youtube'
-                        })
-                        print(f"  ✓ Success: {len(result['transcript'])} characters")
-        
-        # ========================================
-        # PROCESS INSPIRATION YOUTUBE VIDEOS
-        # ========================================
-        if inspiration_videos:
-            print(f"\n{'='*60}")
-            print(f"PROCESSING {len(inspiration_videos)} INSPIRATION YOUTUBE VIDEOS")
-            print(f"{'='*60}\n")
-            
-            for idx, url in enumerate(inspiration_videos, 1):
-                if url and video_processor.validate_youtube_url(url):
-                    print(f"[{idx}/{len(inspiration_videos)}] Processing: {url}")
-                    result = video_processor.process_video_content(url, 'youtube')
-                    
-                    if result['error']:
-                        error_msg = f"Inspiration video {url}: {result['error']}"
-                        errors.append(error_msg)
-                        print(f"  ❌ ERROR: {result['error']}")
-                    else:
-                        processed_inspiration.append({
-                            'url': url,
-                            'transcript': result['transcript'],
-                            'stats': result['stats'],
-                            'type': 'youtube'
-                        })
-                        print(f"  ✓ Success: {len(result['transcript'])} characters")
-        
-        # ========================================
-        # ANALYZE CONTENT
-        # ========================================
-        print(f"\n{'='*60}")
-        print(f"ANALYZING CONTENT")
-        print(f"{'='*60}\n")
-        
-        # Style analysis
-        style_profile = "Professional, engaging YouTube style with clear explanations, good pacing, and viewer-friendly language."
-        if processed_personal:
-            print(f"Analyzing creator style from {len(processed_personal)} personal videos...")
-            personal_transcripts = [v['transcript'] for v in processed_personal]
-            try:
-                style_profile = script_generator.analyze_creator_style(personal_transcripts)
-                print(f"✓ Style analysis complete: {len(style_profile)} characters")
-            except Exception as e:
-                error_msg = f"Style analysis failed: {str(e)}"
-                errors.append(error_msg)
-                print(f"❌ ERROR: {error_msg}")
-        else:
-            print("Using default style profile (no personal videos provided)")
-        
-        # Inspiration analysis
-        inspiration_summary = "Creating original, engaging content based on best YouTube practices and viewer engagement strategies."
-        if processed_inspiration:
-            print(f"\nAnalyzing inspiration content from {len(processed_inspiration)} sources...")
-            inspiration_transcripts = [v['transcript'] for v in processed_inspiration]
-            try:
-                inspiration_summary = script_generator.analyze_inspiration_content(inspiration_transcripts)
-                print(f"✓ Inspiration analysis complete: {len(inspiration_summary)} characters")
-            except Exception as e:
-                error_msg = f"Inspiration analysis failed: {str(e)}"
-                errors.append(error_msg)
-                print(f"❌ ERROR: {error_msg}")
-        else:
-            print("Using default inspiration summary (no inspiration sources provided)")
-        
-        # Document analysis
-        document_insights = "Using general knowledge and industry best practices to create informative content."
-        if processed_documents:
-            print(f"\nAnalyzing {len(processed_documents)} documents...")
-            document_texts = [d['text'] for d in processed_documents]
-            try:
-                document_insights = script_generator.analyze_documents(document_texts)
-                print(f"✓ Document analysis complete: {len(document_insights)} characters")
-            except Exception as e:
-                error_msg = f"Document analysis failed: {str(e)}"
-                errors.append(error_msg)
-                print(f"❌ ERROR: {error_msg}")
-        else:
-            print("Using default document insights (no documents provided)")
-        
-        # Add duration context
-        if target_minutes:
-            prompt = f"{prompt}\n\n[Target video duration: approximately {target_minutes} minutes]"
-            print(f"\n✓ Added duration target to prompt: {target_minutes} minutes")
-        
-        # ========================================
-        # GENERATE SCRIPT
-        # ========================================
-        print(f"\n{'='*60}")
-        print(f"GENERATING FINAL SCRIPT")
-        print(f"{'='*60}\n")
-        
-        try:
-            script = script_generator.generate_enhanced_script(
-                style_profile,
-                inspiration_summary,
-                document_insights,
-                prompt
-            )
-            print(f"✓ Script generated successfully: {len(script)} characters\n")
-        except Exception as e:
-            print(f"❌ Script generation failed: {str(e)}")
-            import traceback
-            print(f"TRACEBACK:\n{traceback.format_exc()}")
-            return jsonify({'error': f'Script generation failed: {str(e)}'}), 500
-        
-        # ========================================
-        # STORE SESSION DATA
-        # ========================================
-        chat_session_id = str(uuid.uuid4())
-        user_data[user_id]['current_script'] = {
-            'content': script,
-            'style_profile': style_profile,
-            'topic_insights': inspiration_summary,
-            'document_insights': document_insights,
-            'original_prompt': prompt,
-            'target_minutes': target_minutes,
-            'timestamp': datetime.now().isoformat()
-        }
-        
-        user_data[user_id]['chat_sessions'][chat_session_id] = {
-            'messages': [],
-            'script_versions': [script],
-            'created_at': datetime.now().isoformat()
-        }
-        
-        print(f"✓ Session stored: {chat_session_id}")
-        
-        # ========================================
-        # CALCULATE STATS
-        # ========================================
-        stats = {
-            'personal_videos': len(processed_personal),
-            'inspiration_videos': len(processed_inspiration),
-            'documents': len(processed_documents),
-            'total_sources': len(processed_personal) + len(processed_inspiration) + len(processed_documents),
-            'errors_count': len(errors),
-            'video_files_processed': len([v for v in processed_inspiration if v.get('type') == 'local_video']),
-            'target_duration': target_minutes
-        }
-        
-        print(f"\n{'='*60}")
-        print(f"GENERATION COMPLETE")
-        print(f"{'='*60}")
-        print(f"Stats: {json.dumps(stats, indent=2)}")
-        if errors:
-            print(f"\nErrors encountered ({len(errors)}):")
-            for error in errors:
-                print(f"  - {error}")
-        print(f"{'='*60}\n")
-        
-        return jsonify({
-            'success': True,
-            'script': script,
-            'chat_session_id': chat_session_id,
-            'stats': stats,
-            'processed_content': {
-                'personal_videos': len(processed_personal),
-                'inspiration_videos': len(processed_inspiration),
-                'documents': len(processed_documents),
-                'video_files': len([v for v in processed_inspiration if v.get('type') == 'local_video'])
-            },
-            'errors': errors if errors else None,
-            'analysis_quality': 'premium' if (processed_personal and processed_inspiration and processed_documents) else 'optimal' if any([processed_personal, processed_inspiration, processed_documents]) else 'basic',
-            'inputs_provided': {
-                'prompt': bool(data.get('prompt')),
-                'personal_videos': len(personal_videos),
-                'inspiration_videos': len(inspiration_videos),
-                'documents': len(documents),
-                'video_files': len(video_files),
-                'duration_specified': target_minutes is not None
-            }
-        })
-        
-    except Exception as e:
-        print(f"\n{'='*60}")
-        print(f"CRITICAL ERROR IN SCRIPT GENERATION")
-        print(f"{'='*60}")
-        print(f"Error: {str(e)}")
-        import traceback
-        print(f"Traceback:\n{traceback.format_exc()}")
-        print(f"{'='*60}\n")
-        return jsonify({'error': f'Complete script generation failed: {str(e)}'}), 500
-
-@app.route('/api/chat-modify-script', methods=['POST'])
-def chat_modify_script():
-    """Enhanced chat modification with document context"""
-    user_id = request.remote_addr
-    data = request.json
-    user_message = data.get('message', '').strip()
-    chat_session_id = data.get('chat_session_id')
-    
-    if not user_message:
-        return jsonify({'error': 'Please provide a modification request'}), 400
-    
-    current_script_data = user_data[user_id].get('current_script')
-    if not current_script_data:
-        return jsonify({'error': 'No active script to modify'}), 400
-    
-    try:
-        current_script = current_script_data['content']
-        style_profile = current_script_data['style_profile']
-        topic_insights = current_script_data['topic_insights']
-        document_insights = current_script_data.get('document_insights', '')
-        
-        modification_response = script_generator.modify_script_chat(
-            current_script,
-            style_profile,
-            topic_insights,
-            document_insights,
-            user_message
-        )
-        
-        if chat_session_id and chat_session_id in user_data[user_id]['chat_sessions']:
-            chat_session = user_data[user_id]['chat_sessions'][chat_session_id]
-            chat_session['messages'].append({
-                'user_message': user_message,
-                'ai_response': modification_response,
-                'timestamp': datetime.now().isoformat()
-            })
-        
-        return jsonify({
-            'success': True,
-            'response': modification_response,
-            'user_message': user_message,
-            'chat_session_id': chat_session_id,
-            'timestamp': datetime.now().isoformat()
-        })
-    except Exception as e:
-        return jsonify({'error': f'Error modifying script: {str(e)}'}), 500
-
-
-@app.route('/api/update-script', methods=['POST'])
-def update_script():
-    """Update the current working script"""
-    user_id = request.remote_addr
-    data = request.json
-    new_script = data.get('script', '').strip()
-    chat_session_id = data.get('chat_session_id')
-    
-    if not new_script:
-        return jsonify({'error': 'Script content is required'}), 400
-    
-    try:
-        if user_data[user_id].get('current_script'):
-            user_data[user_id]['current_script']['content'] = new_script
-            user_data[user_id]['current_script']['timestamp'] = datetime.now().isoformat()
-        
-        if chat_session_id and chat_session_id in user_data[user_id]['chat_sessions']:
-            chat_session = user_data[user_id]['chat_sessions'][chat_session_id]
-            chat_session['script_versions'].append(new_script)
-        
-        return jsonify({
-            'success': True,
-            'message': 'Script updated successfully'
-        })
-    except Exception as e:
-        return jsonify({'error': f'Error updating script: {str(e)}'}), 500
-
-
-
-# @app.route('/health', methods=['GET'])
-# def health_check():
-#     """Health check endpoint"""
-#     return jsonify({
-#         'status': 'healthy',
-#         'timestamp': datetime.now().isoformat(),
-#         'version': '2.0-simplified',
-#         'upload_folder': UPLOAD_FOLDER,
-#         'upload_folder_exists': os.path.exists(UPLOAD_FOLDER)
-#     })
-
-
-# @app.route('/api/script_generation', methods=['POST'])
-# def generate_complete_script():
-#     """Enhanced all-in-one endpoint: ALL inputs optional - upload documents, process videos (YouTube + local), analyze, and generate script"""
-#     user_id = request.remote_addr
-    
-#     try:
-#         # Handle both JSON and multipart form data
-#         if request.content_type and 'multipart/form-data' in request.content_type:
-#             data = {
-#                 'personal_videos': request.form.getlist('personal_videos[]'),
-#                 'inspiration_videos': request.form.getlist('inspiration_videos[]'),
-#                 'prompt': request.form.get('prompt', '').strip(),
-#                 'minutes': request.form.get('minutes', type=int)  # NEW: video duration target
-#             }
-#             documents = request.files.getlist('documents[]')
-#             video_files = request.files.getlist('video_files[]')
-#         else:
-#             data = request.json or {}
-#             documents = []
-#             video_files = []
-        
-#         personal_videos = data.get('personal_videos', [])
-#         inspiration_videos = data.get('inspiration_videos', [])
-#         prompt = data.get('prompt', '').strip()
-#         target_minutes = data.get('minutes')  # NEW: optional duration target
-        
-#         # CHANGED: Prompt now optional - will generate generic script if missing
-#         if not prompt:
-#             prompt = "Create an engaging, informative YouTube video script on a topic of general interest."
-        
-#         # Initialize results
-#         processed_documents = []
-#         processed_personal = []
-#         processed_inspiration = []
-#         errors = []
-        
-#         # Process documents if uploaded (OPTIONAL)
-#         if documents:
-#             logger.info(f"Processing {len(documents)} documents...")
-#             for file in documents:
-#                 if file.filename and document_processor.allowed_file(file.filename):
-#                     try:
-#                         filename = secure_filename(file.filename)
-#                         file_path = os.path.join(app.config['UPLOAD_FOLDER'], f"temp_{user_id.replace('.', '_')}_{filename}")
-#                         file.save(file_path)
-                        
-#                         result = document_processor.process_document(file_path, filename)
-                        
-#                         try:
-#                             os.remove(file_path)
-#                         except:
-#                             pass
-                        
-#                         if result['error']:
-#                             errors.append(f"Document {filename}: {result['error']}")
-#                         else:
-#                             processed_documents.append({
-#                                 'filename': filename,
-#                                 'text': result['text'],
-#                                 'stats': result['stats']
-#                             })
-#                     except Exception as e:
-#                         errors.append(f"Document {file.filename}: {str(e)}")
-        
-#         # Process uploaded video files (OPTIONAL)
-#         if video_files:
-#             logger.info(f"Processing {len(video_files)} uploaded video files...")
-#             for video_file in video_files:
-#                 if video_file.filename and video_processor.is_supported_video_format(video_file.filename):
-#                     try:
-#                         filename = secure_filename(video_file.filename)
-#                         video_path = os.path.join(app.config['UPLOAD_FOLDER'], f"temp_video_{user_id.replace('.', '_')}_{filename}")
-#                         video_file.save(video_path)
-                        
-#                         result = video_processor.process_video_content(video_path, 'local')
-                        
-#                         try:
-#                             os.remove(video_path)
-#                         except:
-#                             pass
-                        
-#                         if result['error']:
-#                             errors.append(f"Video {filename}: {result['error']}")
-#                         else:
-#                             processed_inspiration.append({
-#                                 'source': filename,
-#                                 'transcript': result['transcript'],
-#                                 'stats': result['stats'],
-#                                 'type': 'local_video'
-#                             })
-#                     except Exception as e:
-#                         errors.append(f"Video {video_file.filename}: {str(e)}")
-        
-#         # Process personal YouTube videos (OPTIONAL)
-#         if personal_videos:
-#             logger.info(f"Processing {len(personal_videos)} personal videos...")
-#             for url in personal_videos:
-#                 if url and video_processor.validate_youtube_url(url):
-#                     result = video_processor.process_video_content(url, 'youtube')
-                    
-#                     if result['error']:
-#                         errors.append(f"Personal video {url}: {result['error']}")
-#                     else:
-#                         # >>> ADD THESE LINES STARTING HERE <<<
-#                         print("\n\n" + "="*40)
-#                         print(f"EXTRACTED TRANSCRIPT FOR PERSONAL VIDEO: {url}")
-#                         print("="*40)
-#                         print(result['transcript'])
-#                         print("="*40 + "\n\n")
-#                         # >>> END OF ADDED LINES <<<
-
-#                         processed_personal.append({
-#                             'url': url,
-#                             'transcript': result['transcript'],
-#                             'stats': result['stats'],
-#                             'type': 'youtube'
-#                         })
-
-        
-#         # Process inspiration YouTube videos (OPTIONAL)
-#         if inspiration_videos:
-#             logger.info(f"Processing {len(inspiration_videos)} inspiration videos...")
-#             for url in inspiration_videos:
-#                 if url and video_processor.validate_youtube_url(url):
-#                     result = video_processor.process_video_content(url, 'youtube')
-                    
-#                     if result['error']:
-#                         errors.append(f"Inspiration video {url}: {result['error']}")
-#                     else:
-#                         processed_inspiration.append({
-#                             'url': url,
-#                             'transcript': result['transcript'],
-#                             'stats': result['stats'],
-#                             'type': 'youtube'
-#                         })
-        
-#         # CHANGED: No error if no content - will use defaults
-#         logger.info("Analyzing all content...")
-        
-#         # Style analysis (use default if no personal videos)
-#         style_profile = "Professional, engaging YouTube style with clear explanations, good pacing, and viewer-friendly language."
-#         if processed_personal:
-#             personal_transcripts = [v['transcript'] for v in processed_personal]
-#             try:
-#                 style_profile = script_generator.analyze_creator_style(personal_transcripts)
-#             except Exception as e:
-#                 logger.error(f"Style analysis error: {str(e)}")
-#                 errors.append(f"Style analysis failed: {str(e)}")
-        
-#         # Inspiration analysis (use default if no inspiration)
-#         inspiration_summary = "Creating original, engaging content based on best YouTube practices and viewer engagement strategies."
-#         if processed_inspiration:
-#             inspiration_transcripts = [v['transcript'] for v in processed_inspiration]
-#             try:
-#                 inspiration_summary = script_generator.analyze_inspiration_content(inspiration_transcripts)
-#             except Exception as e:
-#                 logger.error(f"Inspiration analysis error: {str(e)}")
-#                 errors.append(f"Inspiration analysis failed: {str(e)}")
-        
-#         # Document analysis (use default if no documents)
-#         document_insights = "Using general knowledge and industry best practices to create informative content."
-#         if processed_documents:
-#             document_texts = [d['text'] for d in processed_documents]
-#             try:
-#                 document_insights = script_generator.analyze_documents(document_texts)
-#             except Exception as e:
-#                 logger.error(f"Document analysis error: {str(e)}")
-#                 errors.append(f"Document analysis failed: {str(e)}")
-        
-#         # NEW: Add duration context to prompt if specified
-#         if target_minutes:
-#             prompt = f"{prompt}\n\n[Target video duration: approximately {target_minutes} minutes]"
-        
-#         # Generate script
-#         logger.info("Generating final script...")
-#         try:
-#             script = script_generator.generate_enhanced_script(
-#                 style_profile,
-#                 inspiration_summary,
-#                 document_insights,
-#                 prompt
-#             )
-#         except Exception as e:
-#             logger.error(f"Script generation error: {str(e)}")
-#             return jsonify({'error': f'Script generation failed: {str(e)}'}), 500
-        
-#         # Store current script for chat modifications
-#         chat_session_id = str(uuid.uuid4())
-#         user_data[user_id]['current_script'] = {
-#             'content': script,
-#             'style_profile': style_profile,
-#             'topic_insights': inspiration_summary,
-#             'document_insights': document_insights,
-#             'original_prompt': prompt,
-#             'target_minutes': target_minutes,  # NEW: store duration
-#             'timestamp': datetime.now().isoformat()
-#         }
-        
-#         # Initialize chat session
-#         user_data[user_id]['chat_sessions'][chat_session_id] = {
-#             'messages': [],
-#             'script_versions': [script],
-#             'created_at': datetime.now().isoformat()
-#         }
-        
-#         # Calculate stats
-#         stats = {
-#             'personal_videos': len(processed_personal),
-#             'inspiration_videos': len(processed_inspiration),
-#             'documents': len(processed_documents),
-#             'total_sources': len(processed_personal) + len(processed_inspiration) + len(processed_documents),
-#             'errors_count': len(errors),
-#             'video_files_processed': len([v for v in processed_inspiration if v.get('type') == 'local_video']),
-#             'target_duration': target_minutes  # NEW: include in stats
-#         }
-        
-#         logger.info("Complete script generation finished successfully")
-        
-#         return jsonify({
-#             'success': True,
-#             'script': script,
-#             'chat_session_id': chat_session_id,
-#             'stats': stats,
-#             'processed_content': {
-#                 'personal_videos': len(processed_personal),
-#                 'inspiration_videos': len(processed_inspiration),
-#                 'documents': len(processed_documents),
-#                 'video_files': len([v for v in processed_inspiration if v.get('type') == 'local_video'])
-#             },
-#             'errors': errors if errors else None,
-#             'analysis_quality': 'premium' if (processed_personal and processed_inspiration and processed_documents) else 'optimal' if any([processed_personal, processed_inspiration, processed_documents]) else 'basic',
-#             'inputs_provided': {  # NEW: show what was provided
-#                 'prompt': bool(data.get('prompt')),
-#                 'personal_videos': len(personal_videos),
-#                 'inspiration_videos': len(inspiration_videos),
-#                 'documents': len(documents),
-#                 'video_files': len(video_files),
-#                 'duration_specified': target_minutes is not None
-#             }
-#         })
-        
-#     except Exception as e:
-#         logger.error(f"Complete script generation error: {str(e)}")
-#         return jsonify({'error': f'Complete script generation failed: {str(e)}'}), 500
-
-# @app.route('/api/chat-modify-script', methods=['POST'])
-# def chat_modify_script():
-#     """Enhanced chat modification with document context"""
-#     user_id = request.remote_addr  # Use IP as user_id
-    
-#     data = request.json
-#     user_message = data.get('message', '').strip()
-#     chat_session_id = data.get('chat_session_id')
-    
-#     if not user_message:
-#         return jsonify({'error': 'Please provide a modification request'}), 400
-    
-#     current_script_data = user_data[user_id].get('current_script')
-#     if not current_script_data:
-#         return jsonify({'error': 'No active script to modify'}), 400
-    
-#     try:
-#         logger.info(f"Processing chat modification: {user_message[:50]}...")
-        
-#         # Get current script and full context
-#         current_script = current_script_data['content']
-#         style_profile = current_script_data['style_profile']
-#         topic_insights = current_script_data['topic_insights']
-#         document_insights = current_script_data.get('document_insights', '')
-        
-#         # Generate modification with full context
-#         modification_response = script_generator.modify_script_chat(
-#             current_script,
-#             style_profile,
-#             topic_insights,
-#             document_insights,
-#             user_message
-#         )
-        
-#         # Update chat session
-#         if chat_session_id and chat_session_id in user_data[user_id]['chat_sessions']:
-#             chat_session = user_data[user_id]['chat_sessions'][chat_session_id]
-#             chat_session['messages'].append({
-#                 'user_message': user_message,
-#                 'ai_response': modification_response,
-#                 'timestamp': datetime.now().isoformat()
-#             })
-        
-#         logger.info("Script modification completed successfully")
-        
-#         return jsonify({
-#             'success': True,
-#             'response': modification_response,
-#             'user_message': user_message,
-#             'timestamp': datetime.now().isoformat()
-#         })
-        
-#     except Exception as e:
-#         logger.error(f"Error modifying script via chat: {str(e)}")
-#         return jsonify({'error': f'Error modifying script: {str(e)}'}), 500
-
-# @app.route('/api/update-script', methods=['POST'])
-# def update_script():
-#     """Update the current working script"""
-#     user_id = request.remote_addr  # Use IP as user_id
-    
-#     data = request.json
-#     new_script = data.get('script', '').strip()
-#     chat_session_id = data.get('chat_session_id')
-    
-#     if not new_script:
-#         return jsonify({'error': 'Script content is required'}), 400
-    
-#     try:
-#         # Update current script
-#         if user_data[user_id].get('current_script'):
-#             user_data[user_id]['current_script']['content'] = new_script
-#             user_data[user_id]['current_script']['timestamp'] = datetime.now().isoformat()
-        
-#         # Add to chat session history
-#         if chat_session_id and chat_session_id in user_data[user_id]['chat_sessions']:
-#             chat_session = user_data[user_id]['chat_sessions'][chat_session_id]
-#             chat_session['script_versions'].append(new_script)
-        
-#         return jsonify({
-#             'success': True,
-#             'message': 'Script updated successfully'
-#         })
-        
-#     except Exception as e:
-#         logger.error(f"Error updating script: {str(e)}")
-#         return jsonify({'error': f'Error updating script: {str(e)}'}), 500
-
-# @app.route('/health', methods=['GET'])
-# def health_check():
-#     """Health check endpoint"""
-#     return jsonify({
-#         'status': 'healthy',
-#         'timestamp': datetime.now().isoformat(),
-#         'version': '2.0-simplified-ytdlp'
-#     })
-
-@app.route('/api/similar_videos', methods=['POST'])
-def similar_videos():
-    """Fetch similar YouTube videos based on input video ID, filtered by duration category."""
-    try:
-        data = request.get_json()
-        video_id = data.get('video_id', '').strip()
-        if not video_id:
-            return jsonify({'error': 'Video ID is required'}), 400
-
-        # --------------------------
-        # 1. Fetch input video details (title and duration) using YouTube Data API
-        # --------------------------
-        youtube_url = 'https://youtube.googleapis.com/youtube/v3/videos'
-        params = {
-            'part': 'snippet,contentDetails',
-            'id': video_id,
-            'key': YOUTUBE_API_KEY
-        }
-        video_resp = requests.get(youtube_url, params=params)
-        video_resp.raise_for_status()
-        video_data = video_resp.json()
-
-        if not video_data.get('items'):
-            return jsonify({'error': 'Video not found'}), 404
-
-        video_item = video_data['items'][0]
-        original_title = video_item['snippet']['title']
-        duration_iso = video_item['contentDetails']['duration']  # e.g., PT5M30S
-
-        # Parse ISO 8601 duration to seconds
-        def parse_duration(iso_duration):
-            duration = isodate.parse_duration(iso_duration)
-            return int(duration.total_seconds())
-
-        original_duration = parse_duration(duration_iso)
-
-        # Determine duration category
-        if original_duration < 240:  # Less than 4 minutes
-            duration_category = 'short'
-        elif original_duration <= 1200:  # 4–20 minutes
-            duration_category = 'medium'
-        else:  # Over 20 minutes
-            duration_category = 'long'
-
-        # --------------------------
-        # 2. Simplify title using Gemini-2.0-Flash
-        # --------------------------
-        client = genai.GenerativeModel('gemini-2.0-flash')
-        prompt = f"Take this YouTube video title and make a very short, simple keyword phrase (3-6 words) suitable for searching similar videos. Focus on the core theme and avoid special characters except spaces, commas, periods, question marks, and hyphens:\n\nTitle: {original_title}\n\nShort search phrase:"
-        
-        gemini_response = client.generate_content(prompt)
-        search_phrase = gemini_response.text.strip()
-        if not search_phrase:
-            return jsonify({'error': 'Failed to generate search phrase'}), 500
-
-        # --------------------------
-        # 3. Search similar videos using YouTube Data API with duration filter
-        # --------------------------
-        search_url = 'https://youtube.googleapis.com/youtube/v3/search'
-        search_params = {
-            'part': 'snippet',
-            'q': search_phrase,
-            'type': 'video',
-            'videoDuration': duration_category,  # short, medium, or long
-            'maxResults': 20,
-            'relevanceLanguage': 'en',
-            'key': YOUTUBE_API_KEY
-        }
-        search_resp = requests.get(search_url, params=search_params)
-        search_resp.raise_for_status()
-        search_data = search_resp.json()
-
-        videos = []
-        for item in search_data.get('items', []):
-            video_id = item['id'].get('videoId')
-            snippet = item.get('snippet', {})
-            if video_id:
-                videos.append({
-                    'video_id': video_id,
-                    'title': snippet.get('title'),
-                    'channel_title': snippet.get('channelTitle'),
-                    'thumbnail_url': snippet.get('thumbnails', {}).get('high', {}).get('url'),
-                    'url': f'https://www.youtube.com/watch?v={video_id}'
-                })
-
-        # Log if no videos found
-        if not videos:
-            app.logger.warning(f"No videos found for search phrase: {search_phrase}, duration: {duration_category}")
-
-        # --------------------------
-        # 4. Return JSON
-        # --------------------------
-        return jsonify({
-            'success': True,
-            'original_title': original_title,
-            'original_duration': original_duration,
-            'duration_category': duration_category,
-            'search_phrase': search_phrase,
-            'videos': videos
-        })
-
-    except requests.exceptions.RequestException as e:
-        app.logger.error(f"YouTube API error: {str(e)}")
-        return jsonify({'error': f'YouTube API error: {str(e)}'}), 503
-    except Exception as e:
-        app.logger.error(f"Similar videos error: {str(e)}")
-        return jsonify({'error': f'An error occurred: {str(e)}'}), 500
-@app.route('/api/refine_title', methods=['POST'])
-def refine_title():
-    """Refine a YouTube title by making it shorter or longer and adjust virality score."""
-    try:
-        data = request.get_json(force=1, silent=False)  # Add strict=False to handle single quotes
-        if not data or 'title' not in data or 'action' not in data or 'previous_virality_score' not in data:
-            return jsonify({'error': 'Title, action (shorter/longer), and previous_virality_score are required'}), 400
-        
-        title = data['title'].strip()
-        action = data['action'].strip().lower()
-        previous_virality_score = int(data['previous_virality_score'])
-        if not title or action not in ['shorter', 'longer'] or previous_virality_score < 0 or previous_virality_score > 100:
-            return jsonify({'error': 'Invalid input: title cannot be empty, action must be "shorter" or "longer", and previous_virality_score must be between 0 and 100, make sure to avoid using special characters or excessive punctuation also make sure emotion of sentence remain same.'}), 400
-
-        # Prepare prompt for Gemini, including the previous virality score
-        prompt = (
-            f"Refine the YouTube video title: '{title}'. "
-            f"The previous virality score was {previous_virality_score} out of 100. "
-            f"Make it {'shorter' if action == 'shorter' else 'longer'} while keeping it engaging and viral. "
-            f"Ensure the refined title retains the core idea, uses attention-grabbing words, and fits YouTube best practices. "
-            f"Provide the refined title and a new virality score out of 100 based on its appeal, length adjustment, and aiming to improve or maintain the previous virality score. "
-            f"Return the response in valid JSON format wrapped in ```json\n...\n``` with the structure: "
-            f"{{ \"refined_title\": \"string\", \"virality_score\": int }}"
-        )
-        
-        client = genai.GenerativeModel('gemini-2.0-flash')
-        response = client.generate_content(prompt)
-        gemini_response = response.text
-        if gemini_response.startswith('```json\n') and gemini_response.endswith('\n```'):
-            gemini_response = gemini_response[7:-4]
-        gemini_data = json.loads(gemini_response)
-        
-        return jsonify({
-            'success': True,
-            'original_title': title,
-            'action': action,
-            'previous_virality_score': previous_virality_score,
-            'refined_title': gemini_data['refined_title'],
-            'virality_score': gemini_data['virality_score']
-        })
-    except json.JSONDecodeError as e:
-        app.logger.error(f"JSON decode error in refine_title: {str(e)}")
-        return jsonify({'success': False, 'error': 'Invalid JSON format in request body'}), 400
-    except Exception as e:
-        error_message = str(e)
-        app.logger.error(f"Refine title error: {error_message}")
-        if "API key" in error_message or "authentication" in error_message.lower():
-            return jsonify({
-                'success': False,
-                'error': 'API key or authentication error. Please renew the API key and restart the application.'
-            }), 500
-        return jsonify({'success': False, 'error': f'An error occurred: {error_message}'}), 500
-
-@app.route('/api/refine_description', methods=['POST'])
-def refine_description():
-    """Refine a YouTube video description by making it shorter or longer."""
-    try:
-        data = request.get_json()
-        if not data or 'description' not in data or 'action' not in data:
-            return jsonify({'error': 'Description and action (shorter/longer) are required'}), 400
-        
-        description = data['description'].strip()
-        action = data['action'].strip().lower()
-        if not description or action not in ['shorter', 'longer']:
-            return jsonify({'error': 'Invalid input: description cannot be empty, action must be "shorter" or "longer"'}), 400
-        
-        # Prepare prompt for Gemini to refine the description
-        prompt = (
-            f"Refine the YouTube video description: '{description}'. "
-            f"Make it {'shorter' if action == 'shorter' else 'longer'} while keeping it engaging, informative, and aligned with YouTube best practices. "
-            f"Ensure the refined description retains the core idea and enhances viewer interest. "
-            f"Return the response in valid JSON format wrapped in ```json\n...\n``` with the structure: "
-            f"{{ 'refined_description': 'string' }}"
-        )
-        
-        client = genai.GenerativeModel('gemini-2.0-flash')
-        response = client.generate_content(prompt)
-        gemini_response = response.text
-        if gemini_response.startswith('```json\n') and gemini_response.endswith('\n```'):
-            gemini_response = gemini_response[7:-4]
-        gemini_data = json.loads(gemini_response)
-        
-        return jsonify({
-            'success': True,
-            'original_description': description,
-            'action': action,
-            'refined_description': gemini_data['refined_description']
-        })
-    except Exception as e:
-        app.logger.error(f"Refine description error: {str(e)}")
-        return jsonify({'success': False, 'error': f'An error occurred: {str(e)}'}), 500
-
-
-@app.route("/api/youtube_search", methods=["POST"])
-def youtube_search():
-    try:
-        data = request.get_json()
-        query = data.get("q", "").strip()
-        max_results = 50  # fixed at 50 results
-
-        if not query:
-            return jsonify({"error": "Search query (q) is required"}), 400
-
-        youtube = googleapiclient.discovery.build("youtube", "v3", developerKey=YOUTUBE_API_KEY)
-
-        # 1. Perform search
-        search_resp = youtube.search().list(
-            part="snippet",
-            q=query,
-            type="video",
-            maxResults=max_results
-        ).execute()
-
-        shorts = []
-        videos = []
-
-        for item in search_resp.get("items", []):
-            video_id = item["id"]["videoId"]
-            channel_id = item["snippet"]["channelId"]
-
-            # Fetch video details
-            video_resp = youtube.videos().list(
-                part="snippet,contentDetails,statistics",
-                id=video_id
-            ).execute()
-
-            if not video_resp.get("items"):
-                continue
-
-            v = video_resp["items"][0]
-            stats = v.get("statistics", {})
-            content = v.get("contentDetails", {})
-            snippet = v.get("snippet", {})
-
-            # Duration parsing
-            duration_seconds = parse_duration(content.get("duration", ""))
-
-            # Channel details
-            channel_resp = youtube.channels().list(
-                part="statistics,snippet,contentDetails",
-                id=channel_id
-            ).execute()
-
-            if not channel_resp.get("items"):
-                continue
-
-            ch = channel_resp["items"][0]
-            channel_data = {
-                "subscriber_count": int(ch["statistics"].get("subscriberCount", 0)),
-                "title": ch["snippet"].get("title", "")
-            }
-
-            views = int(stats.get("viewCount", 0))
-            likes = int(stats.get("likeCount", 0))
-            comments = int(stats.get("commentCount", 0))
-
-            # Compute average channel views
-            uploads_playlist = ch["contentDetails"]["relatedPlaylists"]["uploads"]
-            uploads_resp = youtube.playlistItems().list(
-                part="contentDetails",
-                playlistId=uploads_playlist,
-                maxResults=5
-            ).execute()
-
-            upload_video_ids = [u["contentDetails"]["videoId"] for u in uploads_resp.get("items", [])]
-            upload_details = fetch_video_details(youtube, upload_video_ids)
-
-            channel_avg = 0
-            if upload_details:
-                channel_avg = sum(int(u["statistics"].get("viewCount", 0)) for u in upload_details) / len(upload_details)
-
-            multiplier = views / channel_avg if channel_avg > 0 else 0
-
-            video_result = {
-                'video_id': video_id,
-                'title': snippet.get('title', ''),
-                'channel_id': channel_id,
-                'channel_title': channel_data["title"],
-                'views': views,
-                'channel_avg_views': round(channel_avg, 2),
-                'multiplier': round(multiplier, 2),
-                'likes': likes,
-                'comments': comments,
-                'duration': content.get("duration", ""),
-                'duration_seconds': duration_seconds,
-                'url': f"https://www.youtube.com/watch?v={video_id}",
-                'published_at': snippet.get("publishedAt", ""),
-                'thumbnail_url': snippet.get("thumbnails", {}).get("high", {}).get("url", ""),
-                'viral_score': round(multiplier / 10, 2),
-                'engagement_rate': round((likes + comments) / views if views > 0 else 0, 4),
-                'subscriber_count': channel_data.get('subscriber_count', 0),
-                'language': snippet.get("defaultAudioLanguage", "en")
-            }
-
-            # Separate Shorts vs Videos
-            if duration_seconds <= 60:
-                shorts.append(video_result)
-            else:
-                videos.append(video_result)
-
-        return jsonify({
-            "success": True,
-            "shorts": shorts,
-            "videos": videos
-        })
-
-    except Exception as e:
-        app.logger.error(f"YouTube search error: {str(e)}")
-        return jsonify({"error": str(e)}), 500
-    
-
-
-BYTEPLUS_API_KEY = os.getenv("BYTEPLUS_API_KEY")
-
-THUMBNAIL_CONTEXT = """
-Thumbnails are video “movie posters” — decide CTR in 0.5 seconds. They grab attention, communicate topic, trigger emotion/curiosity, and increase clicks.
-
-Core Functions:
-- Stop scroll, tell story, trigger emotion.
-- CTR benchmarks: 2–4% weak, 4–6% avg, 6–8% strong, 8%+ viral.
-
-Thumbnail Types:
-- Face+Emotion (surprise>happy>calm, avoid anger/fear/sad), Face+Text, Object/Product, Before/After, Tutorial, Podcast/Interview, List/Comparison, Minimal curiosity, Story, Challenge, Reaction, Cinematic/Vlog.
-
-3-Part Structure:
-1. Hero (face/object, largest, expressive)
-2. Supporting Scene (context, product, background, icons)
-3. Text (1–4 bold words, power/curiosity/urgency words)
-
-Design Rules:
-- Visual hierarchy: Hero → Text → Background
-- Zoom hero, blur/darken background
-- High contrast colors: red=urgency, yellow=happy, blue=trust, green=growth, orange=energy, purple=luxury, black=power, white=clean
-- Use complementary contrast
-- Fonts: bold sans-serif, add drop shadow/stroke
-- Text top-left/top-center, avoid bottom-right
-
-Curiosity Triggers:
-- Moment, Story, Result, Transformation, Novelty
-
-Scroll Stoppers:
-- Faces with strong emotions, gestures, big numbers, arrows/circles/question marks
-
-Branding:
-- 1–2 fonts, 2–3 colors, layout framework
-- Logos small, never bottom-right
-- Prioritize curiosity & clarity
-
-Workflow:
-1. Understand script/title → emotional core
-2. Research competitors → note patterns
-3. Choose one strong visual concept
-4. Layout: Hero, Supporting, Text
-5. Enhance: glow, blur, overlay, arrows
-6. Export: 1280×720, JPG/PNG <2MB, test small-screen readability
-
-Analytics & Iteration:
-- Monitor CTR, impressions, views
-- A/B test one change at a time
-- Iterate until CTR improves
-"""
-
-@app.route("/api/thumbnail_generation", methods=["POST"])
-def thumbnail_generation():
-    try:
-        data = request.get_json()
-
-        face_images = data.get("face_images", [])
-        reference_images = data.get("reference_images", [])[:1]  # Enforce max 1 reference image
-        if len(data.get("reference_images", [])) > 1:
-            print("Warning: More than 1 reference image provided; using only the first.")
-
-        user_prompt = data.get("prompt", "Generate a YouTube thumbnail")
-        size = data.get("size", "1280x720")  # Default to YouTube standard
-        model = data.get("model", "seedream-4-0-250828")
-
-        if not face_images and not reference_images and not user_prompt:
-            return jsonify({"error": "At least one input (prompt, face_images, or reference_images) is required"}), 400
-
-        # Initialize Gemini client
-        gemini_client = genai.GenerativeModel("gemini-2.0-flash")
-
-        # Step 0: Describe faces and references
-        face_descriptions = []
-        uploaded_files = []
-        for url in face_images:
-            img_resp = requests.get(url, timeout=10)
-            if img_resp.status_code == 200:
-                image_bytes = img_resp.content
-                mime_type = img_resp.headers.get('Content-Type', 'image/jpeg')
-                uploaded_file = genai.upload_file(io.BytesIO(image_bytes), mime_type=mime_type)
-                uploaded_files.append(uploaded_file)
-                desc_resp = gemini_client.generate_content([
-                    "Describe this person's appearance in detail for an image generation prompt: age, gender, ethnicity, facial expression, hair style/color, clothing, notable features. If used in a thumbnail with a reference image, match the pose, lighting, and emotion of any face in the reference for seamless integration. Emphasize expressive emotions (surprise or happy) for high CTR.",
-                    uploaded_file
-                ])
-                face_descriptions.append(desc_resp.text.strip())
-
-        reference_descriptions = []
-        for url in reference_images:
-            img_resp = requests.get(url, timeout=10)
-            if img_resp.status_code == 200:
-                image_bytes = img_resp.content
-                mime_type = img_resp.headers.get('Content-Type', 'image/jpeg')
-                uploaded_file = genai.upload_file(io.BytesIO(image_bytes), mime_type=mime_type)
-                uploaded_files.append(uploaded_file)
-                desc_resp = gemini_client.generate_content([
-                    "Describe this YouTube thumbnail in detail: exact composition, hero element, supporting elements, text (content, placement, style, font, size), colors, background, emotions, faces/objects. Note high-CTR features like curiosity triggers and scroll-stoppers. For face replacement, note the pose, lighting, and emotion of any face to match.",
-                    uploaded_file
-                ])
-                reference_descriptions.append(desc_resp.text.strip())
-
-        # Step 1: Build base prompt for Gemini with enhanced scenario instructions
-        scenario_instructions = ""
-        if face_images and reference_images:
-            scenario_instructions = """
-Scenario: Face + Reference + Prompt. Generate an exact replica of the reference thumbnail: identical layout, colors, text (content, placement, style, font), background, supporting elements, and high-CTR features (curiosity triggers, scroll-stoppers). Replace any face in the reference with the provided face(s), matching the exact pose, lighting, and emotion of the original face for seamless integration. Use the user prompt only to guide context or minor text tweaks if specified, but do not alter the reference's design or composition.
-"""
-        elif face_images:
-            scenario_instructions = """
-Scenario: Face + Prompt. Feature the described face(s) prominently as the zoomed-in hero with strong, positive emotion (surprise or happy). Build supporting scene and text around the user prompt. Use high-contrast colors, bold sans-serif text with shadows, curiosity triggers like questions/arrows, and scroll-stoppers for max CTR.
-"""
-        elif reference_images:
-            scenario_instructions = """
-Scenario: Reference + Prompt. Replicate the reference thumbnail's style, layout, colors, text placement, composition, and CTR elements exactly, but adapt content to the user prompt. Enhance with better curiosity, emotions, and visuals if needed.
-"""
-        else:
-            scenario_instructions = """
-Scenario: Prompt Only. Create from scratch: Choose optimal thumbnail type (e.g., Face+Emotion if applicable). Include hero element, supporting scene, bold text (1-4 words), high-contrast colors, curiosity triggers, and scroll-stoppers for viral CTR.
-"""
-
-        gemini_base_prompt = f"""
-You are a YouTube thumbnail design expert. Generate a detailed, vivid prompt for Seedream 4.0 to create a high-CTR thumbnail. Strictly follow best practices: emotional hero, curiosity text, contrasts, etc.
-
-User prompt: "{user_prompt}"
-Face descriptions: {', '.join(face_descriptions) if face_descriptions else 'None'}
-Reference descriptions: {', '.join(reference_descriptions) if reference_descriptions else 'None'}
-
-{scenario_instructions}
-
-{THUMBNAIL_CONTEXT}
-
-Output a single, detailed text prompt. Include specifics like 'bold red text "SHOCKING TRUTH!" top-center with shadow', 'high contrast yellow background', 'face with wide-eyed surprise'. End with: 'Generate the image in exact 1280x720 resolution, optimized for YouTube thumbnail (16:9 aspect ratio), high quality, no distortion.'
-Respond in plain English, concise but complete, no formatting.
-"""
-
-        # Step 2: Generate refined prompt via Gemini
-        gemini_resp = gemini_client.generate_content(gemini_base_prompt)
-        refined_prompt = gemini_resp.text.strip()
-
-        # Cleanup uploaded files
-        for file in uploaded_files:
-            genai.delete_file(file.name)
-
-        # Step 3: Prepare Seedream API call
-        all_images = face_images + reference_images
-        payload = {
-            "model": model,
-            "prompt": refined_prompt,
-            "image": all_images,
-            "sequential_image_generation": "disabled",
-            "response_format": "url",
-            "size": size,
-            "stream": False,
-            "watermark": False
-        }
-
-        headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {BYTEPLUS_API_KEY}"
-        }
-
-        resp = requests.post(
-            "https://ark.ap-southeast.bytepluses.com/api/v3/images/generations",
-            headers=headers,
-            json=payload,
-            timeout=60
-        )
-
-        if resp.status_code != 200:
-            return jsonify({"error": f"BytePlus API failed: {resp.text}"}), 500
-
-        result = resp.json()
-        result["refined_prompt"] = refined_prompt
-        return jsonify(result)
-
-    except Exception as e:
-        for file in uploaded_files:
-            try:
-                genai.delete_file(file.name)
-            except:
-                pass
-        return jsonify({"error": str(e)}), 500
-@app.route('/api/shorts_outliers', methods=['POST'])
-def shorts_outliers():
-    """Fetch random trending outlier YouTube Shorts (<= 60 seconds)."""
-    try:
-        request_id = str(time.time())
-        app.logger.debug(f"Request ID: {request_id}")
-        
-        data = request.get_json()
-        if not data or 'access_token' not in data:
-            return jsonify({'error': 'Access token is required'}), 400
-        
-        access_token = data['access_token'].strip()
-        if access_token != ACCESS_TOKEN:
-            return jsonify({'error': 'Invalid access token'}), 401
-        
-        if not YOUTUBE_API_KEY:
-            app.logger.error("YOUTUBE_API_KEY is not set")
-            return jsonify({'error': 'YouTube API key is not configured'}), 500
-        
-        # Fetch trending videos using multiple queries
-        trending_queries = [
-            "trending shorts", "viral shorts", "popular shorts", "tiktok style", "quick tips", "short challenge"
-        ]
-        all_videos = []
-        for query in trending_queries[:3]:  # Use top 3 queries
-            videos = get_random_trending_videos(max_results=150, query=query)
-            all_videos.extend(videos)
-        
-        # Deduplicate videos
-        video_id_to_data = {v['video_id']: v for v in all_videos}
-        all_videos = list(video_id_to_data.values())
-        if not all_videos:
-            app.logger.warning("No trending Shorts retrieved, check internet or API key")
-            return jsonify({'error': 'No trending Shorts found, check internet connection or API key'}), 503
-        
-        # Filter to include only Shorts
-        similarity_finder = UltraFastYouTubeSimilarity()
-        raw_videos = [[v['video_id'], v['title'], v['thumbnail_url']] for v in all_videos]
-        filtered_videos = similarity_finder._filter_shorts_only(raw_videos, max_duration=60)
-        shorts_videos = [video_id_to_data[video[0]] for video in filtered_videos if video[0] in video_id_to_data]
-        
-        app.logger.debug(f"Fetched {len(shorts_videos)} trending Shorts after filtering")
-        
-        # Fallback if fewer than 100 Shorts
-        if len(shorts_videos) < 100:
-            app.logger.info("Insufficient Shorts, fetching more with fallback query")
-            extra_videos = get_random_trending_videos(max_results=150, query="shorts")
-            extra_raw = [[v['video_id'], v['title'], v['thumbnail_url']] for v in extra_videos]
-            extra_filtered = similarity_finder._filter_shorts_only(extra_raw, max_duration=60)
-            for video in extra_filtered:
-                video_id = video[0]
-                if video_id not in video_id_to_data:
-                    video_id_to_data[video_id] = extra_videos[extra_raw.index(video)]
-                    shorts_videos.append(video_id_to_data[video_id])
-        
-        # Process videos for outliers
-        video_ids = [v['video_id'] for v in shorts_videos]
-        video_stats = get_video_stats(video_ids)
-        channel_ids = list(set(v['channel_id'] for v in shorts_videos))
-        processed_channels = {}
-        for channel_id in channel_ids:
-            avg_views, subscriber_count = calculate_channel_average_views(channel_id)
-            processed_channels[channel_id] = {'average_views': avg_views, 'subscriber_count': subscriber_count}
-        
-        threshold = 1.5
-        max_attempts = 3
-        attempt = 0
-        outliers = []
-        
-        while len(outliers) < 35 and attempt < max_attempts:
-            outliers = []
-            for video in shorts_videos:
-                video_id = video['video_id']
-                channel_id = video['channel_id']
-                if video_id not in video_stats or channel_id not in processed_channels:
-                    app.logger.debug(f"Skipping video {video_id}: missing stats or channel data")
-                    continue
-                stats = video_stats[video_id]
-                channel_data = processed_channels[channel_id]
-                channel_avg = channel_data['average_views']
-                if channel_avg == 0:
-                    app.logger.debug(f"Skipping video {video_id}: channel average views is 0")
-                    continue
-                multiplier = stats['views'] / channel_avg
-                
-                if multiplier <= threshold:
-                    continue
-                
-                duration_seconds = parse_duration(stats.get('duration', 'PT0S'))
-                try:
-                    pub_date = datetime.strptime(video['published_at'], '%Y-%m-%dT%H:%M:%SZ')
-                    video_age_days = (datetime.utcnow() - pub_date).days
-                except:
-                    video_age_days = 0
-                
-                video_result = {
-                    'video_id': video_id,
-                    'title': video['title'],
-                    'channel_id': channel_id,
-                    'channel_title': video['channel_title'],
-                    'views': stats['views'],
-                    'channel_avg_views': channel_avg,
-                    'multiplier': round(multiplier, 2),
-                    'likes': stats['likes'],
-                    'comments': stats['comments'],
-                    'duration': stats['duration'],
-                    'duration_seconds': duration_seconds,
-                    'url': f"https://www.youtube.com/watch?v={video_id}",
-                    'published_at': video['published_at'],
-                    'thumbnail_url': video['thumbnail_url'],
-                    'viral_score': round(multiplier / 10, 2),
-                    'engagement_rate': round((stats['likes'] + stats['comments']) / stats['views'] if stats['views'] > 0 else 0, 4),
-                    'subscriber_count': channel_data.get('subscriber_count', 0),
-                    'language': video.get('language', 'en')
-                }
-                outliers.append(video_result)
-            
-            outliers.sort(key=lambda x: x['multiplier'], reverse=True)
-            if len(outliers) > 50:
-                outliers = outliers[:50]
-            
-            attempt += 1
-            if len(outliers) < 35 and attempt < max_attempts:
-                threshold -= 0.2
-                app.logger.debug(f"Attempt {attempt}: Found {len(outliers)} outliers, lowering threshold to {threshold}")
-        
-        # Fallback: Fetch related Shorts if still insufficient
-        if len(outliers) < 35:
-            app.logger.info("Insufficient outliers, fetching related Shorts")
-            top_videos = [v for v in shorts_videos[:5]]  # Use top 5 Shorts by views
-            for video in top_videos:
-                rel_vids = get_related_videos(video['video_id'], m=25)
-                rel_raw = [[v['video_id'], v['title'], v['thumbnail_url']] for v in rel_vids]
-                rel_filtered = similarity_finder._filter_shorts_only(rel_raw, max_duration=60)
-                for rel_video in rel_filtered:
-                    video_id = rel_video[0]
-                    if video_id not in video_id_to_data:
-                        rel_video_data = next((v for v in rel_vids if v['video_id'] == video_id), None)
-                        if rel_video_data:
-                            video_id_to_data[video_id] = rel_video_data
-                            shorts_videos.append(rel_video_data)
-            
-            # Re-run outlier detection
-            video_ids = [v['video_id'] for v in shorts_videos]
-            video_stats = get_video_stats(video_ids)
-            channel_ids = list(set(v['channel_id'] for v in shorts_videos))
-            for channel_id in channel_ids:
-                if channel_id not in processed_channels:
-                    avg_views, subscriber_count = calculate_channel_average_views(channel_id)
-                    processed_channels[channel_id] = {'average_views': avg_views, 'subscriber_count': subscriber_count}
-            
-            outliers = []
-            for video in shorts_videos:
-                video_id = video['video_id']
-                channel_id = video['channel_id']
-                if video_id not in video_stats or channel_id not in processed_channels:
-                    continue
-                stats = video_stats[video_id]
-                channel_data = processed_channels[channel_id]
-                channel_avg = channel_data['average_views']
-                if channel_avg == 0:
-                    continue
-                multiplier = stats['views'] / channel_avg
-                
-                if multiplier <= threshold:
-                    continue
-                
-                duration_seconds = parse_duration(stats.get('duration', 'PT0S'))
-                try:
-                    pub_date = datetime.strptime(video['published_at'], '%Y-%m-%dT%H:%M:%SZ')
-                    video_age_days = (datetime.utcnow() - pub_date).days
-                except:
-                    video_age_days = 0
-                
-                video_result = {
-                    'video_id': video_id,
-                    'title': video['title'],
-                    'channel_id': channel_id,
-                    'channel_title': video['channel_title'],
-                    'views': stats['views'],
-                    'channel_avg_views': channel_avg,
-                    'multiplier': round(multiplier, 2),
-                    'likes': stats['likes'],
-                    'comments': stats['comments'],
-                    'duration': stats['duration'],
-                    'duration_seconds': duration_seconds,
-                    'url': f"https://www.youtube.com/watch?v={video_id}",
-                    'published_at': video['published_at'],
-                    'thumbnail_url': video['thumbnail_url'],
-                    'viral_score': round(multiplier / 10, 2),
-                    'engagement_rate': round((stats['likes'] + stats['comments']) / stats['views'] if stats['views'] > 0 else 0, 4),
-                    'subscriber_count': channel_data.get('subscriber_count', 0),
-                    'language': video.get('language', 'en')
-                }
-                outliers.append(video_result)
-            
-            outliers.sort(key=lambda x: x['multiplier'], reverse=True)
-            if len(outliers) > 50:
-                outliers = outliers[:50]
-        
-        # Format response
-        outlier_detector = OutlierDetector()
-        formatted_outliers = []
-        for video in outliers:
-            formatted_video = {
-                'video_id': video['video_id'],
-                'title': video['title'],
-                'channel_id': video['channel_id'],
-                'channel_title': video['channel_title'],
-                'views': video['views'],
-                'views_formatted': outlier_detector.format_number(video['views']),
-                'channel_avg_views': video['channel_avg_views'],
-                'channel_avg_views_formatted': outlier_detector.format_number(video['channel_avg_views']),
-                'multiplier': video['multiplier'],
-                'likes': video['likes'],
-                'likes_formatted': outlier_detector.format_number(video['likes']),
-                'comments': video['comments'],
-                'comments_formatted': outlier_detector.format_number(video['comments']),
-                'duration': video['duration'],
-                'duration_seconds': video['duration_seconds'],
-                'url': video['url'],
-                'published_at': video['published_at'],
-                'viral_score': video['viral_score'],
-                'engagement_rate': video['engagement_rate'],
-                'thumbnail_url': video['thumbnail_url'],
-                'subscriber_count': video['subscriber_count'],
-                'language': video['language']
-            }
-            formatted_outliers.append(formatted_video)
-        
-        search_history.append({
-            'query': 'shorts_outliers',
-            'timestamp': datetime.now().isoformat(),
-            'results_count': len(formatted_outliers)
-        })
-        
-        app.logger.info(f"Found {len(formatted_outliers)} trending Shorts outliers")
-        return jsonify({
-            'success': True,
-            'total_results': len(formatted_outliers),
-            'outliers': formatted_outliers
-        })
-    except Exception as e:
-        app.logger.error(f"Shorts outliers error: {str(e)}")
-        return jsonify({'success': False, 'error': f'An error occurred: {str(e)}'}), 500
-
-@app.route('/api/similar_shorts', methods=['POST'])
-def similar_shorts():
-    """Fetch up to 15 similar YouTube Shorts (≤ 90 seconds) for a given video ID using a title-based search."""
-    try:
-        # Validate input
-        data = request.get_json()
-        if not data or 'video_id' not in data:
-            return jsonify({'error': 'Video ID is required'}), 400
-        
-        video_id = data['video_id'].strip()
-        if not video_id:
-            return jsonify({'error': 'Video ID cannot be empty'}), 400
-        
-        if YOUTUBE_API_KEY == 'YOUR_YOUTUBE_API_KEY':
-            app.logger.error("YouTube API key not configured.")
-            return jsonify({'error': 'YouTube API key not configured'}), 500
-
-        # Initialize YouTube API client
-        youtube = build('youtube', 'v3', developerKey=YOUTUBE_API_KEY)
-        
-        # Step 1: Fetch input video details
-        video_response = youtube.videos().list(
-            part='snippet',
-            id=video_id
-        ).execute()
-        
-        if not video_response['items']:
-            app.logger.error(f"Video not found for ID: {video_id}")
-            return jsonify({'error': 'Video not found'}), 404
-        
-        input_video = video_response['items'][0]
-        input_title = input_video['snippet']['title']
-        input_channel_id = input_video['snippet']['channelId']
-        input_channel_title = input_video['snippet']['channelTitle']
-        
-        # Step 2: Generate search query from the title
-        query = ' '.join([word for word in input_title.split() if len(word) > 3 and word.lower() not in ['the', 'and', 'video']])
-        if not query:
-            app.logger.error(f"No valid search query generated from title: {input_title}")
-            return jsonify({'error': 'No valid search query generated from title'}), 404
-        
-        # Step 3: Search for similar videos
-        search_response = youtube.search().list(
-            part='snippet',
-            q=query,
-            type='video',
-            maxResults=25,  # Fetch extra results to allow filtering for Shorts
-            order='relevance'
-        ).execute()
-        
-        if not search_response.get('items', []):
-            app.logger.error(f"No similar videos found for query: {query}")
-            return jsonify({'error': 'No similar videos found'}), 404
-        
-        # Step 4: Filter results for Shorts (≤ 90 seconds)
-        related_videos = []
-        video_ids = []
-        seen_video_ids = {video_id}  # Track seen IDs to avoid duplicates
-        for item in search_response['items']:
-            rel_video_id = item['id']['videoId']
-            rel_channel_id = item['snippet']['channelId']
-            # Exclude input video and same-channel videos
-            if rel_video_id not in seen_video_ids and rel_channel_id != input_channel_id:
-                seen_video_ids.add(rel_video_id)
-                video_ids.append(rel_video_id)
-        
-        # Step 5: Fetch additional details for videos
-        if not video_ids:
-            app.logger.error("No valid video IDs after filtering.")
-            return jsonify({'error': 'No similar videos found from different channels'}), 404
-
-        details_response = youtube.videos().list(
-            part='snippet,statistics,contentDetails',
-            id=','.join(video_ids[:25])  # Limit to 25 IDs per API call
-        ).execute()
-        
-        video_stats = {}
-        for item in details_response.get('items', []):
-            duration = item['contentDetails']['duration']
-            duration_seconds = parse_duration(duration)
-            if duration_seconds <= 90:  # Filter for Shorts
-                video_stats[item['id']] = {
-                    'views': int(item['statistics'].get('viewCount', 0)),
-                    'likes': int(item['statistics'].get('likeCount', 0)),
-                    'comments': int(item['statistics'].get('commentCount', 0)),
-                    'duration': duration,
-                    'duration_seconds': duration_seconds,
-                    'title': item['snippet']['title'],
-                    'channel_id': item['snippet']['channelId'],
-                    'channel_title': item['snippet']['channelTitle'],
-                    'published_at': item['snippet']['publishedAt'],
-                    'thumbnail_url': item['snippet']['thumbnails']['high']['url'],
-                    'language': item['snippet'].get('defaultLanguage', 'en')
-                }
-        
-        # Step 6: Fetch subscriber count for each channel
-        channel_ids = list(set(video['channel_id'] for video in video_stats.values()))
-        processed_channels = {}
-        channel_video_counts = {}  # Track number of videos per channel
-        channel_total_views = {}  # Track total views per channel
-        for channel_id in channel_ids:
-            try:
-                channel_response = youtube.channels().list(
-                    part='statistics',
-                    id=channel_id
-                ).execute()
-                channel_data = channel_response['items'][0]['statistics'] if channel_response['items'] else {}
-                subscriber_count = int(channel_data.get('subscriberCount', 0))
-                processed_channels[channel_id] = {'subscriber_count': subscriber_count}
-            except Exception as e:
-                app.logger.error(f"Error fetching subscriber count for channel {channel_id}: {str(e)}")
-                processed_channels[channel_id] = {'subscriber_count': 0}
-        
-        # Step 7: Calculate channel average views
-        for vid, stats in video_stats.items():
-            channel_id = stats['channel_id']
-            channel_video_counts[channel_id] = channel_video_counts.get(channel_id, 0) + 1
-            channel_total_views[channel_id] = channel_total_views.get(channel_id, 0) + stats['views']
-        
-        for channel_id in channel_video_counts:
-            avg_views = channel_total_views[channel_id] / channel_video_counts[channel_id] if channel_video_counts[channel_id] > 0 else 0
-            processed_channels[channel_id]['channel_avg_views'] = int(avg_views)
-            processed_channels[channel_id]['channel_avg_views_formatted'] = format_number(int(avg_views))
-        
-        # Step 8: Format the response
-        formatted_shorts = []
-        for vid, stats in video_stats.items():
-            channel_data = processed_channels.get(stats['channel_id'], {'subscriber_count': 0, 'channel_avg_views': 0, 'channel_avg_views_formatted': '0'})
-            engagement_rate = (stats['likes'] + stats['comments']) / stats['views'] if stats['views'] > 0 else 0
-            multiplier = engagement_rate * (stats['views'] / 1000) if stats['views'] > 0 else 0  # Example multiplier calculation
-            formatted_short = {
-                'video_id': vid,
-                'title': stats['title'],
-                'channel_id': stats['channel_id'],
-                'channel_title': stats['channel_title'],
-                'views': stats['views'],
-                'views_formatted': format_number(stats['views']),
-                'likes': stats['likes'],
-                'likes_formatted': format_number(stats['likes']),
-                'comments': stats['comments'],
-                'comments_formatted': format_number(stats['comments']),
-                'duration': stats['duration'],
-                'duration_seconds': stats['duration_seconds'],
-                'url': f"https://www.youtube.com/watch?v={vid}",
-                'published_at': stats['published_at'],
-                'thumbnail_url': stats['thumbnail_url'],
-                'engagement_rate': round(engagement_rate, 4),
-                'language': stats['language'],
-                'multiplier': round(multiplier, 4),
-                'channel_avg_views': channel_data['channel_avg_views'],
-                'channel_avg_views_formatted': channel_data['channel_avg_views_formatted'],
-                'subscriber_count': channel_data['subscriber_count']
-            }
-            formatted_shorts.append(formatted_short)
-        
-        # Sort by views (relevance) and limit to 15
-        formatted_shorts.sort(key=lambda x: x['views'], reverse=True)
-        formatted_shorts = formatted_shorts[:15]
-        
-        if not formatted_shorts:
-            app.logger.error("No valid Shorts after processing.")
-            return jsonify({'error': 'No similar Shorts found'}), 404
-        
-        # Return successful response
-        app.logger.info(f"Found {len(formatted_shorts)} similar Shorts for video {video_id}")
-        return jsonify({
-            'success': True,
-            'input_video_id': video_id,
-            'input_video_title': input_title,
-            'input_channel_title': input_channel_title,
-            'total_results': len(formatted_shorts),
-            'similar_shorts': formatted_shorts
-        })
-    
-    except HttpError as e:
-        app.logger.error(f"YouTube API error in similar_shorts for video {video_id}: {str(e)}")
-        return jsonify({'success': False, 'error': f'YouTube API error: {str(e)}'}), 503
-    except Exception as e:
-        app.logger.error(f"Similar shorts error: {str(e)}")
-        return jsonify({'success': False, 'error': f'An error occurred: {str(e)}'}), 500
-
-@app.route("/api/shorts_by_channel_id", methods=["POST"])
-def shorts_by_channel_id():
-    try:
-        data = request.get_json()
-        channel_id = data.get("channel_id", "").strip()
-        if not channel_id:
-            return jsonify({"error": "Channel ID is required"}), 400
-
-        youtube = googleapiclient.discovery.build("youtube", "v3", developerKey=YOUTUBE_API_KEY)
-
-        # 1. Fetch channel info
-        channel_resp = youtube.channels().list(
-            part="snippet,statistics,contentDetails",
-            id=channel_id
-        ).execute()
-
-        if not channel_resp.get("items"):
-            return jsonify({"error": "Channel not found"}), 404
-
-        channel_info = channel_resp["items"][0]
-        channel_title = channel_info["snippet"]["title"]
-        uploads_playlist = channel_info["contentDetails"]["relatedPlaylists"]["uploads"]
-
-        # 2. Get last 10 uploads, filter shorts (≤60s)
-        videos_resp = youtube.playlistItems().list(
-            part="contentDetails,snippet",
-            playlistId=uploads_playlist,
-            maxResults=20
-        ).execute()
-
-        candidate_videos = []
-        for item in videos_resp.get("items", []):
-            vid_id = item["contentDetails"]["videoId"]
-            vid_details = youtube.videos().list(
-                part="contentDetails,snippet,statistics",
-                id=vid_id
-            ).execute()
-
-            if not vid_details.get("items"):
-                continue
-
-            v = vid_details["items"][0]
-            duration = safe_duration(v)
-            if duration <= 60:  # shorts only
-                candidate_videos.append({
-                    "id": vid_id,
-                    "title": v["snippet"]["title"]
-                })
-
-            if len(candidate_videos) >= 10:
-                break
-
-        if not candidate_videos:
-            return jsonify({"error": "No Shorts found for this channel"}), 404
-
-        # 3. Collect competitor channels with frequency
-        competitor_counts = {}
-        for video in candidate_videos:
-            search_resp = youtube.search().list(
-                part="snippet",
-                q=video["title"],
-                type="video",
-                maxResults=20,
-                relevanceLanguage="en",
-                videoDuration="short"  # shorts only
-            ).execute()
-
-            for item in search_resp.get("items", []):
-                ch_id = item["snippet"]["channelId"]
-                ch_title = item["snippet"]["channelTitle"]
-
-                if ch_id == channel_id:
-                    continue
-
-                if ch_id not in competitor_counts:
-                    competitor_counts[ch_id] = {"title": ch_title, "count": 0}
-                competitor_counts[ch_id]["count"] += 1
-
-        # Sort competitors by frequency
-        competitors = sorted(
-            competitor_counts.items(),
-            key=lambda kv: kv[1]["count"],
-            reverse=True
-        )[:20]
-
-        # 4. For each competitor, fetch top + latest shorts with avg views
-        all_videos = []
-        competitors_meta = []
-        for comp_id, comp_data in competitors:
-            comp_resp = youtube.channels().list(
-                part="statistics,contentDetails",
-                id=comp_id
-            ).execute()
-
-            if not comp_resp.get("items"):
-                continue
-
-            comp_info = comp_resp["items"][0]
-            comp_title = comp_data["title"]
-            comp_uploads = comp_info["contentDetails"]["relatedPlaylists"]["uploads"]
-
-            # Fetch up to 50 uploads
-            comp_uploads_resp = youtube.playlistItems().list(
-                part="contentDetails",
-                playlistId=comp_uploads,
-                maxResults=50
-            ).execute()
-
-            comp_video_ids = [v["contentDetails"]["videoId"] for v in comp_uploads_resp.get("items", [])]
-            comp_videos = fetch_video_details(youtube, comp_video_ids)
-
-            # Filter only shorts
-            comp_videos = [v for v in comp_videos if safe_duration(v) <= 60]
-
-            if not comp_videos:
-                continue
-
-            # Calculate avg recent views
-            avg_recent_views = sum(
-                int(v["statistics"].get("viewCount", 0)) for v in comp_videos
-            ) / len(comp_videos)
-
-            competitors_meta.append({
-                "id": comp_id,
-                "title": comp_title,
-                "subscriber_count": int(comp_info["statistics"].get("subscriberCount", 0)),
-                "avg_recent_views": round(avg_recent_views, 2),
-                "frequency": comp_data.get("count", 0)
-            })
-
-            # Top 5 by views
-            top_videos = sorted(
-                comp_videos,
-                key=lambda x: int(x["statistics"].get("viewCount", 0)),
-                reverse=True
-            )[:5]
-
-            # Latest 5 with multiplier >1
-            latest_videos = []
-            for v in comp_videos[:10]:
-                views = int(v["statistics"].get("viewCount", 0))
-                if avg_recent_views > 0 and (views / avg_recent_views) > 1:
-                    latest_videos.append(v)
-                if len(latest_videos) >= 5:
-                    break
-
-            # --- Start: New separate loops to assign 'list_type' and handle duplicates ---
-
-            # 1. Process Top 5 videos
-            for v in top_videos:
-                duration = safe_duration(v)
-                views = int(v["statistics"].get("viewCount", 0))
-                multiplier = round(views / avg_recent_views, 2) if avg_recent_views > 0 else 0
-
-                all_videos.append({
-                    "video_id": v["id"],
-                    "title": v["snippet"]["title"],
-                    "channel_id": comp_id,
-                    "channel_title": comp_title,
-                    "competitor_frequency": comp_data.get("count", 0),
-                    "views": views,
-                    "views_formatted": format_number(views),
-                    "duration_seconds": duration,
-                    "multiplier": multiplier,
-                    "avg_recent_views": round(avg_recent_views, 2),
-                    "thumbnail_url": v["snippet"]["thumbnails"]["high"]["url"],
-                    "url": f"https://www.youtube.com/watch?v={v['id']}",
-                    "list_type": "top_shorts" # Correct list type
-                })
-
-            # Prepare IDs to prevent duplication
-            top_video_ids = {v["id"] for v in top_videos}
-
-            # 2. Process Latest Outlier videos (Skip if already in top_videos)
-            for v in latest_videos:
-                if v["id"] in top_video_ids:
-                    continue
-                    
-                duration = safe_duration(v)
-                views = int(v["statistics"].get("viewCount", 0))
-                multiplier = round(views / avg_recent_views, 2) if avg_recent_views > 0 else 0
-
-                all_videos.append({
-                    "video_id": v["id"],
-                    "title": v["snippet"]["title"],
-                    "channel_id": comp_id,
-                    "channel_title": comp_title,
-                    "competitor_frequency": comp_data.get("count", 0),
-                    "views": views,
-                    "views_formatted": format_number(views),
-                    "duration_seconds": duration,
-                    "multiplier": multiplier,
-                    "avg_recent_views": round(avg_recent_views, 2),
-                    "thumbnail_url": v["snippet"]["thumbnails"]["high"]["url"],
-                    "url": f"https://www.youtube.com/watch?v={v['id']}",
-                    "list_type": "latest_outlier_shorts" # Correct list type
-                })
-            if len(all_videos) >= 200:
-                break
-
-        return jsonify({
-            "success": True,
-            "channel_id": channel_id,
-            "channel_title": channel_title,
-            "competitors": competitors_meta,
-            "total_videos": len(all_videos),
-            "videos": all_videos[:200]
-        })
-
-    except Exception as e:
-        app.logger.error(f"Shorts outliers error: {str(e)}")
-        return jsonify({"error": str(e)}), 500
-
-
-@app.route('/api/generate-script-from-title', methods=['POST'])
-def generate_script_from_title_endpoint():
-    """API endpoint to generate a video script from a title and duration."""
-    try:
-        data = request.get_json()
-        title = data.get('title')
-        duration = data.get('duration')
-        if not title or not duration:
-            return jsonify({'error': 'Title and duration are required'}), 400
-        try:
-            duration = float(duration)
-            if duration <= 0:
-                raise ValueError("Duration must be a positive number")
-        except (ValueError, TypeError):
-            return jsonify({'error': 'Duration must be a valid positive number'}), 400
-        # Optional parameters
-        wpm = data.get('wpm', 145)
-        creator_name = data.get('creator_name', 'YourChannelName')
-        audience = data.get('audience', 'beginners')
-        language = data.get('language', 'en')
-        script, _, error = generate_script_from_title(
-            title=title,
-            duration=duration,
-            wpm=wpm,
-            creator_name=creator_name,
-            audience=audience,
-            language=language
-        ), title, None  # Mimic find_similar_videos_enhanced return structure
-        if error:
-            return jsonify({'success': False, 'error': error}), 400
-        result_data = {
-            'title': title,
-            'duration': duration,
-            'script': script,
-            'wpm': wpm,
-            'creator_name': creator_name,
-            'audience': audience,
-            'language': language
-        }
-        return jsonify({'success': True, **result_data})
-    except Exception as e:
-        print(f"Error in generate_script_from_title_endpoint: {str(e)}")
-        return jsonify({'success': False, 'error': f'An error occurred: {str(e)}'}), 500
-
+# app
 
 @app.route('/api/whole_script', methods=['POST'])
 def whole_script():
@@ -6043,185 +3489,1324 @@ def whole_script():
         print(f"{'='*60}\n")
         return jsonify({'error': f'Script generation failed: {str(e)}'}), 500
 
-@app.route("/api/shorts_videos", methods=["POST"])
-def shorts_videos():
+@app.route('/api/chat-modify-script', methods=['POST'])
+def chat_modify_script():
+    """Enhanced chat modification with document context"""
+    user_id = request.remote_addr
+    data = request.json
+    user_message = data.get('message', '').strip()
+    chat_session_id = data.get('chat_session_id')
+    
+    if not user_message:
+        return jsonify({'error': 'Please provide a modification request'}), 400
+    
+    current_script_data = user_data[user_id].get('current_script')
+    if not current_script_data:
+        return jsonify({'error': 'No active script to modify'}), 400
+    
+    try:
+        current_script = current_script_data['content']
+        style_profile = current_script_data['style_profile']
+        topic_insights = current_script_data['topic_insights']
+        document_insights = current_script_data.get('document_insights', '')
+        
+        modification_response = script_generator.modify_script_chat(
+            current_script,
+            style_profile,
+            topic_insights,
+            document_insights,
+            user_message
+        )
+        
+        if chat_session_id and chat_session_id in user_data[user_id]['chat_sessions']:
+            chat_session = user_data[user_id]['chat_sessions'][chat_session_id]
+            chat_session['messages'].append({
+                'user_message': user_message,
+                'ai_response': modification_response,
+                'timestamp': datetime.now().isoformat()
+            })
+        
+        return jsonify({
+            'success': True,
+            'response': modification_response,
+            'user_message': user_message,
+            'chat_session_id': chat_session_id,
+            'timestamp': datetime.now().isoformat()
+        })
+    except Exception as e:
+        return jsonify({'error': f'Error modifying script: {str(e)}'}), 500
+
+
+@app.route('/api/update-script', methods=['POST'])
+def update_script():
+    """Update the current working script"""
+    user_id = request.remote_addr
+    data = request.json
+    new_script = data.get('script', '').strip()
+    chat_session_id = data.get('chat_session_id')
+    
+    if not new_script:
+        return jsonify({'error': 'Script content is required'}), 400
+    
+    try:
+        if user_data[user_id].get('current_script'):
+            user_data[user_id]['current_script']['content'] = new_script
+            user_data[user_id]['current_script']['timestamp'] = datetime.now().isoformat()
+        
+        if chat_session_id and chat_session_id in user_data[user_id]['chat_sessions']:
+            chat_session = user_data[user_id]['chat_sessions'][chat_session_id]
+            chat_session['script_versions'].append(new_script)
+        
+        return jsonify({
+            'success': True,
+            'message': 'Script updated successfully'
+        })
+    except Exception as e:
+        return jsonify({'error': f'Error updating script: {str(e)}'}), 500
+
+
+
+
+# @app.route('/api/script_generation', methods=['POST'])
+# def generate_complete_script():
+#     """Enhanced all-in-one endpoint: ALL inputs optional - upload documents, process videos (YouTube + local), analyze, and generate script"""
+#     user_id = request.remote_addr
+    
+#     try:
+#         # Handle both JSON and multipart form data
+#         if request.content_type and 'multipart/form-data' in request.content_type:
+#             data = {
+#                 'personal_videos': request.form.getlist('personal_videos[]'),
+#                 'inspiration_videos': request.form.getlist('inspiration_videos[]'),
+#                 'prompt': request.form.get('prompt', '').strip(),
+#                 'minutes': request.form.get('minutes', type=int)  # NEW: video duration target
+#             }
+#             documents = request.files.getlist('documents[]')
+#             video_files = request.files.getlist('video_files[]')
+#         else:
+#             data = request.json or {}
+#             documents = []
+#             video_files = []
+        
+#         personal_videos = data.get('personal_videos', [])
+#         inspiration_videos = data.get('inspiration_videos', [])
+#         prompt = data.get('prompt', '').strip()
+#         target_minutes = data.get('minutes')  # NEW: optional duration target
+        
+#         # CHANGED: Prompt now optional - will generate generic script if missing
+#         if not prompt:
+#             prompt = "Create an engaging, informative YouTube video script on a topic of general interest."
+        
+#         # Initialize results
+#         processed_documents = []
+#         processed_personal = []
+#         processed_inspiration = []
+#         errors = []
+        
+#         # Process documents if uploaded (OPTIONAL)
+#         if documents:
+#             logger.info(f"Processing {len(documents)} documents...")
+#             for file in documents:
+#                 if file.filename and document_processor.allowed_file(file.filename):
+#                     try:
+#                         filename = secure_filename(file.filename)
+#                         file_path = os.path.join(app.config['UPLOAD_FOLDER'], f"temp_{user_id.replace('.', '_')}_{filename}")
+#                         file.save(file_path)
+                        
+#                         result = document_processor.process_document(file_path, filename)
+                        
+#                         try:
+#                             os.remove(file_path)
+#                         except:
+#                             pass
+                        
+#                         if result['error']:
+#                             errors.append(f"Document {filename}: {result['error']}")
+#                         else:
+#                             processed_documents.append({
+#                                 'filename': filename,
+#                                 'text': result['text'],
+#                                 'stats': result['stats']
+#                             })
+#                     except Exception as e:
+#                         errors.append(f"Document {file.filename}: {str(e)}")
+        
+#         # Process uploaded video files (OPTIONAL)
+#         if video_files:
+#             logger.info(f"Processing {len(video_files)} uploaded video files...")
+#             for video_file in video_files:
+#                 if video_file.filename and video_processor.is_supported_video_format(video_file.filename):
+#                     try:
+#                         filename = secure_filename(video_file.filename)
+#                         video_path = os.path.join(app.config['UPLOAD_FOLDER'], f"temp_video_{user_id.replace('.', '_')}_{filename}")
+#                         video_file.save(video_path)
+                        
+#                         result = video_processor.process_video_content(video_path, 'local')
+                        
+#                         try:
+#                             os.remove(video_path)
+#                         except:
+#                             pass
+                        
+#                         if result['error']:
+#                             errors.append(f"Video {filename}: {result['error']}")
+#                         else:
+#                             processed_inspiration.append({
+#                                 'source': filename,
+#                                 'transcript': result['transcript'],
+#                                 'stats': result['stats'],
+#                                 'type': 'local_video'
+#                             })
+#                     except Exception as e:
+#                         errors.append(f"Video {video_file.filename}: {str(e)}")
+        
+#         # Process personal YouTube videos (OPTIONAL)
+#         if personal_videos:
+#             logger.info(f"Processing {len(personal_videos)} personal videos...")
+#             for url in personal_videos:
+#                 if url and video_processor.validate_youtube_url(url):
+#                     result = video_processor.process_video_content(url, 'youtube')
+                    
+#                     if result['error']:
+#                         errors.append(f"Personal video {url}: {result['error']}")
+#                     else:
+#                         # >>> ADD THESE LINES STARTING HERE <<<
+#                         print("\n\n" + "="*40)
+#                         print(f"EXTRACTED TRANSCRIPT FOR PERSONAL VIDEO: {url}")
+#                         print("="*40)
+#                         print(result['transcript'])
+#                         print("="*40 + "\n\n")
+#                         # >>> END OF ADDED LINES <<<
+
+#                         processed_personal.append({
+#                             'url': url,
+#                             'transcript': result['transcript'],
+#                             'stats': result['stats'],
+#                             'type': 'youtube'
+#                         })
+
+        
+#         # Process inspiration YouTube videos (OPTIONAL)
+#         if inspiration_videos:
+#             logger.info(f"Processing {len(inspiration_videos)} inspiration videos...")
+#             for url in inspiration_videos:
+#                 if url and video_processor.validate_youtube_url(url):
+#                     result = video_processor.process_video_content(url, 'youtube')
+                    
+#                     if result['error']:
+#                         errors.append(f"Inspiration video {url}: {result['error']}")
+#                     else:
+#                         processed_inspiration.append({
+#                             'url': url,
+#                             'transcript': result['transcript'],
+#                             'stats': result['stats'],
+#                             'type': 'youtube'
+#                         })
+        
+#         # CHANGED: No error if no content - will use defaults
+#         logger.info("Analyzing all content...")
+        
+#         # Style analysis (use default if no personal videos)
+#         style_profile = "Professional, engaging YouTube style with clear explanations, good pacing, and viewer-friendly language."
+#         if processed_personal:
+#             personal_transcripts = [v['transcript'] for v in processed_personal]
+#             try:
+#                 style_profile = script_generator.analyze_creator_style(personal_transcripts)
+#             except Exception as e:
+#                 logger.error(f"Style analysis error: {str(e)}")
+#                 errors.append(f"Style analysis failed: {str(e)}")
+        
+#         # Inspiration analysis (use default if no inspiration)
+#         inspiration_summary = "Creating original, engaging content based on best YouTube practices and viewer engagement strategies."
+#         if processed_inspiration:
+#             inspiration_transcripts = [v['transcript'] for v in processed_inspiration]
+#             try:
+#                 inspiration_summary = script_generator.analyze_inspiration_content(inspiration_transcripts)
+#             except Exception as e:
+#                 logger.error(f"Inspiration analysis error: {str(e)}")
+#                 errors.append(f"Inspiration analysis failed: {str(e)}")
+        
+#         # Document analysis (use default if no documents)
+#         document_insights = "Using general knowledge and industry best practices to create informative content."
+#         if processed_documents:
+#             document_texts = [d['text'] for d in processed_documents]
+#             try:
+#                 document_insights = script_generator.analyze_documents(document_texts)
+#             except Exception as e:
+#                 logger.error(f"Document analysis error: {str(e)}")
+#                 errors.append(f"Document analysis failed: {str(e)}")
+        
+#         # NEW: Add duration context to prompt if specified
+#         if target_minutes:
+#             prompt = f"{prompt}\n\n[Target video duration: approximately {target_minutes} minutes]"
+        
+#         # Generate script
+#         logger.info("Generating final script...")
+#         try:
+#             script = script_generator.generate_enhanced_script(
+#                 style_profile,
+#                 inspiration_summary,
+#                 document_insights,
+#                 prompt
+#             )
+#         except Exception as e:
+#             logger.error(f"Script generation error: {str(e)}")
+#             return jsonify({'error': f'Script generation failed: {str(e)}'}), 500
+        
+#         # Store current script for chat modifications
+#         chat_session_id = str(uuid.uuid4())
+#         user_data[user_id]['current_script'] = {
+#             'content': script,
+#             'style_profile': style_profile,
+#             'topic_insights': inspiration_summary,
+#             'document_insights': document_insights,
+#             'original_prompt': prompt,
+#             'target_minutes': target_minutes,  # NEW: store duration
+#             'timestamp': datetime.now().isoformat()
+#         }
+        
+#         # Initialize chat session
+#         user_data[user_id]['chat_sessions'][chat_session_id] = {
+#             'messages': [],
+#             'script_versions': [script],
+#             'created_at': datetime.now().isoformat()
+#         }
+        
+#         # Calculate stats
+#         stats = {
+#             'personal_videos': len(processed_personal),
+#             'inspiration_videos': len(processed_inspiration),
+#             'documents': len(processed_documents),
+#             'total_sources': len(processed_personal) + len(processed_inspiration) + len(processed_documents),
+#             'errors_count': len(errors),
+#             'video_files_processed': len([v for v in processed_inspiration if v.get('type') == 'local_video']),
+#             'target_duration': target_minutes  # NEW: include in stats
+#         }
+        
+#         logger.info("Complete script generation finished successfully")
+        
+#         return jsonify({
+#             'success': True,
+#             'script': script,
+#             'chat_session_id': chat_session_id,
+#             'stats': stats,
+#             'processed_content': {
+#                 'personal_videos': len(processed_personal),
+#                 'inspiration_videos': len(processed_inspiration),
+#                 'documents': len(processed_documents),
+#                 'video_files': len([v for v in processed_inspiration if v.get('type') == 'local_video'])
+#             },
+#             'errors': errors if errors else None,
+#             'analysis_quality': 'premium' if (processed_personal and processed_inspiration and processed_documents) else 'optimal' if any([processed_personal, processed_inspiration, processed_documents]) else 'basic',
+#             'inputs_provided': {  # NEW: show what was provided
+#                 'prompt': bool(data.get('prompt')),
+#                 'personal_videos': len(personal_videos),
+#                 'inspiration_videos': len(inspiration_videos),
+#                 'documents': len(documents),
+#                 'video_files': len(video_files),
+#                 'duration_specified': target_minutes is not None
+#             }
+#         })
+        
+#     except Exception as e:
+#         logger.error(f"Complete script generation error: {str(e)}")
+#         return jsonify({'error': f'Complete script generation failed: {str(e)}'}), 500
+
+# @app.route('/api/chat-modify-script', methods=['POST'])
+# def chat_modify_script():
+#     """Enhanced chat modification with document context"""
+#     user_id = request.remote_addr  # Use IP as user_id
+    
+#     data = request.json
+#     user_message = data.get('message', '').strip()
+#     chat_session_id = data.get('chat_session_id')
+    
+#     if not user_message:
+#         return jsonify({'error': 'Please provide a modification request'}), 400
+    
+#     current_script_data = user_data[user_id].get('current_script')
+#     if not current_script_data:
+#         return jsonify({'error': 'No active script to modify'}), 400
+    
+#     try:
+#         logger.info(f"Processing chat modification: {user_message[:50]}...")
+        
+#         # Get current script and full context
+#         current_script = current_script_data['content']
+#         style_profile = current_script_data['style_profile']
+#         topic_insights = current_script_data['topic_insights']
+#         document_insights = current_script_data.get('document_insights', '')
+        
+#         # Generate modification with full context
+#         modification_response = script_generator.modify_script_chat(
+#             current_script,
+#             style_profile,
+#             topic_insights,
+#             document_insights,
+#             user_message
+#         )
+        
+#         # Update chat session
+#         if chat_session_id and chat_session_id in user_data[user_id]['chat_sessions']:
+#             chat_session = user_data[user_id]['chat_sessions'][chat_session_id]
+#             chat_session['messages'].append({
+#                 'user_message': user_message,
+#                 'ai_response': modification_response,
+#                 'timestamp': datetime.now().isoformat()
+#             })
+        
+#         logger.info("Script modification completed successfully")
+        
+#         return jsonify({
+#             'success': True,
+#             'response': modification_response,
+#             'user_message': user_message,
+#             'timestamp': datetime.now().isoformat()
+#         })
+        
+#     except Exception as e:
+#         logger.error(f"Error modifying script via chat: {str(e)}")
+#         return jsonify({'error': f'Error modifying script: {str(e)}'}), 500
+
+# @app.route('/api/update-script', methods=['POST'])
+# def update_script():
+#     """Update the current working script"""
+#     user_id = request.remote_addr  # Use IP as user_id
+    
+#     data = request.json
+#     new_script = data.get('script', '').strip()
+#     chat_session_id = data.get('chat_session_id')
+    
+#     if not new_script:
+#         return jsonify({'error': 'Script content is required'}), 400
+    
+#     try:
+#         # Update current script
+#         if user_data[user_id].get('current_script'):
+#             user_data[user_id]['current_script']['content'] = new_script
+#             user_data[user_id]['current_script']['timestamp'] = datetime.now().isoformat()
+        
+#         # Add to chat session history
+#         if chat_session_id and chat_session_id in user_data[user_id]['chat_sessions']:
+#             chat_session = user_data[user_id]['chat_sessions'][chat_session_id]
+#             chat_session['script_versions'].append(new_script)
+        
+#         return jsonify({
+#             'success': True,
+#             'message': 'Script updated successfully'
+#         })
+        
+#     except Exception as e:
+#         logger.error(f"Error updating script: {str(e)}")
+#         return jsonify({'error': f'Error updating script: {str(e)}'}), 500
+
+# @app.route('/health', methods=['GET'])
+# def health_check():
+#     """Health check endpoint"""
+#     return jsonify({
+#         'status': 'healthy',
+#         'timestamp': datetime.now().isoformat(),
+#         'version': '2.0-simplified-ytdlp'
+#     })
+
+@app.route('/api/similar_videos', methods=['POST'])
+def similar_videos():
+    """Fetch similar YouTube videos based on input video ID, filtered by duration category."""
     try:
         data = request.get_json()
-        channel_ids = data.get("channel_ids", [])
-        if not channel_ids:
-            return jsonify({"error": "Channel IDs list is required"}), 400
+        video_id = data.get('video_id', '').strip()
+        if not video_id:
+            return jsonify({'error': 'Video ID is required'}), 400
+
+        # --------------------------
+        # 1. Fetch input video details (title and duration) using YouTube Data API
+        # --------------------------
+        youtube_url = 'https://youtube.googleapis.com/youtube/v3/videos'
+        params = {
+            'part': 'snippet,contentDetails',
+            'id': video_id,
+            'key': YOUTUBE_API_KEY
+        }
+        video_resp = requests.get(youtube_url, params=params)
+        video_resp.raise_for_status()
+        video_data = video_resp.json()
+
+        if not video_data.get('items'):
+            return jsonify({'error': 'Video not found'}), 404
+
+        video_item = video_data['items'][0]
+        original_title = video_item['snippet']['title']
+        duration_iso = video_item['contentDetails']['duration']  # e.g., PT5M30S
+
+        # Parse ISO 8601 duration to seconds
+        def parse_duration(iso_duration):
+            duration = isodate.parse_duration(iso_duration)
+            return int(duration.total_seconds())
+
+        original_duration = parse_duration(duration_iso)
+
+        # Determine duration category
+        if original_duration < 240:  # Less than 4 minutes
+            duration_category = 'short'
+        elif original_duration <= 1200:  # 4–20 minutes
+            duration_category = 'medium'
+        else:  # Over 20 minutes
+            duration_category = 'long'
+
+        # --------------------------
+        # 2. Simplify title using Gemini-2.0-Flash
+        # --------------------------
+        client = genai.GenerativeModel('gemini-2.0-flash')
+        prompt = f"Take this YouTube video title and make a very short, simple keyword phrase (3-6 words) suitable for searching similar videos. Focus on the core theme and avoid special characters except spaces, commas, periods, question marks, and hyphens:\n\nTitle: {original_title}\n\nShort search phrase:"
+        
+        gemini_response = client.generate_content(prompt)
+        search_phrase = gemini_response.text.strip()
+        if not search_phrase:
+            return jsonify({'error': 'Failed to generate search phrase'}), 500
+
+        # --------------------------
+        # 3. Search similar videos using YouTube Data API with duration filter
+        # --------------------------
+        search_url = 'https://youtube.googleapis.com/youtube/v3/search'
+        search_params = {
+            'part': 'snippet',
+            'q': search_phrase,
+            'type': 'video',
+            'videoDuration': duration_category,  # short, medium, or long
+            'maxResults': 20,
+            'relevanceLanguage': 'en',
+            'key': YOUTUBE_API_KEY
+        }
+        search_resp = requests.get(search_url, params=search_params)
+        search_resp.raise_for_status()
+        search_data = search_resp.json()
+
+        videos = []
+        for item in search_data.get('items', []):
+            video_id = item['id'].get('videoId')
+            snippet = item.get('snippet', {})
+            if video_id:
+                videos.append({
+                    'video_id': video_id,
+                    'title': snippet.get('title'),
+                    'channel_title': snippet.get('channelTitle'),
+                    'thumbnail_url': snippet.get('thumbnails', {}).get('high', {}).get('url'),
+                    'url': f'https://www.youtube.com/watch?v={video_id}'
+                })
+
+        # Log if no videos found
+        if not videos:
+            app.logger.warning(f"No videos found for search phrase: {search_phrase}, duration: {duration_category}")
+
+        # --------------------------
+        # 4. Return JSON
+        # --------------------------
+        return jsonify({
+            'success': True,
+            'original_title': original_title,
+            'original_duration': original_duration,
+            'duration_category': duration_category,
+            'search_phrase': search_phrase,
+            'videos': videos
+        })
+
+    except requests.exceptions.RequestException as e:
+        app.logger.error(f"YouTube API error: {str(e)}")
+        return jsonify({'error': f'YouTube API error: {str(e)}'}), 503
+    except Exception as e:
+        app.logger.error(f"Similar videos error: {str(e)}")
+        return jsonify({'error': f'An error occurred: {str(e)}'}), 500
+@app.route('/api/refine_title', methods=['POST'])
+def refine_title():
+    """Refine a YouTube title by making it shorter or longer and adjust virality score."""
+    try:
+        data = request.get_json(force=1, silent=False)  # Add strict=False to handle single quotes
+        if not data or 'title' not in data or 'action' not in data or 'previous_virality_score' not in data:
+            return jsonify({'error': 'Title, action (shorter/longer), and previous_virality_score are required'}), 400
+        
+        title = data['title'].strip()
+        action = data['action'].strip().lower()
+        previous_virality_score = int(data['previous_virality_score'])
+        if not title or action not in ['shorter', 'longer'] or previous_virality_score < 0 or previous_virality_score > 100:
+            return jsonify({'error': 'Invalid input: title cannot be empty, action must be "shorter" or "longer", and previous_virality_score must be between 0 and 100, make sure to avoid using special characters or excessive punctuation also make sure emotion of sentence remain same.'}), 400
+
+        # Prepare prompt for Gemini, including the previous virality score
+        prompt = (
+            f"Refine the YouTube video title: '{title}'. "
+            f"The previous virality score was {previous_virality_score} out of 100. "
+            f"Make it {'shorter' if action == 'shorter' else 'longer'} while keeping it engaging and viral. "
+            f"Ensure the refined title retains the core idea, uses attention-grabbing words, and fits YouTube best practices. "
+            f"Provide the refined title and a new virality score out of 100 based on its appeal, length adjustment, and aiming to improve or maintain the previous virality score. "
+            f"Return the response in valid JSON format wrapped in ```json\n...\n``` with the structure: "
+            f"{{ \"refined_title\": \"string\", \"virality_score\": int }}"
+        )
+        
+        client = genai.GenerativeModel('gemini-2.0-flash')
+        response = client.generate_content(prompt)
+        gemini_response = response.text
+        if gemini_response.startswith('```json\n') and gemini_response.endswith('\n```'):
+            gemini_response = gemini_response[7:-4]
+        gemini_data = json.loads(gemini_response)
+        
+        return jsonify({
+            'success': True,
+            'original_title': title,
+            'action': action,
+            'previous_virality_score': previous_virality_score,
+            'refined_title': gemini_data['refined_title'],
+            'virality_score': gemini_data['virality_score']
+        })
+    except json.JSONDecodeError as e:
+        app.logger.error(f"JSON decode error in refine_title: {str(e)}")
+        return jsonify({'success': False, 'error': 'Invalid JSON format in request body'}), 400
+    except Exception as e:
+        error_message = str(e)
+        app.logger.error(f"Refine title error: {error_message}")
+        if "API key" in error_message or "authentication" in error_message.lower():
+            return jsonify({
+                'success': False,
+                'error': 'API key or authentication error. Please renew the API key and restart the application.'
+            }), 500
+        return jsonify({'success': False, 'error': f'An error occurred: {error_message}'}), 500
+
+@app.route('/api/refine_description', methods=['POST'])
+def refine_description():
+    """Refine a YouTube video description by making it shorter or longer."""
+    try:
+        data = request.get_json()
+        if not data or 'description' not in data or 'action' not in data:
+            return jsonify({'error': 'Description and action (shorter/longer) are required'}), 400
+        
+        description = data['description'].strip()
+        action = data['action'].strip().lower()
+        if not description or action not in ['shorter', 'longer']:
+            return jsonify({'error': 'Invalid input: description cannot be empty, action must be "shorter" or "longer"'}), 400
+        
+        # Prepare prompt for Gemini to refine the description
+        prompt = (
+            f"Refine the YouTube video description: '{description}'. "
+            f"Make it {'shorter' if action == 'shorter' else 'longer'} while keeping it engaging, informative, and aligned with YouTube best practices. "
+            f"Ensure the refined description retains the core idea and enhances viewer interest. "
+            f"Return the response in valid JSON format wrapped in ```json\n...\n``` with the structure: "
+            f"{{ 'refined_description': 'string' }}"
+        )
+        
+        client = genai.GenerativeModel('gemini-2.0-flash')
+        response = client.generate_content(prompt)
+        gemini_response = response.text
+        if gemini_response.startswith('```json\n') and gemini_response.endswith('\n```'):
+            gemini_response = gemini_response[7:-4]
+        gemini_data = json.loads(gemini_response)
+        
+        return jsonify({
+            'success': True,
+            'original_description': description,
+            'action': action,
+            'refined_description': gemini_data['refined_description']
+        })
+    except Exception as e:
+        app.logger.error(f"Refine description error: {str(e)}")
+        return jsonify({'success': False, 'error': f'An error occurred: {str(e)}'}), 500
+
+@app.route('/api/generate_script', methods=['POST'])
+def generate_script_api():
+    try:
+        # Get JSON data from the request
+        data = request.get_json()
+
+        # Validate required fields
+        text = data.get('text')
+        duration = data.get('duration')  # in minutes
+        groups = data.get('groups', [])  # Array of group objects with name and videos
+
+        if not text or not duration:
+            return jsonify({'error': 'Text and duration are required'}), 400
+
+        # Convert duration to float and validate
+        duration = float(duration)
+        if duration <= 0:
+            return jsonify({'error': 'Duration must be a positive number'}), 400
+
+        # Optional parameters with defaults
+        wpm = data.get('wpm', 145)  # default to 145 WPM
+        creator_name = data.get('creator_name', 'YourChannelName')
+        audience = data.get('audience', 'beginners')
+        language = data.get('language', 'en')  # default to English
+
+        # Prepare data in the format expected by generate_script
+        script_data = {
+            'text': text,
+            'duration': duration,
+            'groups': groups
+        }
+
+        # Generate the script using the updated generate_script function
+        script = generate_script(script_data)
+
+        # Return the generated script as JSON response
+        return jsonify({
+            'success': True,
+            'script': script
+        })
+    except Exception as e:
+        app.logger.error(f"Generate script error: {str(e)}")
+        return jsonify({'success': False, 'error': f'An error occurred: {str(e)}'}), 500
+
+@app.route('/api/shorts_outliers', methods=['POST'])
+def shorts_outliers():
+    """Fetch random trending outlier YouTube Shorts (<= 60 seconds)."""
+    try:
+        request_id = str(time.time())
+        app.logger.debug(f"Request ID: {request_id}")
+        
+        data = request.get_json()
+        if not data or 'access_token' not in data:
+            return jsonify({'error': 'Access token is required'}), 400
+        
+        access_token = data['access_token'].strip()
+        if access_token != ACCESS_TOKEN:
+            return jsonify({'error': 'Invalid access token'}), 401
+        
+        if not YOUTUBE_API_KEY:
+            app.logger.error("YOUTUBE_API_KEY is not set")
+            return jsonify({'error': 'YouTube API key is not configured'}), 500
+        
+        # Fetch trending videos using multiple queries
+        trending_queries = [
+            "trending shorts", "viral shorts", "popular shorts", "tiktok style", "quick tips", "short challenge"
+        ]
+        all_videos = []
+        for query in trending_queries[:3]:  # Use top 3 queries
+            videos = get_random_trending_videos(max_results=150, query=query)
+            all_videos.extend(videos)
+        
+        # Deduplicate videos
+        video_id_to_data = {v['video_id']: v for v in all_videos}
+        all_videos = list(video_id_to_data.values())
+        if not all_videos:
+            app.logger.warning("No trending Shorts retrieved, check internet or API key")
+            return jsonify({'error': 'No trending Shorts found, check internet connection or API key'}), 503
+        
+        # Filter to include only Shorts
+        similarity_finder = UltraFastYouTubeSimilarity()
+        raw_videos = [[v['video_id'], v['title'], v['thumbnail_url']] for v in all_videos]
+        filtered_videos = similarity_finder._filter_shorts_only(raw_videos, max_duration=60)
+        shorts_videos = [video_id_to_data[video[0]] for video in filtered_videos if video[0] in video_id_to_data]
+        
+        app.logger.debug(f"Fetched {len(shorts_videos)} trending Shorts after filtering")
+        
+        # Fallback if fewer than 100 Shorts
+        if len(shorts_videos) < 100:
+            app.logger.info("Insufficient Shorts, fetching more with fallback query")
+            extra_videos = get_random_trending_videos(max_results=150, query="shorts")
+            extra_raw = [[v['video_id'], v['title'], v['thumbnail_url']] for v in extra_videos]
+            extra_filtered = similarity_finder._filter_shorts_only(extra_raw, max_duration=60)
+            for video in extra_filtered:
+                video_id = video[0]
+                if video_id not in video_id_to_data:
+                    video_id_to_data[video_id] = extra_videos[extra_raw.index(video)]
+                    shorts_videos.append(video_id_to_data[video_id])
+        
+        # Process videos for outliers
+        video_ids = [v['video_id'] for v in shorts_videos]
+        video_stats = get_video_stats(video_ids)
+        channel_ids = list(set(v['channel_id'] for v in shorts_videos))
+        processed_channels = {}
+        for channel_id in channel_ids:
+            avg_views, subscriber_count = calculate_channel_average_views(channel_id)
+            processed_channels[channel_id] = {'average_views': avg_views, 'subscriber_count': subscriber_count}
+        
+        threshold = 1.5
+        max_attempts = 3
+        attempt = 0
+        outliers = []
+        
+        while len(outliers) < 35 and attempt < max_attempts:
+            outliers = []
+            for video in shorts_videos:
+                video_id = video['video_id']
+                channel_id = video['channel_id']
+                if video_id not in video_stats or channel_id not in processed_channels:
+                    app.logger.debug(f"Skipping video {video_id}: missing stats or channel data")
+                    continue
+                stats = video_stats[video_id]
+                channel_data = processed_channels[channel_id]
+                channel_avg = channel_data['average_views']
+                if channel_avg == 0:
+                    app.logger.debug(f"Skipping video {video_id}: channel average views is 0")
+                    continue
+                multiplier = stats['views'] / channel_avg
+                
+                if multiplier <= threshold:
+                    continue
+                
+                duration_seconds = parse_duration(stats.get('duration', 'PT0S'))
+                try:
+                    pub_date = datetime.strptime(video['published_at'], '%Y-%m-%dT%H:%M:%SZ')
+                    video_age_days = (datetime.utcnow() - pub_date).days
+                except:
+                    video_age_days = 0
+                
+                video_result = {
+                    'video_id': video_id,
+                    'title': video['title'],
+                    'channel_id': channel_id,
+                    'channel_title': video['channel_title'],
+                    'views': stats['views'],
+                    'channel_avg_views': channel_avg,
+                    'multiplier': round(multiplier, 2),
+                    'likes': stats['likes'],
+                    'comments': stats['comments'],
+                    'duration': stats['duration'],
+                    'duration_seconds': duration_seconds,
+                    'url': f"https://www.youtube.com/watch?v={video_id}",
+                    'published_at': video['published_at'],
+                    'thumbnail_url': video['thumbnail_url'],
+                    'viral_score': round(multiplier / 10, 2),
+                    'engagement_rate': round((stats['likes'] + stats['comments']) / stats['views'] if stats['views'] > 0 else 0, 4),
+                    'subscriber_count': channel_data.get('subscriber_count', 0),
+                    'language': video.get('language', 'en')
+                }
+                outliers.append(video_result)
+            
+            outliers.sort(key=lambda x: x['multiplier'], reverse=True)
+            if len(outliers) > 50:
+                outliers = outliers[:50]
+            
+            attempt += 1
+            if len(outliers) < 35 and attempt < max_attempts:
+                threshold -= 0.2
+                app.logger.debug(f"Attempt {attempt}: Found {len(outliers)} outliers, lowering threshold to {threshold}")
+        
+        # Fallback: Fetch related Shorts if still insufficient
+        if len(outliers) < 35:
+            app.logger.info("Insufficient outliers, fetching related Shorts")
+            top_videos = [v for v in shorts_videos[:5]]  # Use top 5 Shorts by views
+            for video in top_videos:
+                rel_vids = get_related_videos(video['video_id'], m=25)
+                rel_raw = [[v['video_id'], v['title'], v['thumbnail_url']] for v in rel_vids]
+                rel_filtered = similarity_finder._filter_shorts_only(rel_raw, max_duration=60)
+                for rel_video in rel_filtered:
+                    video_id = rel_video[0]
+                    if video_id not in video_id_to_data:
+                        rel_video_data = next((v for v in rel_vids if v['video_id'] == video_id), None)
+                        if rel_video_data:
+                            video_id_to_data[video_id] = rel_video_data
+                            shorts_videos.append(rel_video_data)
+            
+            # Re-run outlier detection
+            video_ids = [v['video_id'] for v in shorts_videos]
+            video_stats = get_video_stats(video_ids)
+            channel_ids = list(set(v['channel_id'] for v in shorts_videos))
+            for channel_id in channel_ids:
+                if channel_id not in processed_channels:
+                    avg_views, subscriber_count = calculate_channel_average_views(channel_id)
+                    processed_channels[channel_id] = {'average_views': avg_views, 'subscriber_count': subscriber_count}
+            
+            outliers = []
+            for video in shorts_videos:
+                video_id = video['video_id']
+                channel_id = video['channel_id']
+                if video_id not in video_stats or channel_id not in processed_channels:
+                    continue
+                stats = video_stats[video_id]
+                channel_data = processed_channels[channel_id]
+                channel_avg = channel_data['average_views']
+                if channel_avg == 0:
+                    continue
+                multiplier = stats['views'] / channel_avg
+                
+                if multiplier <= threshold:
+                    continue
+                
+                duration_seconds = parse_duration(stats.get('duration', 'PT0S'))
+                try:
+                    pub_date = datetime.strptime(video['published_at'], '%Y-%m-%dT%H:%M:%SZ')
+                    video_age_days = (datetime.utcnow() - pub_date).days
+                except:
+                    video_age_days = 0
+                
+                video_result = {
+                    'video_id': video_id,
+                    'title': video['title'],
+                    'channel_id': channel_id,
+                    'channel_title': video['channel_title'],
+                    'views': stats['views'],
+                    'channel_avg_views': channel_avg,
+                    'multiplier': round(multiplier, 2),
+                    'likes': stats['likes'],
+                    'comments': stats['comments'],
+                    'duration': stats['duration'],
+                    'duration_seconds': duration_seconds,
+                    'url': f"https://www.youtube.com/watch?v={video_id}",
+                    'published_at': video['published_at'],
+                    'thumbnail_url': video['thumbnail_url'],
+                    'viral_score': round(multiplier / 10, 2),
+                    'engagement_rate': round((stats['likes'] + stats['comments']) / stats['views'] if stats['views'] > 0 else 0, 4),
+                    'subscriber_count': channel_data.get('subscriber_count', 0),
+                    'language': video.get('language', 'en')
+                }
+                outliers.append(video_result)
+            
+            outliers.sort(key=lambda x: x['multiplier'], reverse=True)
+            if len(outliers) > 50:
+                outliers = outliers[:50]
+        
+        # Format response
+        outlier_detector = OutlierDetector()
+        formatted_outliers = []
+        for video in outliers:
+            formatted_video = {
+                'video_id': video['video_id'],
+                'title': video['title'],
+                'channel_id': video['channel_id'],
+                'channel_title': video['channel_title'],
+                'views': video['views'],
+                'views_formatted': outlier_detector.format_number(video['views']),
+                'channel_avg_views': video['channel_avg_views'],
+                'channel_avg_views_formatted': outlier_detector.format_number(video['channel_avg_views']),
+                'multiplier': video['multiplier'],
+                'likes': video['likes'],
+                'likes_formatted': outlier_detector.format_number(video['likes']),
+                'comments': video['comments'],
+                'comments_formatted': outlier_detector.format_number(video['comments']),
+                'duration': video['duration'],
+                'duration_seconds': video['duration_seconds'],
+                'url': video['url'],
+                'published_at': video['published_at'],
+                'viral_score': video['viral_score'],
+                'engagement_rate': video['engagement_rate'],
+                'thumbnail_url': video['thumbnail_url'],
+                'subscriber_count': video['subscriber_count'],
+                'language': video['language']
+            }
+            formatted_outliers.append(formatted_video)
+        
+        search_history.append({
+            'query': 'shorts_outliers',
+            'timestamp': datetime.now().isoformat(),
+            'results_count': len(formatted_outliers)
+        })
+        
+        app.logger.info(f"Found {len(formatted_outliers)} trending Shorts outliers")
+        return jsonify({
+            'success': True,
+            'total_results': len(formatted_outliers),
+            'outliers': formatted_outliers
+        })
+    except Exception as e:
+        app.logger.error(f"Shorts outliers error: {str(e)}")
+        return jsonify({'success': False, 'error': f'An error occurred: {str(e)}'}), 500
+
+@app.route('/api/similar_shorts', methods=['POST'])
+def similar_shorts():
+    """Fetch up to 15 similar YouTube Shorts (≤ 90 seconds) for a given video ID using a title-based search."""
+    try:
+        # Validate input
+        data = request.get_json()
+        if not data or 'video_id' not in data:
+            return jsonify({'error': 'Video ID is required'}), 400
+        
+        video_id = data['video_id'].strip()
+        if not video_id:
+            return jsonify({'error': 'Video ID cannot be empty'}), 400
+        
+        if YOUTUBE_API_KEY == 'YOUR_YOUTUBE_API_KEY':
+            app.logger.error("YouTube API key not configured.")
+            return jsonify({'error': 'YouTube API key not configured'}), 500
+
+        # Initialize YouTube API client
+        youtube = build('youtube', 'v3', developerKey=YOUTUBE_API_KEY)
+        
+        # Step 1: Fetch input video details
+        video_response = youtube.videos().list(
+            part='snippet',
+            id=video_id
+        ).execute()
+        
+        if not video_response['items']:
+            app.logger.error(f"Video not found for ID: {video_id}")
+            return jsonify({'error': 'Video not found'}), 404
+        
+        input_video = video_response['items'][0]
+        input_title = input_video['snippet']['title']
+        input_channel_id = input_video['snippet']['channelId']
+        input_channel_title = input_video['snippet']['channelTitle']
+        
+        # Step 2: Generate search query from the title
+        query = ' '.join([word for word in input_title.split() if len(word) > 3 and word.lower() not in ['the', 'and', 'video']])
+        if not query:
+            app.logger.error(f"No valid search query generated from title: {input_title}")
+            return jsonify({'error': 'No valid search query generated from title'}), 404
+        
+        # Step 3: Search for similar videos
+        search_response = youtube.search().list(
+            part='snippet',
+            q=query,
+            type='video',
+            maxResults=25,  # Fetch extra results to allow filtering for Shorts
+            order='relevance'
+        ).execute()
+        
+        if not search_response.get('items', []):
+            app.logger.error(f"No similar videos found for query: {query}")
+            return jsonify({'error': 'No similar videos found'}), 404
+        
+        # Step 4: Filter results for Shorts (≤ 90 seconds)
+        related_videos = []
+        video_ids = []
+        seen_video_ids = {video_id}  # Track seen IDs to avoid duplicates
+        for item in search_response['items']:
+            rel_video_id = item['id']['videoId']
+            rel_channel_id = item['snippet']['channelId']
+            # Exclude input video and same-channel videos
+            if rel_video_id not in seen_video_ids and rel_channel_id != input_channel_id:
+                seen_video_ids.add(rel_video_id)
+                video_ids.append(rel_video_id)
+        
+        # Step 5: Fetch additional details for videos
+        if not video_ids:
+            app.logger.error("No valid video IDs after filtering.")
+            return jsonify({'error': 'No similar videos found from different channels'}), 404
+
+        details_response = youtube.videos().list(
+            part='snippet,statistics,contentDetails',
+            id=','.join(video_ids[:25])  # Limit to 25 IDs per API call
+        ).execute()
+        
+        video_stats = {}
+        for item in details_response.get('items', []):
+            duration = item['contentDetails']['duration']
+            duration_seconds = parse_duration(duration)
+            if duration_seconds <= 90:  # Filter for Shorts
+                video_stats[item['id']] = {
+                    'views': int(item['statistics'].get('viewCount', 0)),
+                    'likes': int(item['statistics'].get('likeCount', 0)),
+                    'comments': int(item['statistics'].get('commentCount', 0)),
+                    'duration': duration,
+                    'duration_seconds': duration_seconds,
+                    'title': item['snippet']['title'],
+                    'channel_id': item['snippet']['channelId'],
+                    'channel_title': item['snippet']['channelTitle'],
+                    'published_at': item['snippet']['publishedAt'],
+                    'thumbnail_url': item['snippet']['thumbnails']['high']['url'],
+                    'language': item['snippet'].get('defaultLanguage', 'en')
+                }
+        
+        # Step 6: Fetch subscriber count for each channel
+        channel_ids = list(set(video['channel_id'] for video in video_stats.values()))
+        processed_channels = {}
+        channel_video_counts = {}  # Track number of videos per channel
+        channel_total_views = {}  # Track total views per channel
+        for channel_id in channel_ids:
+            try:
+                channel_response = youtube.channels().list(
+                    part='statistics',
+                    id=channel_id
+                ).execute()
+                channel_data = channel_response['items'][0]['statistics'] if channel_response['items'] else {}
+                subscriber_count = int(channel_data.get('subscriberCount', 0))
+                processed_channels[channel_id] = {'subscriber_count': subscriber_count}
+            except Exception as e:
+                app.logger.error(f"Error fetching subscriber count for channel {channel_id}: {str(e)}")
+                processed_channels[channel_id] = {'subscriber_count': 0}
+        
+        # Step 7: Calculate channel average views
+        for vid, stats in video_stats.items():
+            channel_id = stats['channel_id']
+            channel_video_counts[channel_id] = channel_video_counts.get(channel_id, 0) + 1
+            channel_total_views[channel_id] = channel_total_views.get(channel_id, 0) + stats['views']
+        
+        for channel_id in channel_video_counts:
+            avg_views = channel_total_views[channel_id] / channel_video_counts[channel_id] if channel_video_counts[channel_id] > 0 else 0
+            processed_channels[channel_id]['channel_avg_views'] = int(avg_views)
+            processed_channels[channel_id]['channel_avg_views_formatted'] = format_number(int(avg_views))
+        
+        # Step 8: Format the response
+        formatted_shorts = []
+        for vid, stats in video_stats.items():
+            channel_data = processed_channels.get(stats['channel_id'], {'subscriber_count': 0, 'channel_avg_views': 0, 'channel_avg_views_formatted': '0'})
+            engagement_rate = (stats['likes'] + stats['comments']) / stats['views'] if stats['views'] > 0 else 0
+            multiplier = engagement_rate * (stats['views'] / 1000) if stats['views'] > 0 else 0  # Example multiplier calculation
+            formatted_short = {
+                'video_id': vid,
+                'title': stats['title'],
+                'channel_id': stats['channel_id'],
+                'channel_title': stats['channel_title'],
+                'views': stats['views'],
+                'views_formatted': format_number(stats['views']),
+                'likes': stats['likes'],
+                'likes_formatted': format_number(stats['likes']),
+                'comments': stats['comments'],
+                'comments_formatted': format_number(stats['comments']),
+                'duration': stats['duration'],
+                'duration_seconds': stats['duration_seconds'],
+                'url': f"https://www.youtube.com/watch?v={vid}",
+                'published_at': stats['published_at'],
+                'thumbnail_url': stats['thumbnail_url'],
+                'engagement_rate': round(engagement_rate, 4),
+                'language': stats['language'],
+                'multiplier': round(multiplier, 4),
+                'channel_avg_views': channel_data['channel_avg_views'],
+                'channel_avg_views_formatted': channel_data['channel_avg_views_formatted'],
+                'subscriber_count': channel_data['subscriber_count']
+            }
+            formatted_shorts.append(formatted_short)
+        
+        # Sort by views (relevance) and limit to 15
+        formatted_shorts.sort(key=lambda x: x['views'], reverse=True)
+        formatted_shorts = formatted_shorts[:15]
+        
+        if not formatted_shorts:
+            app.logger.error("No valid Shorts after processing.")
+            return jsonify({'error': 'No similar Shorts found'}), 404
+        
+        # Return successful response
+        app.logger.info(f"Found {len(formatted_shorts)} similar Shorts for video {video_id}")
+        return jsonify({
+            'success': True,
+            'input_video_id': video_id,
+            'input_video_title': input_title,
+            'input_channel_title': input_channel_title,
+            'total_results': len(formatted_shorts),
+            'similar_shorts': formatted_shorts
+        })
+    
+    except HttpError as e:
+        app.logger.error(f"YouTube API error in similar_shorts for video {video_id}: {str(e)}")
+        return jsonify({'success': False, 'error': f'YouTube API error: {str(e)}'}), 503
+    except Exception as e:
+        app.logger.error(f"Similar shorts error: {str(e)}")
+        return jsonify({'success': False, 'error': f'An error occurred: {str(e)}'}), 500
+
+@app.route("/api/shorts_by_channel_id", methods=["POST"])
+def shorts_by_channel_id():
+    try:
+        data = request.get_json()
+        channel_id = data.get("channel_id", "").strip()
+        if not channel_id:
+            return jsonify({"error": "Channel ID is required"}), 400
 
         youtube = googleapiclient.discovery.build("youtube", "v3", developerKey=YOUTUBE_API_KEY)
 
-        channel_videos = []
+        # 1. Fetch channel info
+        channel_resp = youtube.channels().list(
+            part="snippet,statistics,contentDetails",
+            id=channel_id
+        ).execute()
 
-        for ch_id in channel_ids:
-            # Fetch channel info
-            ch_resp = youtube.channels().list(
-                part="snippet,statistics",
-                id=ch_id
+        if not channel_resp.get("items"):
+            return jsonify({"error": "Channel not found"}), 404
+
+        channel_info = channel_resp["items"][0]
+        channel_title = channel_info["snippet"]["title"]
+        uploads_playlist = channel_info["contentDetails"]["relatedPlaylists"]["uploads"]
+
+        # 2. Get last 10 uploads, filter shorts (≤60s)
+        videos_resp = youtube.playlistItems().list(
+            part="contentDetails,snippet",
+            playlistId=uploads_playlist,
+            maxResults=20
+        ).execute()
+
+        candidate_videos = []
+        for item in videos_resp.get("items", []):
+            vid_id = item["contentDetails"]["videoId"]
+            vid_details = youtube.videos().list(
+                part="contentDetails,snippet,statistics",
+                id=vid_id
             ).execute()
 
-            if not ch_resp.get("items"):
+            if not vid_details.get("items"):
                 continue
 
-            ch_info = ch_resp["items"][0]
-            ch_title = ch_info["snippet"]["title"]
-            subs_count = int(ch_info["statistics"].get("subscriberCount", 1))
+            v = vid_details["items"][0]
+            duration = safe_duration(v)
+            if duration <= 60:  # shorts only
+                candidate_videos.append({
+                    "id": vid_id,
+                    "title": v["snippet"]["title"]
+                })
 
-            # Fetch up to 50 Shorts (under 60s), ordered by date
+            if len(candidate_videos) >= 10:
+                break
+
+        if not candidate_videos:
+            return jsonify({"error": "No Shorts found for this channel"}), 404
+
+        # 3. Collect competitor channels with frequency
+        competitor_counts = {}
+        for video in candidate_videos:
             search_resp = youtube.search().list(
                 part="snippet",
-                channelId=ch_id,
+                q=video["title"],
                 type="video",
-                order="date",
-                videoDuration="short",
+                maxResults=20,
+                relevanceLanguage="en",
+                videoDuration="short"  # shorts only
+            ).execute()
+
+            for item in search_resp.get("items", []):
+                ch_id = item["snippet"]["channelId"]
+                ch_title = item["snippet"]["channelTitle"]
+
+                if ch_id == channel_id:
+                    continue
+
+                if ch_id not in competitor_counts:
+                    competitor_counts[ch_id] = {"title": ch_title, "count": 0}
+                competitor_counts[ch_id]["count"] += 1
+
+        # Sort competitors by frequency
+        competitors = sorted(
+            competitor_counts.items(),
+            key=lambda kv: kv[1]["count"],
+            reverse=True
+        )[:20]
+
+        # 4. For each competitor, fetch top + latest shorts with avg views
+        all_videos = []
+        competitors_meta = []
+        for comp_id, comp_data in competitors:
+            comp_resp = youtube.channels().list(
+                part="statistics,contentDetails",
+                id=comp_id
+            ).execute()
+
+            if not comp_resp.get("items"):
+                continue
+
+            comp_info = comp_resp["items"][0]
+            comp_title = comp_data["title"]
+            comp_uploads = comp_info["contentDetails"]["relatedPlaylists"]["uploads"]
+
+            # Fetch up to 50 uploads
+            comp_uploads_resp = youtube.playlistItems().list(
+                part="contentDetails",
+                playlistId=comp_uploads,
                 maxResults=50
             ).execute()
 
-            video_ids = [item["id"]["videoId"] for item in search_resp.get("items", [])]
-            if not video_ids:
-                continue
+            comp_video_ids = [v["contentDetails"]["videoId"] for v in comp_uploads_resp.get("items", [])]
+            comp_videos = fetch_video_details(youtube, comp_video_ids)
 
-            comp_videos = fetch_video_details(youtube, video_ids)
+            # Filter only shorts
+            comp_videos = [v for v in comp_videos if safe_duration(v) <= 60]
+
             if not comp_videos:
                 continue
 
-            # ---------------------------------------------------------
-            # 1. CALCULATE ROBUST SHORTS AVERAGE (New Logic)
-            # ---------------------------------------------------------
-            
-            # A. Filter for videos > 168 hours old
-            baseline_videos_views = []
-            for v in comp_videos:
-                pub_iso = v["snippet"].get("publishedAt")
-                age_hours = calculate_hours_since_published(pub_iso)
-                if age_hours > 168:
-                    baseline_videos_views.append(int(v["statistics"].get("viewCount", 0)))
-            
-            # B. Take avg of top 5 most recent valid videos
-            baseline_sample = baseline_videos_views[:5]
-            
-            if baseline_sample:
-                calculated_avg = sum(baseline_sample) / len(baseline_sample)
-            else:
-                # Fallback to the average of ALL fetched videos if no video is > 168h
-                all_views = [int(v["statistics"].get("viewCount", 0)) for v in comp_videos]
-                calculated_avg = sum(all_views) / len(all_views) if all_views else 0
+            # Calculate avg recent views
+            avg_recent_views = sum(
+                int(v["statistics"].get("viewCount", 0)) for v in comp_videos
+            ) / len(comp_videos)
 
-            # C. Safety for small averages
-            robust_avg_views = max(1, calculated_avg)
-            
-            # Note: We are not implementing the Subscriber Cap logic here, 
-            # as it was not explicitly requested for the 'shorts_videos' route. 
-            # If you want it, let me know!
+            competitors_meta.append({
+                "id": comp_id,
+                "title": comp_title,
+                "subscriber_count": int(comp_info["statistics"].get("subscriberCount", 0)),
+                "avg_recent_views": round(avg_recent_views, 2),
+                "frequency": comp_data.get("count", 0)
+            })
 
-            # ---------------------------------------------------------
-
-            # Top 10 popular Shorts (sorted by raw views)
-            popular_videos = sorted(
+            # Top 5 by views
+            top_videos = sorted(
                 comp_videos,
                 key=lambda x: int(x["statistics"].get("viewCount", 0)),
                 reverse=True
-            )[:10]
+            )[:5]
 
-            # Latest Shorts (Simply the first 10, as search is ordered by date)
-            latest_videos = comp_videos[:10]
-
-            def format_video(v, list_type):
-                duration_str = v.get("contentDetails", {}).get("duration", "")
-                duration = parse_duration(duration_str)
-                current_views = int(v["statistics"].get("viewCount", 0))
-                snippet = v.get("snippet", {}) or {}
-                published_at = snippet.get("publishedAt")
-                
-                # --- NEW MULTIPLIER LOGIC ---
-                hours_old = calculate_hours_since_published(published_at)
-                
-                # If short is young (< 168 hours), project potential views
-                if hours_old < 168 and robust_avg_views > 1:
-                    # potential = current * (168 / age)
-                    projected_views = current_views * (168 / max(0.1, hours_old))
-                    effective_views_for_calc = projected_views
-                else:
-                    effective_views_for_calc = current_views
-
-                multiplier = round(effective_views_for_calc / robust_avg_views, 2)
-                # -----------------------------
-
-                language = snippet.get("defaultAudioLanguage") or snippet.get("defaultLanguage") or snippet.get("language") or None
-
-                published_date_friendly = None
-                if published_at:
-                    try:
-                         # Use dateutil.parser.isoparse for robust date handling
-                        dt = dateutil.parser.isoparse(published_at) 
-                        published_date_friendly = dt.strftime("%Y-%m-%d")
-                    except Exception:
-                        published_date_friendly = published_at
-
-                return {
-                    "video_id": v["id"],
-                    "title": snippet.get("title"),
-                    "channel_id": ch_id,
-                    "channel_title": ch_title,
-                    "subscriber_count": subs_count,
-                    "views": current_views,
-                    "views_formatted": format_number(current_views),
-                    "duration_seconds": duration,
-                    
-                    # UPDATED METRICS
-                    "multiplier": multiplier,
-                    "avg_recent_views": round(robust_avg_views, 2),
-                    "channel_avg_views_formatted": format_number(round(robust_avg_views, 0)),
-                    "hours_since_published": round(hours_old, 1),
-                    # END UPDATED METRICS
-                    
-                    "thumbnail_url": snippet.get("thumbnails", {}).get("high", {}).get("url"),
-                    "url": f"https://www.youtube.com/watch?v={v['id']}",
-                    "language": language,
-                    "published_date": published_at,
-                    "published_date_friendly": published_date_friendly,
-                    "list_type": list_type
-                }
-
-            channel_data = {
-                "channel_id": ch_id,
-                "channel_title": ch_title,
-                "subscriber_count": subs_count,
-                "avg_recent_views": round(robust_avg_views, 2),
-                "avg_recent_views_formatted": format_number(round(robust_avg_views, 0)),
-                "latest": [format_video(v, "latest") for v in latest_videos],
-                "popular": [format_video(v, "popular") for v in popular_videos]  
-            }
-
-            channel_videos.append(channel_data)
-
-        # Interleave latest/popular Shorts across channels (kept the original interleaving logic)
-        all_videos = []
-        max_videos_per_type = 10 
-
-        for i in range(max_videos_per_type):
-            for j, channel in enumerate(channel_videos):
-                if j % 2 == 0 and i < len(channel["latest"]):
-                    all_videos.append(channel["latest"][i])
-                elif j % 2 == 1 and i < len(channel["popular"]):
-                    all_videos.append(channel["popular"][i])
-                if len(all_videos) >= 200:
+            # Latest 5 with multiplier >1
+            latest_videos = []
+            for v in comp_videos[:10]:
+                views = int(v["statistics"].get("viewCount", 0))
+                if avg_recent_views > 0 and (views / avg_recent_views) > 1:
+                    latest_videos.append(v)
+                if len(latest_videos) >= 5:
                     break
+
+            for v in top_videos + latest_videos:
+                duration = safe_duration(v)
+                views = int(v["statistics"].get("viewCount", 0))
+                multiplier = round(views / avg_recent_views, 2) if avg_recent_views > 0 else 0
+
+                all_videos.append({
+                    "video_id": v["id"],
+                    "title": v["snippet"]["title"],
+                    "channel_id": comp_id,
+                    "channel_title": comp_title,
+                    "competitor_frequency": comp_data.get("count", 0),
+                    "views": views,
+                    "views_formatted": format_number(views),
+                    "duration_seconds": duration,
+                    "multiplier": multiplier,
+                    "avg_recent_views": round(avg_recent_views, 2),
+                    "thumbnail_url": v["snippet"]["thumbnails"]["high"]["url"],
+                    "url": f"https://www.youtube.com/watch?v={v['id']}"
+                })
+
             if len(all_videos) >= 200:
                 break
 
         return jsonify({
             "success": True,
+            "channel_id": channel_id,
+            "channel_title": channel_title,
+            "competitors": competitors_meta,
             "total_videos": len(all_videos),
             "videos": all_videos[:200]
         })
 
     except Exception as e:
-        # Assuming app.logger is available
-        # app.logger.error(f"Shorts videos error: {str(e)}")
+        app.logger.error(f"Shorts outliers error: {str(e)}")
         return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/generate-script-from-title', methods=['POST'])
+def generate_script_from_title_endpoint():
+    """API endpoint to generate a video script from a title and duration."""
+    try:
+        data = request.get_json()
+        title = data.get('title')
+        duration = data.get('duration')
+        if not title or not duration:
+            return jsonify({'error': 'Title and duration are required'}), 400
+        try:
+            duration = float(duration)
+            if duration <= 0:
+                raise ValueError("Duration must be a positive number")
+        except (ValueError, TypeError):
+            return jsonify({'error': 'Duration must be a valid positive number'}), 400
+        # Optional parameters
+        wpm = data.get('wpm', 145)
+        creator_name = data.get('creator_name', 'YourChannelName')
+        audience = data.get('audience', 'beginners')
+        language = data.get('language', 'en')
+        script, _, error = generate_script_from_title(
+            title=title,
+            duration=duration,
+            wpm=wpm,
+            creator_name=creator_name,
+            audience=audience,
+            language=language
+        ), title, None  # Mimic find_similar_videos_enhanced return structure
+        if error:
+            return jsonify({'success': False, 'error': error}), 400
+        result_data = {
+            'title': title,
+            'duration': duration,
+            'script': script,
+            'wpm': wpm,
+            'creator_name': creator_name,
+            'audience': audience,
+            'language': language
+        }
+        return jsonify({'success': True, **result_data})
+    except Exception as e:
+        print(f"Error in generate_script_from_title_endpoint: {str(e)}")
+        return jsonify({'success': False, 'error': f'An error occurred: {str(e)}'}), 500
+
+
 @app.route('/api/review-thumbnail', methods=['POST'])
 def review_thumbnail_endpoint():
     """API endpoint to review a thumbnail image."""

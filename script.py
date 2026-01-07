@@ -2078,7 +2078,7 @@ class EnhancedScriptGenerator:
         - Then use STRICTLY CONTINUOUS timestamps: [MM:SS-MM:SS] Spoken words here
         - Timestamps MUST be sequential and continuous (e.g., [00:00-00:15], [00:15-00:30], [00:30-00:50])
         - NO section headers like "# TITLE" or "## HOOK" or "### Section" 
-        - You MAY use **BOLD** for the title and important emphasis words in the script
+        - You MAY use **BOLD** and for the title and timestamps showing. but make sure title is bigger font and time stamp have smaller font than title but bigger size font from ususal body text.
         - NO production notes, NO visual directions, NO camera instructions
         - NO tone descriptions like "(Tone shifts, more empathetic)"
         - NO bracketed instructions like "[Production Note: ...]"

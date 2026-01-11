@@ -677,50 +677,46 @@ class VideoProcessor:
         self.last_api_call = time.time()
     
     def extract_transcript_details(self, youtube_video_url):
-    """
-    Direct Analysis: Sends the URL context to Gemini.
-    Note: For the API to truly 'see' the video, we must ensure 
-    the model has access to the video data.
-    """
-    print(f"\n--- Analyzing YouTube Video via Gemini: {youtube_video_url} ---")
-    
-    try:
-        # We use the 'gemini-2.0-flash' model which has the best 
-        # multi-modal reasoning for video content.
-        model = genai.GenerativeModel("gemini-2.0-flash")
-        
-        # We provide the URL and ask Gemini to use its internal 
-        # knowledge/tools to analyze the content.
-        prompt = f"""
-        Analyze the video at this URL: {youtube_video_url}
-        
-        Your task:
-        1. Extract the core arguments regarding the SSC Scam.
-        2. Provide a 500-word authoritative summary of the video content.
-        3. Do NOT hallucinate. If you cannot access the video directly, 
-           analyze the metadata and key points associated with this specific video ID.
-        
-        Output in Hindi (as per user style).
         """
+        DIRECT GEMINI LINK ANALYSIS: 
+        No scraping, no downloading. Passes URL directly to Gemini.
+        """
+        print(f"\n--- Passing URL to Gemini for Direct Analysis: {youtube_video_url} ---")
+        
+        try:
+            # We use the flash model for high-speed link reasoning
+            model = genai.GenerativeModel("gemini-2.0-flash")
+            
+            # The prompt asks Gemini to use its internal knowledge of the YouTube video
+            prompt = f"""
+            Analyze the video content at this URL: {youtube_video_url}
+            
+            Please provide:
+            1. A deep, 500-word authoritative summary of the video's content.
+            2. Extract all specific data points, statistics, and arguments mentioned.
+            3. Ensure the context is preserved for a YouTube script generation.
+            
+            Format: High-density Knowledge Base.
+            """
 
-        response = model.generate_content(prompt)
+            response = model.generate_content(prompt)
 
-        if response.text:
-            summary = response.text.strip()
-            return {
-                "error": None, 
-                "transcript": summary, 
-                "stats": {
-                    'word_count': len(summary.split()), 
-                    'source_type': 'gemini_direct_url_analysis'
+            if response.text:
+                summary = response.text.strip()
+                print(f"✓ Gemini analyzed link: {len(summary.split())} words")
+                return {
+                    "error": None, 
+                    "transcript": summary, 
+                    "stats": {
+                        'word_count': len(summary.split()), 
+                        'source_type': 'gemini_direct_link'
+                    }
                 }
-            }
+            return {"error": "Gemini returned an empty response for this link", "transcript": None}
 
-    except Exception as e:
-        logger.error(f"Direct Gemini Link Error: {str(e)}")
-        return {"error": f"Gemini could not process the link: {str(e)}", "transcript": None}
-
-        return {"error": "Unexpected processing error", "transcript": None, "stats": None}
+        except Exception as e:
+            logger.error(f"Link Analysis Error: {str(e)}")
+            return {"error": f"Gemini could not process this URL: {str(e)}", "transcript": None}
     
     def _calculate_transcript_stats(self, transcript_text):
         if not transcript_text:

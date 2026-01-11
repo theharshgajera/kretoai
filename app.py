@@ -3124,58 +3124,29 @@ def whole_script():
                                 pass
                         return ('error', f"[{folder_name}] Video error {filename}: {str(e)}")
                 
-                # DOCUMENT
+                # DOCUMENT - LINK ONLY MODE
                 elif item_type == 'document':
-                    filename = item.get('filename', 'doc.pdf')
-                    file_data = item.get('data')
-                    
-                    if not document_processor.allowed_file(filename):
-                        return ('error', f"[{folder_name}] Unsupported doc: {filename}")
-                    
-                    if not file_data:
-                        return ('error', f"[{folder_name}] No data: {filename}")
-                    
-                    print(f"\n[{folder_name}] Processing Document: {filename}")
-                    
-                    safe_user_id = user_id.replace('.', '_').replace(':', '_')
-                    file_path = os.path.join(
-                        UPLOAD_FOLDER,
-                        f"temp_{safe_user_id}_{int(time.time())}_{item_idx}_{secure_filename(filename)}"
-                    )
-                    
-                    try:
-                        doc_bytes = base64.b64decode(file_data)
-                        with open(file_path, 'wb') as f:
-                            f.write(doc_bytes)
+                    # Get the URL from your JSON input
+                    doc_url = item.get('url')
+                    filename = item.get('filename', 'document.pdf')
+
+                    if doc_url:
+                        print(f"[{folder_name}] Sending Document URL to Processor: {doc_url}")
+                        # Calls the simplified method in script.py
+                        result = document_processor.process_document(doc_url, filename)
                         
-                        print(f"  Saved: {len(doc_bytes):,} bytes ({len(doc_bytes)/(1024*1024):.2f} MB)")
-                        
-                        result = document_processor.process_document(file_path, filename)
-                        
-                        try:
-                            os.remove(file_path)
-                        except:
-                            pass
-                        
-                        if result['error']:
-                            return ('error', f"[{folder_name}] Doc {filename}: {result['error']}")
-                        
-                        doc_text = result['text']
+                        if result.get('error'):
+                            return ('error', f"[{folder_name}] {filename}: {result['error']}")
                         
                         return ('document', {
                             'folder_name': folder_name,
                             'filename': filename,
-                            'text': doc_text,
-                            'stats': result['stats']
+                            'text': result['text'],
+                            'stats': result.get('stats', {})
                         })
+                    else:
+                        return ('error', f"[{folder_name}] No URL provided for document {filename}")
                     
-                    except Exception as e:
-                        if os.path.exists(file_path):
-                            try:
-                                os.remove(file_path)
-                            except:
-                                pass
-                        return ('error', f"[{folder_name}] Doc error {filename}: {str(e)}")
                 
                 # IMAGE FILE
                 elif item_type == 'image_file':

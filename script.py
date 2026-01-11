@@ -128,192 +128,56 @@ print(f"✓ Whisper config: Model directory = {WHISPER_MODEL_DIR}")
 
 
 
+
+
 class DocumentProcessor:
-    """Advanced document processing with multiple format support"""
+    """Passes document URLs directly to Gemini for analysis"""
     
     def __init__(self):
-        self.max_chars = 100000  # Maximum characters to process per document
+        self.max_chars = 100000 
     
     def allowed_file(self, filename):
         return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
-    
-    def extract_text_from_pdf(self, file_path):
-        """Extract text from PDF using multiple methods for reliability"""
-        text = ""
+
+    def process_document(self, source, filename=None):
+        """
+        Direct Link Analysis: Passes the URL to Gemini.
+        """
+        print(f"\n--- Passing Document Link to Gemini: {filename or source} ---")
         
         try:
-            # Try PyMuPDF first (better for complex PDFs)
-            doc = fitz.open(file_path)
-            print(f"Extracting text from PDF using PyMuPDF: {file_path}")
-            for page_num in range(doc.page_count):
-                page = doc[page_num]
-                text += page.get_text()
-            doc.close()
+            model = genai.GenerativeModel("gemini-2.0-flash")
             
-            if len(text.strip()) > 50:  # If we got good text
-                print(f"Successfully extracted {len(text)} characters from PDF using PyMuPDF.")
-                return text
+            # This prompt tells Gemini to fetch and analyze the specific link
+            prompt = f"""
+            Analyze the document at this URL: {source}
+            
+            Please perform a DEEP SCAN and extract:
+            1. Every major argument and core concept.
+            2. All specific data, facts, and statistics.
+            3. Technical details and patterns (especially if it's an exam paper).
+            
+            Ensure the output is a high-density Knowledge Base for a YouTube script.
+            """
+
+            response = model.generate_content(prompt)
+
+            if response.text:
+                full_text = response.text.strip()
+                return {
+                    "error": None,
+                    "text": full_text,
+                    "stats": {
+                        "word_count": len(full_text.split()),
+                        "source_type": "gemini_direct_doc_link"
+                    },
+                    "filename": filename or "Document"
+                }
+            return {"error": "Gemini returned empty text for this document link", "text": None}
+
         except Exception as e:
-            logger.warning(f"PyMuPDF extraction failed: {e}")
-            print(f"PyMuPDF extraction failed for {file_path}: {e}")
-        
-        try:
-            # Fallback to PyPDF2
-            print(f"Falling back to PyPDF2 for PDF: {file_path}")
-            with open(file_path, 'rb') as file:
-                pdf_reader = PyPDF2.PdfReader(file)
-                for page in pdf_reader.pages:
-                    text += page.extract_text()
-        except Exception as e:
-            logger.error(f"PyPDF2 extraction failed: {e}")
-            print(f"PyPDF2 extraction failed for {file_path}: {e}")
-            return None
-        
-        if len(text.strip()) > 50:
-            print(f"Successfully extracted {len(text)} characters from PDF using PyPDF2.")
-        else:
-            print(f"Extracted text from PDF is too short: {len(text)} characters.")
-        return text if len(text.strip()) > 50 else None
-    
-    def extract_text_from_docx(self, file_path):
-        """Extract text from DOCX files"""
-        try:
-            print(f"Extracting text from DOCX: {file_path}")
-            doc = docx.Document(file_path)
-            text = []
-            
-            # Extract from paragraphs
-            for paragraph in doc.paragraphs:
-                if paragraph.text.strip():
-                    text.append(paragraph.text)
-            
-            # Extract from tables
-            for table in doc.tables:
-                for row in table.rows:
-                    for cell in row.cells:
-                        if cell.text.strip():
-                            text.append(cell.text)
-            
-            full_text = '\n'.join(text)
-            print(f"Successfully extracted {len(full_text)} characters from DOCX.")
-            return full_text
-        except Exception as e:
-            logger.error(f"DOCX extraction failed: {e}")
-            print(f"DOCX extraction failed for {file_path}: {e}")
-            return None
-    
-    def extract_text_from_doc(self, file_path):
-        """Extract text from legacy DOC files (basic support)"""
-        try:
-            print(f"Extracting text from DOC: {file_path}")
-            # Try using python-docx (limited DOC support)
-            doc = docx.Document(file_path)
-            text = []
-            for paragraph in doc.paragraphs:
-                if paragraph.text.strip():
-                    text.append(paragraph.text)
-            full_text = '\n'.join(text)
-            print(f"Successfully extracted {len(full_text)} characters from DOC.")
-            return full_text
-        except Exception as e:
-            logger.warning(f"DOC extraction failed, file might need conversion: {e}")
-            print(f"DOC extraction failed for {file_path}: {e}")
-            return None
-    
-    def extract_text_from_txt(self, file_path):
-        """Extract text from TXT files with encoding detection"""
-        encodings = ['utf-8', 'utf-16', 'latin-1', 'cp1252']
-        
-        for encoding in encodings:
-            try:
-                print(f"Trying to extract text from TXT with encoding {encoding}: {file_path}")
-                with open(file_path, 'r', encoding=encoding) as file:
-                    full_text = file.read()
-                print(f"Successfully extracted {len(full_text)} characters from TXT with {encoding}.")
-                return full_text
-            except UnicodeDecodeError:
-                print(f"UnicodeDecodeError with {encoding} for {file_path}, trying next.")
-                continue
-            except Exception as e:
-                logger.error(f"TXT extraction failed: {e}")
-                print(f"TXT extraction failed for {file_path}: {e}")
-                return None
-        
-        print(f"All encodings failed for TXT: {file_path}")
-        return None
-    
-    def process_document(self, file_path, filename):
-        """Process document and extract text with metadata"""
-        print(f"Starting document processing for {filename} at {file_path}")
-        file_ext = filename.rsplit('.', 1)[1].lower()
-        
-        extraction_methods = {
-            'pdf': self.extract_text_from_pdf,
-            'docx': self.extract_text_from_docx,
-            'doc': self.extract_text_from_doc,
-            'txt': self.extract_text_from_txt
-        }
-        
-        extract_method = extraction_methods.get(file_ext)
-        if not extract_method:
-            print(f"Unsupported file format: {file_ext} for {filename}")
-            return {"error": "Unsupported file format", "text": None, "stats": None}
-        
-        try:
-            text = extract_method(file_path)
-            
-            if not text or len(text.strip()) < 50:
-                print(f"No meaningful text extracted from {filename}: {len(text) if text else 0} characters.")
-                return {"error": "Could not extract meaningful text from document", "text": None, "stats": None}
-            
-            # Truncate if too long
-            if len(text) > self.max_chars:
-                print(f"Truncating document {filename} from {len(text)} to {self.max_chars} characters.")
-                text = text[:self.max_chars] + "\n\n[Document truncated for processing...]"
-            
-            stats = self._calculate_document_stats(text, filename)
-            print(f"Document {filename} processed successfully. Stats: {stats}")
-            
-            return {
-                "error": None,
-                "text": text,
-                "stats": stats,
-                "filename": filename,
-                "file_type": file_ext
-            }
-            
-        except Exception as e:
-            logger.error(f"Document processing error: {e}")
-            print(f"Error processing document {filename}: {str(e)}")
-            return {"error": f"Error processing document: {str(e)}", "text": None, "stats": None}
-    
-    def _calculate_document_stats(self, text, filename):
-        """Calculate document statistics"""
-        if not text:
-            stats = {
-                'char_count': 0,
-                'word_count': 0,
-                'page_estimate': 0,
-                'read_time': 0
-            }
-            print(f"Stats for {filename}: {stats}")
-            return stats
-        
-        char_count = len(text)
-        word_count = len(text.split())
-        page_estimate = max(1, word_count // 250)  # ~250 words per page
-        read_time = max(1, word_count // 200)  # ~200 words per minute
-        
-        stats = {
-            'char_count': char_count,
-            'word_count': word_count,
-            'page_estimate': page_estimate,
-            'read_time': read_time,
-            'filename': filename
-        }
-        print(f"Calculated stats for {filename}: {stats}")
-        return stats
-    
+            logger.error(f"Document Link Error: {str(e)}")
+            return {"error": f"Gemini could not process document link: {str(e)}", "text": None}
 class VideoProcessor:
     """High-performance video processor with parallel chunks - NO quality compromise"""
     

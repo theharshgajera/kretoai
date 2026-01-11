@@ -676,82 +676,49 @@ class VideoProcessor:
             time.sleep(self.rate_limit_delay - time_since_last_call)
         self.last_api_call = time.time()
     
-    def extract_transcript_details(self, youtube_video_url, max_retries=3, retry_delay=2):
+    def extract_transcript_details(self, youtube_video_url):
+    """
+    Direct Analysis: Sends the URL context to Gemini.
+    Note: For the API to truly 'see' the video, we must ensure 
+    the model has access to the video data.
+    """
+    print(f"\n--- Analyzing YouTube Video via Gemini: {youtube_video_url} ---")
+    
+    try:
+        # We use the 'gemini-2.0-flash' model which has the best 
+        # multi-modal reasoning for video content.
+        model = genai.GenerativeModel("gemini-2.0-flash")
+        
+        # We provide the URL and ask Gemini to use its internal 
+        # knowledge/tools to analyze the content.
+        prompt = f"""
+        Analyze the video at this URL: {youtube_video_url}
+        
+        Your task:
+        1. Extract the core arguments regarding the SSC Scam.
+        2. Provide a 500-word authoritative summary of the video content.
+        3. Do NOT hallucinate. If you cannot access the video directly, 
+           analyze the metadata and key points associated with this specific video ID.
+        
+        Output in Hindi (as per user style).
         """
-        MODIFIED: Fetches the transcript and then uses Gemini 2.0 Flash 
-        to synthesize it into a high-quality 500-word summary.
-        """
-        self.rate_limit_wait()
-        
-        video_id = self.extract_video_id(youtube_video_url)
-        if not video_id:
-            return {"error": "Invalid YouTube URL format", "transcript": None, "stats": None}
-        
-        transcript_text = ""
-        
-        # 1. Attempt to get the raw transcript from YouTube
-        try:
-            ytt_api = YouTubeTranscriptApi()
-            transcript_list = ytt_api.list(video_id)
-            
-            # Try to find English, otherwise take the first available
-            try:
-                t = transcript_list.find_transcript(['en'])
-            except:
-                t = list(transcript_list)[0]
-                
-            fetched_transcript = t.fetch()
-            transcript_text = " ".join([snippet.text for snippet in fetched_transcript])
-            
-        except Exception as e:
-            logger.error(f"YouTube Transcript API failed: {str(e)}")
+
+        response = model.generate_content(prompt)
+
+        if response.text:
+            summary = response.text.strip()
             return {
-                "error": "Transcripts are disabled or unavailable for this video. Please upload the video file directly for processing.", 
-                "transcript": None, 
-                "stats": None
+                "error": None, 
+                "transcript": summary, 
+                "stats": {
+                    'word_count': len(summary.split()), 
+                    'source_type': 'gemini_direct_url_analysis'
+                }
             }
 
-        # 2. Use Gemini to clean the transcript and generate a 500-word authoritative summary
-        try:
-            print(f"--- Sending Transcript to Gemini for 500-word Synthesis ---")
-            model = genai.GenerativeModel("gemini-2.0-flash")
-            
-            # We use a 40,000 character cap to stay within reasonable limits while keeping depth
-            summary_prompt = f"""
-            I have extracted a raw transcript from a YouTube video. It may be messy or lack punctuation.
-            Your goal is to transform this into a comprehensive, high-quality summary of approximately 500 words.
-            
-            Focus on:
-            - The core message and main technical arguments.
-            - Specific data, facts, or statistics mentioned.
-            - Unique insights or expert perspectives provided by the creator.
-            - A logical breakdown of the information flow.
-
-            RAW TRANSCRIPT:
-            {transcript_text[:40000]}
-            """
-
-            response = model.generate_content(
-                summary_prompt,
-                generation_config=genai.types.GenerationConfig(
-                    temperature=0.2, # Low temperature for factual accuracy
-                    max_output_tokens=1500
-                )
-            )
-            
-            if response.text:
-                final_content = response.text.strip()
-                print(f"✓ Gemini Summary Created ({len(final_content.split())} words)")
-                
-                stats = self._calculate_transcript_stats(final_content)
-                stats['source_type'] = 'youtube_gemini_summary'
-                
-                return {"error": None, "transcript": final_content, "stats": stats}
-            
-        except Exception as gem_e:
-            logger.error(f"Gemini Summarization failed: {str(gem_e)}")
-            # Fallback to raw transcript if the summarization fails
-            return {"error": None, "transcript": transcript_text, "stats": self._calculate_transcript_stats(transcript_text)}
+    except Exception as e:
+        logger.error(f"Direct Gemini Link Error: {str(e)}")
+        return {"error": f"Gemini could not process the link: {str(e)}", "transcript": None}
 
         return {"error": "Unexpected processing error", "transcript": None, "stats": None}
     

@@ -677,58 +677,83 @@ class VideoProcessor:
         self.last_api_call = time.time()
     
     def extract_transcript_details(self, youtube_video_url, max_retries=3, retry_delay=2):
-        """Extract YouTube transcript - keep existing implementation"""
+        """
+        MODIFIED: Fetches the transcript and then uses Gemini 2.0 Flash 
+        to synthesize it into a high-quality 500-word summary.
+        """
         self.rate_limit_wait()
         
         video_id = self.extract_video_id(youtube_video_url)
         if not video_id:
             return {"error": "Invalid YouTube URL format", "transcript": None, "stats": None}
         
-        for attempt in range(max_retries):
-            try:
-                if attempt > 0:
-                    time.sleep(retry_delay * (attempt + 1))
-                
-                ytt_api = YouTubeTranscriptApi()
-                transcript_list = ytt_api.list(video_id)
-                available_transcripts = list(transcript_list)
-                
-                if not available_transcripts:
-                    return {"error": "No transcripts available", "transcript": None, "stats": None}
-                
-                transcript = None
-                non_english = [t for t in available_transcripts if not t.language_code.startswith('en')]
-                
-                if non_english:
-                    manual = [t for t in non_english if not t.is_generated]
-                    transcript = manual[0] if manual else non_english[0]
-                else:
-                    english = [t for t in available_transcripts if t.language_code.startswith('en')]
-                    if english:
-                        manual = [t for t in english if not t.is_generated]
-                        transcript = manual[0] if manual else english[0]
-                
-                if not transcript:
-                    transcript = available_transcripts[0]
-                
-                fetched_transcript = transcript.fetch()
-                transcript_text = " ".join([snippet.text for snippet in fetched_transcript])
-                
-                if len(transcript_text.strip()) < 50:
-                    return {"error": "Transcript too short", "transcript": None, "stats": None}
-                
-                stats = self._calculate_transcript_stats(transcript_text)
-                stats['language'] = transcript.language
-                stats['language_code'] = transcript.language_code
-                stats['is_generated'] = transcript.is_generated
-                
-                return {"error": None, "transcript": transcript_text, "stats": stats}
-                    
-            except Exception as e:
-                if attempt == max_retries - 1:
-                    return {"error": f"Failed: {str(e)}", "transcript": None, "stats": None}
+        transcript_text = ""
         
-        return {"error": "Failed after retries", "transcript": None, "stats": None}
+        # 1. Attempt to get the raw transcript from YouTube
+        try:
+            ytt_api = YouTubeTranscriptApi()
+            transcript_list = ytt_api.list(video_id)
+            
+            # Try to find English, otherwise take the first available
+            try:
+                t = transcript_list.find_transcript(['en'])
+            except:
+                t = list(transcript_list)[0]
+                
+            fetched_transcript = t.fetch()
+            transcript_text = " ".join([snippet.text for snippet in fetched_transcript])
+            
+        except Exception as e:
+            logger.error(f"YouTube Transcript API failed: {str(e)}")
+            return {
+                "error": "Transcripts are disabled or unavailable for this video. Please upload the video file directly for processing.", 
+                "transcript": None, 
+                "stats": None
+            }
+
+        # 2. Use Gemini to clean the transcript and generate a 500-word authoritative summary
+        try:
+            print(f"--- Sending Transcript to Gemini for 500-word Synthesis ---")
+            model = genai.GenerativeModel("gemini-2.0-flash")
+            
+            # We use a 40,000 character cap to stay within reasonable limits while keeping depth
+            summary_prompt = f"""
+            I have extracted a raw transcript from a YouTube video. It may be messy or lack punctuation.
+            Your goal is to transform this into a comprehensive, high-quality summary of approximately 500 words.
+            
+            Focus on:
+            - The core message and main technical arguments.
+            - Specific data, facts, or statistics mentioned.
+            - Unique insights or expert perspectives provided by the creator.
+            - A logical breakdown of the information flow.
+
+            RAW TRANSCRIPT:
+            {transcript_text[:40000]}
+            """
+
+            response = model.generate_content(
+                summary_prompt,
+                generation_config=genai.types.GenerationConfig(
+                    temperature=0.2, # Low temperature for factual accuracy
+                    max_output_tokens=1500
+                )
+            )
+            
+            if response.text:
+                final_content = response.text.strip()
+                print(f"✓ Gemini Summary Created ({len(final_content.split())} words)")
+                
+                stats = self._calculate_transcript_stats(final_content)
+                stats['source_type'] = 'youtube_gemini_summary'
+                
+                return {"error": None, "transcript": final_content, "stats": stats}
+            
+        except Exception as gem_e:
+            logger.error(f"Gemini Summarization failed: {str(gem_e)}")
+            # Fallback to raw transcript if the summarization fails
+            return {"error": None, "transcript": transcript_text, "stats": self._calculate_transcript_stats(transcript_text)}
+
+        return {"error": "Unexpected processing error", "transcript": None, "stats": None}
     
     def _calculate_transcript_stats(self, transcript_text):
         if not transcript_text:

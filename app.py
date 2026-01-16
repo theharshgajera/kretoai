@@ -1907,32 +1907,56 @@ def comp_analysis():
             comp_title = comp_data["title"]
             comp_subs = int(comp_info["statistics"].get("subscriberCount", 1))
             comp_uploads = comp_info["contentDetails"]["relatedPlaylists"]["uploads"]
-            comp_thumbnail = comp_info["snippet"]["thumbnails"]["high"]["url"]  # ✅ profile picture
+            comp_thumbnail = comp_info["snippet"]["thumbnails"]["high"]["url"]  # competitor profile picture
 
-            # Fetch up to 5 recent uploads
+            # Fetch up to 20 recent uploads for duration filtering
             comp_uploads_resp = youtube.playlistItems().list(
                 part="contentDetails",
                 playlistId=comp_uploads,
-                maxResults=5
+                maxResults=20
             ).execute()
 
             comp_video_ids = [v["contentDetails"]["videoId"] for v in comp_uploads_resp.get("items", [])]
-            comp_videos = fetch_video_details(youtube, comp_video_ids)
+            all_videos = fetch_video_details(youtube, comp_video_ids)
 
-            if not comp_videos:
+            if not all_videos:
                 continue
+
+            # Categorize videos by duration
+            medium_videos = []
+            long_videos = []
+            short_videos = []
+
+            for v in all_videos:
+                duration = parse_duration(v.get("contentDetails", {}).get("duration", ""))
+
+                if duration < 60:
+                    short_videos.append(v)
+                elif duration <= 1200:
+                    medium_videos.append(v)
+                else:
+                    long_videos.append(v)
+
+            # Select 4 videos based on priority
+            selected = []
+            selected.extend(medium_videos[:4])
+
+            if len(selected) < 4:
+                selected.extend(long_videos[:4 - len(selected)])
+
+            if len(selected) < 4:
+                selected.extend(short_videos[:4 - len(selected)])
+
+            selected = selected[:4]  # ensure exactly 4
 
             # calculate avg recent views
             avg_recent_views = sum(
-                int(v["statistics"].get("viewCount", 0)) for v in comp_videos
-            ) / len(comp_videos)
+                int(v["statistics"].get("viewCount", 0)) for v in all_videos[:5]
+            ) / max(len(all_videos[:5]), 1)
 
-            # Latest 4 videos (no filtering)
-            latest_videos = comp_videos[:4]
-
-            # Prepare video data for this competitor
+            # Prepare video data
             video_data = []
-            for v in latest_videos:
+            for v in selected:
                 duration = parse_duration(v.get("contentDetails", {}).get("duration", ""))
                 views = int(v["statistics"].get("viewCount", 0))
                 multiplier = round(views / avg_recent_views, 2) if avg_recent_views > 0 else 0
@@ -1951,14 +1975,13 @@ def comp_analysis():
                     "url": f"https://www.youtube.com/watch?v={v['id']}"
                 })
 
-            # Add competitor with its videos
             competitors_data.append({
                 "id": comp_id,
                 "title": comp_title,
                 "subscriber_count": comp_subs,
                 "avg_recent_views": round(avg_recent_views, 2),
                 "frequency": comp_data.get("count", 0),
-                "thumbnail_url": comp_thumbnail,  # ✅ competitor profile picture
+                "thumbnail_url": comp_thumbnail,
                 "videos": video_data
             })
 
@@ -1969,7 +1992,7 @@ def comp_analysis():
             "success": True,
             "channel_id": channel_id,
             "channel_title": channel_title,
-            "channel_thumbnail": channel_thumbnail,  # ✅ input channel thumbnail
+            "channel_thumbnail": channel_thumbnail,
             "competitors": competitors_data
         })
 

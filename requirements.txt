@@ -16,3 +16,4 @@ PyPDF2
 python-docx
 moviepy==1.0.3
 SpeechRecognition
+anthropic

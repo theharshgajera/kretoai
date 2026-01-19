@@ -1669,6 +1669,10 @@ class TextProcessor:
         except Exception as e:
             logger.error(f"Text processing error: {str(e)}")
             return {"error": f"Processing error: {str(e)}", "text": None, "stats": None}
+
+
+
+
             
 class EnhancedScriptGenerator:
     """Script generator with Claude AI - all other processors use Gemini"""
@@ -1956,7 +1960,7 @@ class EnhancedScriptGenerator:
         Generate the strictly timed, timestamp-only script now.
         """
 
-    def _call_claude(self, prompt, max_tokens=15000, temperature=0.7):
+    def _call_claude(self, prompt, max_tokens=4096, temperature=0.7):
         """
         Call Claude API with the given prompt
         Returns the response text
@@ -2252,106 +2256,3 @@ Create a comprehensive script that is approximately 10 minutes long.
                 print(f"{'='*40}")
                 print(f"Word Count: {actual_words} words")
                 print(f"Target Duration: {target_minutes} minutes" if target_minutes else "10 minutes")
-                print(f"Estimated Duration: {actual_duration_minutes:.1f} minutes")
-                print(f"{'='*40}")
-                print(script[:500] + "..." if len(script) > 500 else script)
-                print(f"{'='*40}\n")
-                
-                return script
-            else:
-                print("Empty response from script generation.")
-                return "Error: Could not generate script - empty response"
-
-        except Exception as e:
-            logger.error(f"Error generating enhanced script: {str(e)}")
-            print(f"Error in script generation: {str(e)}")
-            return f"Error generating script: {str(e)}"
-
-    def modify_script_chat(self, current_script, style_profile, topic_insights, document_insights, user_message):
-        """Modify script with full context including documents"""
-        print("Starting script modification via chat...")
-
-        # Defensive: fallback if prompt missing
-        prompt_template = getattr(self, "chat_modification_prompt", None)
-        if not prompt_template:
-            prompt_template = """
-            Edit the script according to this user request:
-            {user_message}
-
-            Current Script:
-            {current_script}
-            """
-
-        chat_prompt = prompt_template.format(
-            current_script=current_script,
-            style_profile=style_profile,
-            topic_insights=topic_insights,
-            document_insights=document_insights,
-            user_message=user_message
-        )
-        print(f"Chat modification prompt: {len(chat_prompt)} characters")
-
-        try:
-            print("Generating modification with Gemini model...")
-            model = genai.GenerativeModel("gemini-2.0-flash")
-            response = model.generate_content(
-                chat_prompt,
-                generation_config=genai.types.GenerationConfig(
-                    temperature=0.6,
-                    max_output_tokens=3000
-                )
-            )
-
-            if response.text:
-                print(f"Modification response: {len(response.text)} characters")
-                print("\n\n" + "="*40)
-                print("MODIFIED SCRIPT RESPONSE:")
-                print("="*40)
-                print(response.text)
-                print("="*40 + "\n\n")
-                return response.text
-            else:
-                print("Empty response from modification.")
-                return "Could not modify script - empty response"
-
-        except Exception as e:
-            logger.error(f"Error modifying script: {str(e)}")
-            print(f"Error in script modification: {str(e)}")
-            return f"Error modifying script: {str(e)}"
-# Initialize processors for export
-# Initialize processors for export
-document_processor = DocumentProcessor()
-video_processor = VideoProcessor()
-script_generator = EnhancedScriptGenerator()
-instagram_processor = InstagramProcessor()
-facebook_processor = FacebookProcessor()  # ADD THIS LINE
-audio_processor = AudioProcessor()  # ADD THIS LINE
-# tiktok_processor = TikTokProcessor()
-image_processor = ImageProcessor()
-text_processor = TextProcessor()
-# Update __all__ to export new processors
-__all__ = [
-    'DocumentProcessor',
-    'VideoProcessor', 
-    'InstagramProcessor',
-    'FacebookProcessor',
-    'TikTokProcessor',  # NEW
-    'ImageProcessor',   # NEW
-    'TextProcessor',    # NEW
-    'AudioProcessor',
-    'EnhancedScriptGenerator',
-    'user_data',    
-    'UPLOAD_FOLDER',
-    'ALLOWED_EXTENSIONS',
-    'MAX_CONTENT_LENGTH',
-    'document_processor',
-    'video_processor',
-    'instagram_processor',
-    'facebook_processor',
-    # 'tiktok_processor',  # NEW
-    'image_processor',   # NEW
-    'text_processor',    # NEW
-    'audio_processor',
-    'script_generator',
-    'load_whisper_model'
-]

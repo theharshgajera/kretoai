@@ -1925,7 +1925,7 @@ class EnhancedScriptGenerator:
         **FORMAT RULES:**
         - Start with a bold title line: **[Your Creative Title Here]**
         - Follow with blank line
-        - Then use STRICTLY CONTINUOUS timestamps: [MM:SS-MM:SS] Spoken words here
+        - Then use STRICTLY CONTINUOUS timestamps: [MM:SS-MM:SS] Topic name Spoken words here
         - Timestamps MUST be sequential and continuous (e.g., [00:00-00:15], [00:15-00:30], [00:30-00:50])
         - NO section headers like "# TITLE" or "## HOOK" or "### Section" 
         - use **BOLD** and for the title and timestamps showing. but make sure title is bigger font and time stamp have smaller font than title but bigger size font from ususal body text.
@@ -1934,7 +1934,7 @@ class EnhancedScriptGenerator:
         - NO tone descriptions like "(Tone shifts, more empathetic)"
         - NO bracketed instructions like "[Production Note: ...]"
         - NO asterisk annotations like "*[Expert Insight: ...]"
-        - Each timestamp segment should be 10-20 seconds of content (25-50 words)
+        - Each timestamp segment should contain one topic for new topic use next time stamp and duration of time stamp will be measured by words in that.
         - Start at [00:00-00:XX] and end at exactly [{target_minutes}:{target_seconds_remainder:02d}]
         - EVERY timestamp must pick up EXACTLY where the previous one ended (no gaps, no overlaps)
         

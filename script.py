@@ -1671,9 +1671,10 @@ class TextProcessor:
             return {"error": f"Processing error: {str(e)}", "text": None, "stats": None}
             
 class EnhancedScriptGenerator:
-    """Script generator with Claude AI - all other processors use Gemini"""
+    """Script generator with Claude AI - Topic-based structure instead of timestamps"""
 
     def __init__(self):
+        # Keep existing analysis prompts unchanged
         self.style_analysis_prompt = """
         You are an expert YouTube content analyst. Analyze the following transcripts from the creator's personal videos to create a comprehensive style profile.
         Focus on identifying:
@@ -1840,17 +1841,18 @@ class EnhancedScriptGenerator:
         {user_message}
 
         **INSTRUCTIONS**
-        1. Keep the exact same markdown structure (# TITLE, ## HOOK, ### Section …).
+        1. Keep the exact same topic-based structure (## TITLE, ### Topic sections).
         2. Preserve the creator's authentic voice (tone, phrasing, catch-phrases).
         3. Apply the user's request **exactly** (add, remove, re-word).
         4. Do **not** add any production notes, visual cues, or tone descriptions.
-        5. Return **only** the spoken words (pure speech).
+        5. Return **only** the spoken words organized by topics (pure speech).
 
         Generate the **updated script** now.
         """
 
+        # NEW TOPIC-BASED SCRIPT TEMPLATE
         self.enhanced_script_template = """
-        You are an expert YouTube script writer creating a STRICTLY TIMED script with EXACT duration control.
+        You are an expert YouTube script writer creating a TOPIC-ORGANIZED script with natural flow.
 
         **CREATOR'S AUTHENTIC STYLE PROFILE:**
         {style_profile}
@@ -1866,41 +1868,38 @@ class EnhancedScriptGenerator:
 
         **TARGET DURATION:** {target_duration}
 
-        **CRITICAL DURATION REQUIREMENTS:**
-        {duration_instruction}
-
-        **WORD COUNT TARGET:** {word_count_target} words (STRICT: between {min_words}-{max_words} words)
+        **WORD COUNT TARGET:** {word_count_target} words (RANGE: {min_words}-{max_words} words)
 
         **SCRIPT GENERATION INSTRUCTIONS:**
 
-        1. **STRICT TIMING ENFORCEMENT (MOST IMPORTANT):**
-        - You MUST write EXACTLY {word_count_target} words (±5% tolerance allowed)
-        - Speaking pace: 150 words per minute
-        - Total duration: {target_seconds} seconds
-        - COUNT YOUR WORDS as you write and STOP at {word_count_target} words
-        - If you exceed {max_words} words, the video will be TOO LONG
-        - If you write less than {min_words} words, the video will be TOO SHORT
+        1. **TOPIC-BASED STRUCTURE (MOST IMPORTANT):**
+        - Organize content by TOPICS/SECTIONS, NOT by timestamps
+        - Each topic should flow naturally into the next
+        - Use clear section headers to organize content
+        - Write approximately {word_count_target} words total
+        - Speaking pace: 150 words per minute = {target_minutes} minutes duration
 
         2. **MAINTAINS AUTHENTIC VOICE:**
-        - Use the creator's natural speaking style, vocabulary, and personality traits identified in the style profile
+        - Use the creator's natural speaking style, vocabulary, and personality traits
         - Keep their unique catchphrases and speaking patterns
+        - Write as if the creator is speaking directly to the camera
 
         3. **INTEGRATES DOCUMENT KNOWLEDGE AS AUTHORITY:**
         - Use document insights as the core foundation for claims
-        - Weave in specific data, statistics, and expert findings to substantiate all major points
-        - Reference key concepts and methodologies from the documents to build credibility
-        - Explain complex topics using the structured knowledge from the documents
+        - Weave in specific data, statistics, and expert findings
+        - Reference key concepts and methodologies from the documents
+        - Explain complex topics using structured knowledge
 
         4. **LEVERAGES INSPIRATION INSIGHTS FOR ENGAGEMENT:**
         - Address trending discussions or common questions identified
-        - Use successful presentation techniques (like analogies or storytelling) from the analysis
+        - Use successful presentation techniques (analogies, storytelling)
         - Apply proven engagement strategies to keep the audience hooked
 
-        5. **STRUCTURE WITH PRECISE TIMING:**
-        - Hook (0-{hook_duration} seconds): Approximately {hook_words} words
-        - Introduction ({hook_duration}-{intro_end} seconds): Approximately {intro_words} words
-        - Main Content ({intro_end}-{main_end} seconds): Approximately {main_words} words
-        - Conclusion ({main_end}-{target_seconds} seconds): Approximately {conclusion_words} words
+        5. **CONTENT STRUCTURE:**
+        - **HOOK/OPENING** ({hook_words} words): Grab attention immediately with a powerful opening
+        - **INTRODUCTION** ({intro_words} words): Set context and preview what's coming
+        - **MAIN TOPICS** ({main_words} words): Break into 3-5 major topics/sections
+        - **CONCLUSION** ({conclusion_words} words): Wrap up key points and call-to-action
 
         6. **PRIORITIZES DEPTH & EXPERT KNOWLEDGE:**
         - Go beyond the obvious - explain the 'why' and 'how'
@@ -1912,50 +1911,66 @@ class EnhancedScriptGenerator:
         - Use the creator's proven engagement techniques
         - Ask rhetorical and engaging questions
         - Apply storytelling methods that make complex data memorable
+        - Use transitions that connect topics smoothly
 
         8. **HOOK REQUIREMENTS (CRITICAL):**
-        - First timestamp [00:00-00:XX] must START with immediate impact
+        - Opening section must START with immediate impact
         - NO greetings like "Hey everyone", "Hi there", "What's up", etc.
         - Open with: shocking statement, intriguing question, bold claim, or surprising fact
-        - Hook must grab attention in first 3 seconds
-        - Examples of good hooks: "Netflix in 2026 will be overflowing...", "Tired of endless scrolling?", "What if I told you..."
+        - Hook must grab attention in first few lines
+        - Examples: "क्या आप जानते हैं...", "आज मैं आपको बताऊंगा...", "यह सच है कि..."
 
-        **CRITICAL OUTPUT FORMAT - TIMESTAMPS AND SPEECH ONLY:**
+        **CRITICAL OUTPUT FORMAT - TOPIC-BASED STRUCTURE:**
 
         **FORMAT RULES:**
-        - Start with a bold title line: **[Your Creative Title Here]**
+        - Start with: ## [Your Creative Title Here] (large heading)
         - Follow with blank line
-        - Then use STRICTLY CONTINUOUS timestamps: [MM:SS-MM:SS] Spoken words here
-        - Timestamps MUST be sequential and continuous (e.g., [00:00-00:15], [00:15-00:30], [00:30-00:50])
-        - NO section headers like "# TITLE" or "## HOOK" or "### Section" 
-        - use **BOLD** and for the title and timestamps showing. but make sure title is bigger font and time stamp have smaller font than title but bigger size font from ususal body text.
-        - title should be in ## size heading and all timestamps should be in ### size heading.
+        - Then organize by topics using ### for main sections
+        - Use **bold** for emphasis on key points
+        - NO timestamps like [MM:SS-MM:SS]
         - NO production notes, NO visual directions, NO camera instructions
         - NO tone descriptions like "(Tone shifts, more empathetic)"
         - NO bracketed instructions like "[Production Note: ...]"
-        - NO asterisk annotations like "*[Expert Insight: ...]"
-        - Each timestamp segment should be 10-20 seconds of content (25-50 words)
-        - Start at [00:00-00:XX] and end at exactly [{target_minutes}:{target_seconds_remainder:02d}]
-        - EVERY timestamp must pick up EXACTLY where the previous one ended (no gaps, no overlaps)
+        - Pure spoken content organized by topics
         
-      **YOUR TASK:**
-        - Start with: **[Creative Title]** (bold, engaging title on its own line)
-        - Follow immediately with the hook timestamp starting at [00:00-00:XX]
-        - DO NOT start with greetings like "Hey everyone" or "Hi there" - jump straight into the hook
-        - Generate a script that is EXACTLY {word_count_target} words (between {min_words}-{max_words} words)
-        - Use CONTINUOUS timestamps: [00:00-00:15], [00:15-00:32], [00:32-00:50], etc.
-        - CRITICAL: Each new timestamp MUST start where the previous ended (maintain continuity)
-        - End at EXACTLY [{target_minutes}:{target_seconds_remainder:02d}]
-        - You may use **bold** for title and key emphasis words
-        - The first timestamp [00:00-00:XX] should immediately hook viewers with an intriguing statement or question
-        - NO casual greetings - start with impact and intrigue
-        - Count your words carefully and stop when you reach the target
-        - Write as if the creator is speaking directly to the camera
-        - Make it engaging, informative, and true to the creator's style
+        **EXAMPLE STRUCTURE:**
 
-        Generate the strictly timed, timestamp-only script now.
+        ## [Creative Title]
+
+        ### हुक/शुरुआत (Hook/Opening)
+        [Powerful opening that grabs attention immediately - {hook_words} words]
+
+        ### परिचय (Introduction)
+        [Set context and preview the main topics - {intro_words} words]
+
+        ### विषय 1: [First Major Topic]
+        [Detailed explanation of first main topic with examples and insights]
+
+        ### विषय 2: [Second Major Topic]
+        [Detailed explanation of second main topic with examples and insights]
+
+        ### विषय 3: [Third Major Topic]
+        [Detailed explanation of third main topic with examples and insights]
+
+        [Continue with more topics as needed...]
+
+        ### निष्कर्ष (Conclusion)
+        [Wrap up key points, main takeaways, and call-to-action - {conclusion_words} words]
+
+        **YOUR TASK:**
+        - Create a topic-organized script with clear section headers
+        - Write approximately {word_count_target} words (range: {min_words}-{max_words})
+        - NO timestamps - organize by topics/themes instead
+        - Start with a powerful hook (NO greetings)
+        - Break content into 3-5 main topic sections
+        - End with a strong conclusion
+        - Use ## for title, ### for section headers
+        - Use **bold** for key emphasis
+        - Write in the creator's authentic voice
+        - Make it engaging, informative, and well-structured
+
+        Generate the topic-organized script now.
         """
-
     def _call_claude(self, prompt, max_tokens=15000, temperature=0.7):
         """
         Call Claude API with the given prompt

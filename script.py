@@ -1923,21 +1923,32 @@ class EnhancedScriptGenerator:
         **CRITICAL OUTPUT FORMAT - TOPIC-BASED STRUCTURE:**
 
         **FORMAT RULES:**
-- The script must be written in clean, properly structured Markdown.
-- Start with: ## [Your Creative Title Here] (as a large heading)
+- Use clean Markdown structure.
+- Start with: \n## [Your Creative Title Here]
+- After the title, insert one blank line.
+- Every main section must start with: \n### [Section Title]
+- ALWAYS insert a newline before each heading (##, ###, ####).
+- Headings must always be on their own line, never inline with text.
 - Add one blank line after every heading.
-- Organize the content using ### for main sections.
-- If needed, use #### for subsections (optional).
-- Use **bold** to highlight key points or important statements.
-- Do NOT include timestamps like [00:12-00:30].
-- Do NOT include production notes, visual directions, or camera instructions.
-- Do NOT include tone descriptions like "(emotion rises)".
-- Do NOT include any bracketed instructions like [edit this part], [note], etc.
-- The content should be pure spoken narrative, structured by topics.
-- for any heading (## or ### or #) make sure to use \n before it compulsary.
-- Always end headings and section titles with a newline so Markdown renders correctly.
-- Make sure every section has one blank line above and below it.
-- Do NOT mix headings with inline text (each heading must be on its own line).
+- Use **bold** for emphasis.
+- No timestamps, no production notes, no bracketed instructions.
+- Pure spoken content only.
+- Do not merge consecutive headings or attach text to the same line.
+- ALWAYS place headings on a separate line.
+- ALWAYS insert a newline before every heading.
+  Example:
+  \n## Title
+  \n### Section
+- NEVER place text on the same line as a heading.
+- Headings must always appear in this form:
+
+\n## [Title]
+
+\n### [Section Title]
+
+- Never write headings inline like "## Title ### Next".
+- After each heading, also include one blank line for proper Markdown rendering.
+
 
 **STRUCTURE GUIDELINES (Flexible):**
 - Start with a creative title using "##".

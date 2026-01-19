@@ -1927,11 +1927,12 @@ class EnhancedScriptGenerator:
         - Follow with blank line
         - Then organize by topics using ### for main sections
         - Use **bold** for emphasis on key points
-        - NO timestamps like [MM:SS-MM:SS]
+        - no timestamps like [MM:SS-MM:SS]
         - NO production notes, NO visual directions, NO camera instructions
         - NO tone descriptions like "(Tone shifts, more empathetic)"
         - NO bracketed instructions like "[Production Note: ...]"
         - Pure spoken content organized by topics
+        - Make sure to use \n while ending headings or topics so it can be formatted propely while showing in markdown reader
         
         **EXAMPLE STRUCTURE:**
 

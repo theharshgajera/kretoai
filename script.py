@@ -1934,6 +1934,7 @@ class EnhancedScriptGenerator:
 - Do NOT include tone descriptions like "(emotion rises)".
 - Do NOT include any bracketed instructions like [edit this part], [note], etc.
 - The content should be pure spoken narrative, structured by topics.
+- for any heading (## or ### or #) make sure to use \n before it compulsary.
 - Always end headings and section titles with a newline so Markdown renders correctly.
 - Make sure every section has one blank line above and below it.
 - Do NOT mix headings with inline text (each heading must be on its own line).

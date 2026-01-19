@@ -1934,6 +1934,17 @@ class EnhancedScriptGenerator:
 - No timestamps, no production notes, no bracketed instructions.
 - Pure spoken content only.
 - Do not merge consecutive headings or attach text to the same line.
+
+
+
+**STRUCTURE GUIDELINES (Flexible):**
+- Start with a creative title using "##".
+- Follow with a Hook section using "###".
+- Then an Introduction section using "###".
+- Then multiple main topics, each using "###".
+- End with a Conclusion using "###".
+- You may add as many topic sections as needed.
+- Examples should be generic and not contain Hindi unless the user requests Hindi content.
 - ALWAYS place headings on a separate line.
 - ALWAYS insert a newline before every heading.
   Example:
@@ -1948,17 +1959,6 @@ class EnhancedScriptGenerator:
 
 - Never write headings inline like "## Title ### Next".
 - After each heading, also include one blank line for proper Markdown rendering.
-
-
-**STRUCTURE GUIDELINES (Flexible):**
-- Start with a creative title using "##".
-- Follow with a Hook section using "###".
-- Then an Introduction section using "###".
-- Then multiple main topics, each using "###".
-- End with a Conclusion using "###".
-- You may add as many topic sections as needed.
-- Examples should be generic and not contain Hindi unless the user requests Hindi content.
-
 **EXAMPLE OUTLINE (NOT STRICT — JUST TO SHOW FORMAT):**
 
         **YOUR TASK:**

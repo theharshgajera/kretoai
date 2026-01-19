@@ -1923,40 +1923,31 @@ class EnhancedScriptGenerator:
         **CRITICAL OUTPUT FORMAT - TOPIC-BASED STRUCTURE:**
 
         **FORMAT RULES:**
-        - Start with: ## [Your Creative Title Here] (large heading)
-        - Follow with blank line
-        - Then organize by topics using ### for main sections
-        - Use **bold** for emphasis on key points
-        - no timestamps like [MM:SS-MM:SS]
-        - NO production notes, NO visual directions, NO camera instructions
-        - NO tone descriptions like "(Tone shifts, more empathetic)"
-        - NO bracketed instructions like "[Production Note: ...]"
-        - Pure spoken content organized by topics
-        - Make sure to use \n while ending headings or topics so it can be formatted propely while showing in markdown reader
-        
-        **EXAMPLE STRUCTURE:**
+- The script must be written in clean, properly structured Markdown.
+- Start with: ## [Your Creative Title Here] (as a large heading)
+- Add one blank line after every heading.
+- Organize the content using ### for main sections.
+- If needed, use #### for subsections (optional).
+- Use **bold** to highlight key points or important statements.
+- Do NOT include timestamps like [00:12-00:30].
+- Do NOT include production notes, visual directions, or camera instructions.
+- Do NOT include tone descriptions like "(emotion rises)".
+- Do NOT include any bracketed instructions like [edit this part], [note], etc.
+- The content should be pure spoken narrative, structured by topics.
+- Always end headings and section titles with a newline so Markdown renders correctly.
+- Make sure every section has one blank line above and below it.
+- Do NOT mix headings with inline text (each heading must be on its own line).
 
-        ## [Creative Title]
+**STRUCTURE GUIDELINES (Flexible):**
+- Start with a creative title using "##".
+- Follow with a Hook section using "###".
+- Then an Introduction section using "###".
+- Then multiple main topics, each using "###".
+- End with a Conclusion using "###".
+- You may add as many topic sections as needed.
+- Examples should be generic and not contain Hindi unless the user requests Hindi content.
 
-        ### हुक/शुरुआत (Hook/Opening)
-        [Powerful opening that grabs attention immediately - {hook_words} words]
-
-        ### परिचय (Introduction)
-        [Set context and preview the main topics - {intro_words} words]
-
-        ### विषय 1: [First Major Topic]
-        [Detailed explanation of first main topic with examples and insights]
-
-        ### विषय 2: [Second Major Topic]
-        [Detailed explanation of second main topic with examples and insights]
-
-        ### विषय 3: [Third Major Topic]
-        [Detailed explanation of third main topic with examples and insights]
-
-        [Continue with more topics as needed...]
-
-        ### निष्कर्ष (Conclusion)
-        [Wrap up key points, main takeaways, and call-to-action - {conclusion_words} words]
+**EXAMPLE OUTLINE (NOT STRICT — JUST TO SHOW FORMAT):**
 
         **YOUR TASK:**
         - Create a topic-organized script with clear section headers

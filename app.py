@@ -1837,7 +1837,7 @@ def comp_analysis():
         videos_resp = youtube.playlistItems().list(
             part="contentDetails,snippet",
             playlistId=uploads_playlist,
-            maxResults=20
+            maxResults=10
         ).execute()
 
         candidate_videos = []

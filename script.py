@@ -1671,310 +1671,160 @@ class TextProcessor:
             return {"error": f"Processing error: {str(e)}", "text": None, "stats": None}
             
 class EnhancedScriptGenerator:
-    """Script generator with Claude AI - all other processors use Gemini"""
+    """Script generator with Claude AI - Fully optimized with precise prompts"""
 
     def __init__(self):
-        self.style_analysis_prompt = """
-        You are an expert YouTube content analyst. Analyze the following transcripts from the creator's personal videos to create a comprehensive style profile.
-        Focus on identifying:
-        **VOICE & TONE CHARACTERISTICS:**
-        - Speaking style (conversational, formal, energetic, calm, etc.)
-        - Emotional tone and energy levels
-        - Use of humor, sarcasm, or specific personality traits
-        - Level of enthusiasm and passion
-        - Pacing and rhythm patterns
-       
-        **LANGUAGE PATTERNS:**
-        - Vocabulary complexity and word choices
-        - Sentence structure preferences (short/long, simple/complex)
-        - Catchphrases, repeated expressions, or signature sayings
-        - Use of technical jargon vs. simple explanations
-        - Storytelling approach and narrative style
-        - Transition phrases and connection words
-       
-        **CONTENT STRUCTURE & FLOW:**
-        - How they introduce topics and hook viewers
-        - Transition techniques between sections
-        - How they build up to main points
-        - Conclusion and call-to-action styles
-        - Use of examples, analogies, and explanations
-        - Information presentation patterns
-       
-        **ENGAGEMENT TECHNIQUES:**
-        - How they ask questions to audience
-        - Interactive elements and audience engagement
-        - Use of personal stories and experiences
-        - How they handle complex topics
-        - Teaching and explanation methodology
-        - Retention strategies used
-       
-        **UNIQUE CREATOR CHARACTERISTICS:**
-        - What makes this creator distinctive
-        - Their unique perspective or angle
-        - Personal brand elements
-        - Values and beliefs that come through
-        - Specific expertise areas and how they showcase them
-        - Content themes and recurring topics
-        **KEY INSIGHTS FOR SCRIPT GENERATION:**
-        - Most effective hooks and openings used
-        - Common content structures that work well
-        - Signature explanations or teaching methods
-        - Audience connection techniques
-        - Call-to-action patterns
-        Provide a detailed, actionable style profile that captures the creator's authentic voice for script generation.
-        **Creator's Personal Video Transcripts:**
-        """
-
-        self.inspiration_analysis_prompt = """
-        You are an expert content strategist and topic analyst. Analyze these inspiration video transcripts to extract valuable insights and identify key topics with detailed breakdowns.
-        Extract and organize:
-        **CORE TOPICS & DETAILED INSIGHTS:**
-        - Main subject matters with specific subtopics
-        - Key points, arguments, and the 'why' behind them
-        - Data, statistics, and factual claims to support arguments
-        - Nuanced perspectives and expert opinions
-        - Trending discussions and current debates
-        - Evergreen vs. timely content themes
-       
-        **CONTENT IDEAS & CREATIVE ANGLES:**
-        - Unique perspectives and fresh takes on topics
-        - Creative approaches to common subjects
-        - Unexplored angles or missing viewpoints
-        - Potential spin-offs and related topics
-        - Cross-topic connection opportunities
-        - Controversial or debate-worthy points
-       
-        **STORYTELLING & PRESENTATION TECHNIQUES:**
-        - Narrative structures and story arcs used
-        - How complex topics are simplified and explained from first principles
-        - Types of examples and case studies used
-        - Visual or conceptual metaphors
-        - Emotional appeals and connection methods
-        - Pacing and information delivery patterns
-       
-        **VALUABLE INSIGHTS & ACTIONABLE INFORMATION:**
-        - Specific tips, tricks, and how-to steps
-        - Common problems and detailed solution approaches
-        - Industry best practices mentioned
-        - Tools, resources, and recommendations
-        - Success stories and failure case studies
-        - Expert advice and professional insights
-       
-        **TOPIC-SPECIFIC MAIN POINTS BREAKDOWN:**
-        For each major topic discussed, provide:
-        - Core concept explanation
-        - Key supporting arguments
-        - Practical applications mentioned
-        - Common misconceptions addressed
-        - Advanced concepts introduced
-        - Related subtopics worth exploring
-       
-        **CONTENT GAPS & OPPORTUNITIES:**
-        - Topics that could be expanded upon
-        - Alternative viewpoints not covered
-        - Beginner vs. advanced treatment opportunities
-        - Updated information or fresh perspectives needed
-        - Underexplored subtopics with potential
-        Provide a comprehensive analysis that captures both the content insights and the presentation methods for creating informed, original content.
-        **Inspiration Video Transcripts:**
-        """
-
-        self.document_analysis_prompt = """
-        You are an expert content analyst specializing in document comprehension and insight extraction. Analyze the following document content to extract key insights, main points, and actionable information that can inform YouTube script generation.
-        Focus on identifying:
-        **CORE CONCEPTS & MAIN THEMES:**
-        - Primary topics and subject areas covered
-        - The underlying principles or 'first principles' behind the main themes
-        - Central arguments, thesis points, and their supporting evidence
-        - Specific data, statistics, and verifiable facts
-        - Expert opinions and authoritative insights
-       
-        **ACTIONABLE INFORMATION:**
-        - Step-by-step processes and procedures
-        - Specific tips, strategies, and recommendations
-        - Tools, resources, and methodologies mentioned
-        - Best practices and proven approaches
-        - Case studies and real-world examples
-       
-        **KNOWLEDGE STRUCTURE:**
-        - Logical flow of information from basic to advanced
-        - How concepts build upon each other
-        - Prerequisites and foundational knowledge needed
-        - Advanced concepts and expert-level insights
-        - Practical applications and implementations
-       
-        **CONTENT OPPORTUNITIES FOR VIDEO SCRIPTS:**
-        - Main points that could become video topics
-        - Complex concepts that need simplification with analogies
-        - Practical demonstrations or tutorials possible
-        - Controversial or debate-worthy points
-        - Gaps that could be filled with additional research
-       
-        **AUDIENCE VALUE PROPOSITIONS:**
-        - What viewers would learn or gain on a deep level
-        - Problems this content helps solve comprehensively
-        - Skills or knowledge they would acquire
-        - Practical benefits and outcomes
-        - Target audience level (beginner/intermediate/advanced)
-        Extract the most valuable and in-depth insights that could inform comprehensive, educational YouTube content creation.
-        **Document Content:**
-        """
-
-        self.chat_modification_prompt = """
-        You are an expert YouTube script editor.  
-        You have the **full original script**, the **creator's style profile**, **topic insights**, and **document insights**.
-
-        **CURRENT SCRIPT:**
-        {current_script}
-
-        **CREATOR STYLE PROFILE:**
-        {style_profile}
-
-        **TOPIC INSIGHTS:**
-        {topic_insights}
-
-        **DOCUMENT INSIGHTS:**
-        {document_insights}
-
-        **USER REQUEST:**
-        {user_message}
-
-        **INSTRUCTIONS**
-        1. Keep the exact same markdown structure (# TITLE, ## HOOK, ### Section …).
-        2. Preserve the creator's authentic voice (tone, phrasing, catch-phrases).
-        3. Apply the user's request **exactly** (add, remove, re-word).
-        4. Do **not** add any production notes, visual cues, or tone descriptions.
-        5. Return **only** the spoken words (pure speech).
-
-        Generate the **updated script** now.
-        """
-
-        self.enhanced_script_template = """
-        You are an expert YouTube script writer creating a STRICTLY TIMED script with EXACT duration control.
-
-        **CREATOR'S AUTHENTIC STYLE PROFILE:**
-        {style_profile}
-
-        **TOPIC INSIGHTS FROM INSPIRATION CONTENT:**
-        {inspiration_summary}
-
-        **DOCUMENT KNOWLEDGE BASE:**
-        {document_insights}
-
-        **USER'S SPECIFIC REQUEST:**
-        {user_prompt}
-
-        **TARGET DURATION:** {target_duration}
-
-        **CRITICAL DURATION REQUIREMENTS:**
-        {duration_instruction}
-
-        **WORD COUNT TARGET:** {word_count_target} words (STRICT: between {min_words}-{max_words} words)
-
-        **SCRIPT GENERATION INSTRUCTIONS:**
-
-        1. **STRICT TIMING ENFORCEMENT (MOST IMPORTANT):**
-        - You MUST write EXACTLY {word_count_target} words (±5% tolerance allowed)
-        - Speaking pace: 150 words per minute
-        - Total duration: {target_seconds} seconds
-        - COUNT YOUR WORDS as you write and STOP at {word_count_target} words
-        - If you exceed {max_words} words, the video will be TOO LONG
-        - If you write less than {min_words} words, the video will be TOO SHORT
-
-        2. **MAINTAINS AUTHENTIC VOICE:**
-        - Use the creator's natural speaking style, vocabulary, and personality traits identified in the style profile
-        - Keep their unique catchphrases and speaking patterns
-
-        3. **INTEGRATES DOCUMENT KNOWLEDGE AS AUTHORITY:**
-        - Use document insights as the core foundation for claims
-        - Weave in specific data, statistics, and expert findings to substantiate all major points
-        - Reference key concepts and methodologies from the documents to build credibility
-        - Explain complex topics using the structured knowledge from the documents
-
-        4. **LEVERAGES INSPIRATION INSIGHTS FOR ENGAGEMENT:**
-        - Address trending discussions or common questions identified
-        - Use successful presentation techniques (like analogies or storytelling) from the analysis
-        - Apply proven engagement strategies to keep the audience hooked
-
-        5. **STRUCTURE WITH PRECISE TIMING:**
-        - Hook (0-{hook_duration} seconds): Approximately {hook_words} words
-        - Introduction ({hook_duration}-{intro_end} seconds): Approximately {intro_words} words
-        - Main Content ({intro_end}-{main_end} seconds): Approximately {main_words} words
-        - Conclusion ({main_end}-{target_seconds} seconds): Approximately {conclusion_words} words
-
-        6. **PRIORITIZES DEPTH & EXPERT KNOWLEDGE:**
-        - Go beyond the obvious - explain the 'why' and 'how'
-        - Address nuance and misconceptions
-        - Build a learning path from foundational to complex concepts
-        - Provide actionable value in every section
-                
-        7. **MAINTAINS ENGAGEMENT:**
-        - Use the creator's proven engagement techniques
-        - Ask rhetorical and engaging questions
-        - Apply storytelling methods that make complex data memorable
-
-        8. **HOOK REQUIREMENTS (CRITICAL):**
-        - First timestamp [00:00-00:XX] must START with immediate impact
-        - NO greetings like "Hey everyone", "Hi there", "What's up", etc.
-        - Open with: shocking statement, intriguing question, bold claim, or surprising fact
-        - Hook must grab attention in first 3 seconds
-        - Examples of good hooks: "Netflix in 2026 will be overflowing...", "Tired of endless scrolling?", "What if I told you..."
-
-        **CRITICAL OUTPUT FORMAT - TIMESTAMPS AND SPEECH ONLY:**
-
-        **FORMAT RULES:**
-        - Start with a bold title line: **[Your Creative Title Here]**
-        - Follow with blank line
-        - Then use STRICTLY CONTINUOUS timestamps: [MM:SS-MM:SS] Topic name Spoken words here
-        - Timestamps MUST be sequential and continuous (e.g., [00:00-00:15], [00:15-00:30], [00:30-00:50])
-        - NO section headers like "# TITLE" or "## HOOK" or "### Section" 
-        - use **BOLD** and for the title and timestamps showing. but make sure title is bigger font and time stamp have smaller font than title but bigger size font from ususal body text.
-        - title should be in ## size heading and all timestamps should be in ### size heading.
-        - NO production notes, NO visual directions, NO camera instructions
-        - NO tone descriptions like "(Tone shifts, more empathetic)"
-        - NO bracketed instructions like "[Production Note: ...]"
-        - NO asterisk annotations like "*[Expert Insight: ...]"
-        - Each timestamp segment should contain one topic for new topic use next time stamp and duration of time stamp will be measured by words in that.
-        - Start at [00:00-00:XX] and end at exactly [{target_minutes}:{target_seconds_remainder:02d}]
-        - EVERY timestamp must pick up EXACTLY where the previous one ended (no gaps, no overlaps)
+        # ========================================
+        # OPTIMIZED PROMPTS - 60% shorter, more precise
+        # ========================================
         
-      **YOUR TASK:**
-        - Start with: **[Creative Title]** (bold, engaging title on its own line)
-        - Follow immediately with the hook timestamp starting at [00:00-00:XX]
-        - DO NOT start with greetings like "Hey everyone" or "Hi there" - jump straight into the hook
-        - Generate a script that is EXACTLY {word_count_target} words (between {min_words}-{max_words} words)
-        - Use CONTINUOUS timestamps: [00:00-00:15], [00:15-00:32], [00:32-00:50], etc.
-        - CRITICAL: Each new timestamp MUST start where the previous ended (maintain continuity)
-        - End at EXACTLY [{target_minutes}:{target_seconds_remainder:02d}]
-        - You may use **bold** for title and key emphasis words
-        - The first timestamp [00:00-00:XX] should immediately hook viewers with an intriguing statement or question
-        - NO casual greetings - start with impact and intrigue
-        - Count your words carefully and stop when you reach the target
-        - Write as if the creator is speaking directly to the camera
-        - Make it engaging, informative, and true to the creator's style
+        self.style_analysis_prompt = """Analyze these video transcripts to create a concise style profile for script generation.
 
-        Generate the strictly timed, timestamp-only script now.
-        """
+Extract only:
+1. **Speaking Style**: Tone (formal/casual/energetic), pacing, personality traits
+2. **Language Patterns**: Vocabulary level, sentence structure, catchphrases, technical vs simple language
+3. **Structure**: How they open videos, transition between points, conclude, use examples
+4. **Unique Traits**: What makes this creator distinctive, signature phrases
 
+Be specific and actionable. Avoid generic descriptions.
+
+**Transcripts:**
+"""
+
+        self.inspiration_analysis_prompt = """Analyze these videos to extract key insights for content creation.
+
+Extract:
+1. **Core Topics**: Main subjects with specific subtopics and key data/statistics
+2. **Unique Angles**: Fresh perspectives, unexplored viewpoints, controversial points
+3. **Presentation Techniques**: How complex topics are explained, types of examples used
+4. **Actionable Information**: Specific tips, solutions to problems, tools/resources mentioned
+
+Focus on insights that can directly inform new content.
+
+**Transcripts:**
+"""
+
+        self.document_analysis_prompt = """Extract key knowledge from these documents for YouTube script creation.
+
+Extract:
+1. **Core Concepts**: Main themes with supporting evidence and data
+2. **Actionable Information**: Step-by-step processes, specific strategies, tools
+3. **Knowledge Structure**: How concepts build from basic to advanced
+4. **Content Opportunities**: Topics for videos, concepts needing simplification
+
+Focus on practical, usable insights.
+
+**Documents:**
+"""
+
+        self.chat_modification_prompt = """Modify this YouTube script based on the user's request. Keep the creator's voice and timestamp structure.
+
+**CURRENT SCRIPT:**
+{current_script}
+
+**STYLE GUIDE:**
+{style_profile}
+
+**USER REQUEST:**
+{user_message}
+
+**RULES:**
+- Keep timestamp format: **### [MM:SS-MM:SS]** spoken content
+- Maintain creator's tone and phrasing
+- No production notes or visual directions
+- Apply the user's changes precisely
+- Keep word count similar to original
+
+Return the updated script only.
+"""
+
+        self.enhanced_script_template = """Create a YouTube script with STRICT timing and timestamp format.
+
+**CREATOR VOICE:**
+{style_profile}
+
+**TOPIC KNOWLEDGE:**
+{inspiration_summary}
+
+**REFERENCE MATERIAL:**
+{document_insights}
+
+**USER REQUEST:**
+{user_prompt}
+
+**TIMING REQUIREMENTS:**
+- Target: {target_minutes} minutes ({target_seconds} seconds)
+- Word count: {word_count_target} words (range: {min_words}-{max_words})
+- Speaking pace: 150 words/minute
+- COUNT YOUR WORDS and stop at {word_count_target}
+
+**STRUCTURE TIMING:**
+- Hook: [00:00-00:{hook_duration:02d}] ({hook_words} words)
+- Intro: [00:{hook_duration:02d}-00:{intro_end:02d}] ({intro_words} words)  
+- Main: [00:{intro_end:02d}-{main_minutes:02d}:{main_seconds:02d}] ({main_words} words)
+- Conclusion: [{main_minutes:02d}:{main_seconds:02d}-{target_minutes:02d}:{target_seconds_remainder:02d}] ({conclusion_words} words)
+
+**FORMAT RULES:**
+1. Start with: **## [Your Title]**
+2. Immediately follow with hook: **### [00:00-00:XX] Hook, topic name or outrow** Content starts here...
+3. NO greetings ("Hey everyone") - start with impact
+4. Use continuous timestamps: [00:00-00:15], [00:15-00:32], [00:32-00:50]...
+5. Each timestamp = 10-20 seconds (25-50 words)
+6. End at [{target_minutes:02d}:{target_seconds_remainder:02d}]
+7. NO production notes, NO visual directions, NO tone descriptions
+8. Use **bold** only for title (## heading) and timestamps (### heading)
+9. Make sure to use Hook, Outrow or if topic then topic name beside timestamp its compulsary.
+
+**CONTENT RULES:**
+1. Use creator's natural voice from style profile
+2. Integrate document knowledge as authority
+3. Use inspiration insights for engagement
+4. Explain 'why' and 'how', not just 'what'
+5. Make every section valuable
+
+**OUTPUT FORMAT EXAMPLE:**
+```
+## Your Engaging Title Here
+
+### [00:00-xx:xx] Hook
+There will be starting hook of video in this section
+
+### [xx:xx-yy:yy] Introduction
+Continue building curiosity. Explain what viewers will learn and why it matters to them personally.
+
+### [yy:yy-zz:zz] Topic name
+Transition into first main point. Use creator's natural transitions and speaking style.
+
+[Continue with continuous timestamps until end ]
+
+### [{target_minutes:02d}:{target_seconds_remainder:02d}] Outrow
+Final thought and call to action in creator's style.
+```
+
+Generate the script now. Count words carefully.
+"""
+
+    # ========================================
+    # CLAUDE API CALLER
+    # ========================================
+    
     def _call_claude(self, prompt, max_tokens=15000, temperature=0.7):
         """
         Call Claude API with the given prompt
         Returns the response text
         """
         try:
-            print(f"Calling Claude API (max_tokens={max_tokens}, temperature={temperature})...")
+            print(f"📡 Calling Claude API (max_tokens={max_tokens}, temperature={temperature})...")
             
             message = anthropic_client.messages.create(
-                model="claude-sonnet-4-20250514",  # Using latest Claude Sonnet
+                model="claude-sonnet-4-20250514",
                 max_tokens=max_tokens,
                 temperature=temperature,
-                messages=[
-                    {"role": "user", "content": prompt}
-                ]
+                messages=[{"role": "user", "content": prompt}]
             )
             
             response_text = message.content[0].text
-            print(f"✓ Claude response received: {len(response_text)} characters")
+            print(f"✓ Claude response: {len(response_text)} characters")
             
             return response_text
             
@@ -1983,151 +1833,157 @@ class EnhancedScriptGenerator:
             print(f"❌ Claude API error: {str(e)}")
             raise
 
+    # ========================================
+    # ANALYSIS METHODS
+    # ========================================
+
     def analyze_creator_style(self, personal_transcripts):
-        """Analyze creator style from personal videos using Claude"""
-        print("Starting creator style analysis with Claude...")
+        """Analyze creator style from personal videos using Claude - OPTIMIZED"""
+        print("\n" + "="*60)
+        print("ANALYZING CREATOR STYLE")
+        print("="*60)
+        
         combined_transcripts = "\n\n---VIDEO SEPARATOR---\n\n".join(personal_transcripts)
-
-        max_chars = 50000
+        
+        # Smart truncation - keep beginning and end
+        max_chars = 40000
         if len(combined_transcripts) > max_chars:
-            print(f"Truncating combined transcripts from {len(combined_transcripts)} to {max_chars} characters.")
-            chunk_size = max_chars // 3
-            start_chunk = combined_transcripts[:chunk_size]
-            middle_start = len(combined_transcripts) // 2 - chunk_size // 2
-            middle_chunk = combined_transcripts[middle_start:middle_start + chunk_size]
-            end_chunk = combined_transcripts[-chunk_size:]
-            combined_transcripts = f"{start_chunk}\n\n[...CONTENT CONTINUES...]\n\n{middle_chunk}\n\n[...CONTENT CONTINUES...]\n\n{end_chunk}"
-
+            print(f"⚠️ Truncating transcripts from {len(combined_transcripts):,} to {max_chars:,} chars")
+            chunk_size = 13000
+            combined_transcripts = (
+                f"{combined_transcripts[:chunk_size]}\n\n"
+                f"[...MIDDLE CONTENT OMITTED FOR BREVITY...]\n\n"
+                f"{combined_transcripts[-chunk_size:]}"
+            )
+        
         try:
             full_prompt = self.style_analysis_prompt + combined_transcripts
             response_text = self._call_claude(
                 prompt=full_prompt,
-                max_tokens=3000,
+                max_tokens=2000,
                 temperature=0.1
             )
-
+            
             if response_text:
-                print(f"Style analysis completed: {len(response_text)} characters")
-                print("\n\n" + "="*40)
-                print("CREATOR STYLE PROFILE (via Claude):")
-                print("="*40)
-                print(response_text)
-                print("="*40 + "\n\n")
+                print(f"✓ Style analysis complete: {len(response_text)} characters")
+                print(f"✓ Preview: {response_text[:200]}...")
+                print("="*60 + "\n")
                 return response_text
             else:
-                print("Empty response from style analysis.")
+                print("❌ Empty response from style analysis")
                 return "Could not analyze creator style - empty response"
-
+                
         except Exception as e:
             logger.error(f"Error analyzing creator style: {str(e)}")
-            print(f"Error in style analysis: {str(e)}")
+            print(f"❌ Style analysis error: {str(e)}")
             return f"Error analyzing creator style: {str(e)}"
 
     def analyze_inspiration_content(self, inspiration_transcripts):
-        """Analyze inspiration content for topic insights using Claude"""
-        print("Starting inspiration content analysis with Claude...")
+        """Analyze inspiration content for topic insights using Claude - OPTIMIZED"""
+        print("\n" + "="*60)
+        print("ANALYZING INSPIRATION CONTENT")
+        print("="*60)
+        
         combined_transcripts = "\n\n---VIDEO SEPARATOR---\n\n".join(inspiration_transcripts)
-
-        max_chars = 50000
+        
+        # Smart truncation
+        max_chars = 40000
         if len(combined_transcripts) > max_chars:
-            print(f"Truncating inspiration transcripts from {len(combined_transcripts)} to {max_chars} characters.")
-            chunk_size = max_chars // len(inspiration_transcripts) if len(inspiration_transcripts) > 1 else max_chars
-            sampled_transcripts = []
-            for transcript in inspiration_transcripts:
-                if len(transcript) > chunk_size:
-                    half_chunk = chunk_size // 2
-                    sampled = transcript[:half_chunk] + "\n[...CONTENT CONTINUES...]\n" + transcript[-half_chunk:]
-                    sampled_transcripts.append(sampled)
-                else:
-                    sampled_transcripts.append(transcript)
-            combined_transcripts = "\n\n---VIDEO SEPARATOR---\n\n".join(sampled_transcripts)
-
+            print(f"⚠️ Truncating transcripts from {len(combined_transcripts):,} to {max_chars:,} chars")
+            chunk_size = 13000
+            combined_transcripts = (
+                f"{combined_transcripts[:chunk_size]}\n\n"
+                f"[...MIDDLE CONTENT OMITTED FOR BREVITY...]\n\n"
+                f"{combined_transcripts[-chunk_size:]}"
+            )
+        
         try:
             full_prompt = self.inspiration_analysis_prompt + combined_transcripts
             response_text = self._call_claude(
                 prompt=full_prompt,
-                max_tokens=3000,
+                max_tokens=2000,
                 temperature=0.2
             )
-
+            
             if response_text:
-                print(f"Inspiration analysis completed: {len(response_text)} characters")
-                print("\n\n" + "="*40)
-                print("INSPIRATION SUMMARY (via Claude):")
-                print("="*40)
-                print(response_text)
-                print("="*40 + "\n\n")
+                print(f"✓ Inspiration analysis complete: {len(response_text)} characters")
+                print(f"✓ Preview: {response_text[:200]}...")
+                print("="*60 + "\n")
                 return response_text
             else:
-                print("Empty response from inspiration analysis.")
+                print("❌ Empty response from inspiration analysis")
                 return "Could not analyze inspiration content - empty response"
-
+                
         except Exception as e:
             logger.error(f"Error analyzing inspiration content: {str(e)}")
-            print(f"Error in inspiration analysis: {str(e)}")
+            print(f"❌ Inspiration analysis error: {str(e)}")
             return f"Error analyzing inspiration content: {str(e)}"
 
     def analyze_documents(self, document_texts):
-        """Analyze uploaded documents for insights using Claude"""
+        """Analyze uploaded documents for insights using Claude - OPTIMIZED"""
         if not document_texts:
-            print("No documents provided for analysis.")
+            print("ℹ️ No documents provided for analysis")
             return "No documents provided for analysis."
-
-        print("Starting document analysis with Claude...")
+        
+        print("\n" + "="*60)
+        print("ANALYZING DOCUMENTS")
+        print("="*60)
+        
         combined_documents = "\n\n---DOCUMENT SEPARATOR---\n\n".join(document_texts)
-
-        max_chars = 60000
+        
+        # Smart truncation
+        max_chars = 45000
         if len(combined_documents) > max_chars:
-            print(f"Truncating documents from {len(combined_documents)} to {max_chars} characters.")
-            chunk_size = max_chars // len(document_texts) if len(document_texts) > 1 else max_chars
-            sampled_docs = []
-            for doc_text in document_texts:
-                if len(doc_text) > chunk_size:
-                    half_chunk = chunk_size // 2
-                    sampled = doc_text[:half_chunk] + "\n[...DOCUMENT CONTINUES...]\n" + doc_text[-half_chunk:]
-                    sampled_docs.append(sampled)
-                else:
-                    sampled_docs.append(doc_text)
-            combined_documents = "\n\n---DOCUMENT SEPARATOR---\n\n".join(sampled_docs)
-
+            print(f"⚠️ Truncating documents from {len(combined_documents):,} to {max_chars:,} chars")
+            chunk_size = 15000
+            combined_documents = (
+                f"{combined_documents[:chunk_size]}\n\n"
+                f"[...MIDDLE CONTENT OMITTED FOR BREVITY...]\n\n"
+                f"{combined_documents[-chunk_size:]}"
+            )
+        
         try:
             full_prompt = self.document_analysis_prompt + combined_documents
             response_text = self._call_claude(
                 prompt=full_prompt,
-                max_tokens=3500,
+                max_tokens=2500,
                 temperature=0.2
             )
-
+            
             if response_text:
-                print(f"Document analysis completed: {len(response_text)} characters")
-                print("\n\n" + "="*40)
-                print("DOCUMENT INSIGHTS (via Claude):")
-                print("="*40)
-                print(response_text)
-                print("="*40 + "\n\n")
+                print(f"✓ Document analysis complete: {len(response_text)} characters")
+                print(f"✓ Preview: {response_text[:200]}...")
+                print("="*60 + "\n")
                 return response_text
             else:
-                print("Empty response from document analysis.")
-                return "Could not analyze document content - empty response"
-
+                print("❌ Empty response from document analysis")
+                return "Could not analyze documents - empty response"
+                
         except Exception as e:
             logger.error(f"Error analyzing documents: {str(e)}")
-            print(f"Error in document analysis: {str(e)}")
+            print(f"❌ Document analysis error: {str(e)}")
             return f"Error analyzing documents: {str(e)}"
 
-    def generate_enhanced_script(self, style_profile, inspiration_summary, document_insights, user_prompt, target_minutes=None):
-        """Generate script with STRICT duration control using Claude"""
-        print("Starting enhanced script generation with Claude (strict timing)...")
+    # ========================================
+    # SCRIPT GENERATION
+    # ========================================
 
-        # Calculate precise word counts based on target duration
+    def generate_enhanced_script(self, style_profile, inspiration_summary, 
+                                document_insights, user_prompt, target_minutes=None):
+        """Generate script with STRICT duration control using Claude - OPTIMIZED"""
+        print("\n" + "="*60)
+        print("GENERATING ENHANCED SCRIPT WITH STRICT TIMING")
+        print("="*60)
+        
+        # Calculate precise timing parameters
         if target_minutes:
             target_seconds = int(target_minutes * 60)
             words_per_minute = 150
             word_count_target = int(target_minutes * words_per_minute)
-            min_words = int(word_count_target * 0.95)  # 5% tolerance
+            min_words = int(word_count_target * 0.95)
             max_words = int(word_count_target * 1.05)
             
-            # Section timing breakdown (proportional to total duration)
+            # Section timing (proportional)
             hook_duration = min(15, int(target_seconds * 0.15))
             intro_end = min(45, int(target_seconds * 0.25))
             main_end = int(target_seconds * 0.85)
@@ -2137,22 +1993,9 @@ class EnhancedScriptGenerator:
             intro_words = int((intro_end - hook_duration) / 60 * words_per_minute)
             main_words = int((main_end - intro_end) / 60 * words_per_minute)
             conclusion_words = int((target_seconds - main_end) / 60 * words_per_minute)
-            
-            target_duration = f"EXACTLY {target_minutes} minutes ({target_seconds} seconds)"
-            duration_instruction = f"""
-YOU MUST CREATE A SCRIPT THAT IS EXACTLY {target_minutes} MINUTES LONG.
-- Total words required: {word_count_target} words (acceptable range: {min_words}-{max_words} words)
-- Speaking pace: 150 words per minute
-- Total duration: {target_seconds} seconds
-- If you write MORE than {max_words} words, the video will be TOO LONG and exceed the time limit
-- If you write LESS than {min_words} words, the video will be TOO SHORT and won't fill the time
-- Count your words AS YOU WRITE and STOP when you reach {word_count_target} words
-- This is a STRICT requirement - the duration MUST match exactly
-"""
         else:
-            # Default to 10 minutes if no duration specified
+            # Default: 10 minutes
             target_seconds = 600
-            words_per_minute = 150
             word_count_target = 1500
             min_words = 1425
             max_words = 1575
@@ -2164,159 +2007,141 @@ YOU MUST CREATE A SCRIPT THAT IS EXACTLY {target_minutes} MINUTES LONG.
             main_words = 1275
             conclusion_words = 112
             target_minutes = 10
-            
-            target_duration = "Approximately 10 minutes (600 seconds)"
-            duration_instruction = f"""
-Create a comprehensive script that is approximately 10 minutes long.
-- Target: {word_count_target} words (between {min_words}-{max_words} words)
-- Speaking pace: 150 words per minute
-"""
-
-        # Calculate for template
-        target_minutes_int = int(target_minutes) if target_minutes else 10
+        
+        target_minutes_int = int(target_minutes)
         target_seconds_remainder = target_seconds % 60
-
-        # Format the enhanced prompt with all parameters
+        main_minutes = main_end // 60
+        main_seconds = main_end % 60
+        
+        print(f"📊 Target Duration: {target_minutes} minutes ({target_seconds} seconds)")
+        print(f"📊 Target Words: {word_count_target} (range: {min_words}-{max_words})")
+        print(f"📊 Speaking Pace: 150 words/minute")
+        
+        # Format the enhanced prompt
         enhanced_prompt = self.enhanced_script_template.format(
             style_profile=style_profile,
             inspiration_summary=inspiration_summary,
             document_insights=document_insights,
             user_prompt=user_prompt,
-            target_duration=target_duration,
-            duration_instruction=duration_instruction,
+            target_minutes=target_minutes_int,
+            target_seconds=target_seconds,
             word_count_target=word_count_target,
             min_words=min_words,
             max_words=max_words,
-            target_seconds=target_seconds,
-            target_minutes=target_minutes_int,
-            target_seconds_remainder=target_seconds_remainder,
             hook_duration=hook_duration,
             intro_end=intro_end,
-            main_end=main_end,
+            main_minutes=main_minutes,
+            main_seconds=main_seconds,
+            conclusion_words=conclusion_words,
             hook_words=hook_words,
             intro_words=intro_words,
             main_words=main_words,
-            conclusion_words=conclusion_words
+            target_seconds_remainder=target_seconds_remainder
         )
         
-        print(f"Enhanced prompt prepared: {len(enhanced_prompt)} characters")
-        print(f"Target Duration: {target_duration}")
-        print(f"Target Word Count: {word_count_target} words (range: {min_words}-{max_words})")
-
         try:
-            # Call Claude for script generation
+            # Generate script with Claude
             script = self._call_claude(
                 prompt=enhanced_prompt,
-                max_tokens=word_count_target + 1000,  # Extra buffer for formatting
+                max_tokens=word_count_target + 1000,  # Buffer for formatting
                 temperature=0.7
             )
-
+            
             if script:
                 script = script.strip()
                 
                 # Validate word count
                 actual_words = len(script.split())
-                print(f"Script generated: {actual_words} words (target: {word_count_target}, range: {min_words}-{max_words})")
+                actual_duration_seconds = (actual_words / 150) * 60
+                actual_duration_minutes = actual_duration_seconds / 60
                 
-                # If script is too long, truncate intelligently
+                print(f"\n{'='*60}")
+                print(f"SCRIPT GENERATION COMPLETE")
+                print(f"{'='*60}")
+                print(f"📝 Generated Words: {actual_words}")
+                print(f"🎯 Target Words: {word_count_target} (range: {min_words}-{max_words})")
+                print(f"⏱️ Estimated Duration: {actual_duration_minutes:.1f} minutes")
+                print(f"🎯 Target Duration: {target_minutes} minutes")
+                
+                # Smart truncation if needed
                 if actual_words > max_words:
-                    print(f"⚠️ WARNING: Script too long ({actual_words} words)! Truncating to {word_count_target} words...")
+                    print(f"⚠️ Script too long! Truncating from {actual_words} to {word_count_target} words...")
                     words = script.split()
-                    
-                    # Truncate to target word count
                     truncated_script = ' '.join(words[:word_count_target])
-                    
-                    # Add a proper ending timestamp
-                    ending_minutes = target_seconds // 60
-                    ending_seconds = target_seconds % 60
-                    truncated_script += f"\n\n[{ending_minutes:02d}:{ending_seconds:02d}] Thanks for watching!"
-                    
+                    truncated_script += f"\n\n### [{target_minutes_int:02d}:{target_seconds_remainder:02d}]\nThanks for watching!"
                     script = truncated_script
                     actual_words = len(script.split())
                     print(f"✓ Script truncated to {actual_words} words")
-                
-                # If script is too short, warn but don't modify
                 elif actual_words < min_words:
-                    print(f"⚠️ WARNING: Script too short ({actual_words} words, minimum: {min_words})")
-                    print(f"   Consider regenerating for better timing accuracy")
+                    print(f"⚠️ Script shorter than minimum ({actual_words} < {min_words})")
+                    print(f"   Consider regenerating for better timing")
                 else:
-                    print(f"✓ Script length perfect: {actual_words} words (within target range)")
+                    print(f"✓ Word count within target range")
                 
-                # Calculate actual duration
-                actual_duration_seconds = (actual_words / 150) * 60
-                actual_duration_minutes = actual_duration_seconds / 60
-                print(f"✓ Estimated actual duration: {actual_duration_minutes:.1f} minutes ({actual_duration_seconds:.0f} seconds)")
-                
-                print(f"\n{'='*40}")
-                print(f"GENERATED SCRIPT (via Claude)")
-                print(f"{'='*40}")
-                print(f"Word Count: {actual_words} words")
-                print(f"Target Duration: {target_minutes} minutes" if target_minutes else "10 minutes")
-                print(f"Estimated Duration: {actual_duration_minutes:.1f} minutes")
-                print(f"{'='*40}")
+                print(f"{'='*60}\n")
+                print(f"Script Preview (first 500 chars):")
+                print(f"{'-'*60}")
                 print(script[:500] + "..." if len(script) > 500 else script)
-                print(f"{'='*40}\n")
+                print(f"{'='*60}\n")
                 
                 return script
             else:
-                print("Empty response from script generation.")
+                print("❌ Empty response from script generation")
                 return "Error: Could not generate script - empty response"
-
+                
         except Exception as e:
-            logger.error(f"Error generating enhanced script: {str(e)}")
-            print(f"Error in script generation: {str(e)}")
+            logger.error(f"Error generating script: {str(e)}")
+            print(f"❌ Script generation error: {str(e)}")
             return f"Error generating script: {str(e)}"
 
-    def modify_script_chat(self, current_script, style_profile, topic_insights, document_insights, user_message):
-        """Modify script with full context including documents"""
-        print("Starting script modification via chat...")
+    # ========================================
+    # SCRIPT MODIFICATION (CHAT)
+    # ========================================
 
-        # Defensive: fallback if prompt missing
-        prompt_template = getattr(self, "chat_modification_prompt", None)
-        if not prompt_template:
-            prompt_template = """
-            Edit the script according to this user request:
-            {user_message}
-
-            Current Script:
-            {current_script}
-            """
-
-        chat_prompt = prompt_template.format(
+    def modify_script_chat(self, current_script, style_profile, topic_insights, 
+                          document_insights, user_message):
+        """Modify script via chat using Claude - OPTIMIZED"""
+        print("\n" + "="*60)
+        print("MODIFYING SCRIPT VIA CHAT")
+        print("="*60)
+        
+        # Format chat modification prompt
+        chat_prompt = self.chat_modification_prompt.format(
             current_script=current_script,
             style_profile=style_profile,
-            topic_insights=topic_insights,
-            document_insights=document_insights,
             user_message=user_message
         )
-        print(f"Chat modification prompt: {len(chat_prompt)} characters")
-
+        
+        print(f"📝 Chat prompt: {len(chat_prompt):,} characters")
+        print(f"💬 User request: {user_message[:100]}...")
+        
         try:
-            print("Generating modification with Gemini model...")
-            model = genai.GenerativeModel("gemini-2.0-flash")
-            response = model.generate_content(
-                chat_prompt,
-                generation_config=genai.types.GenerationConfig(
-                    temperature=0.6,
-                    max_output_tokens=3000
-                )
+            # Call Claude for modification
+            modified_script = self._call_claude(
+                prompt=chat_prompt,
+                max_tokens=3000,
+                temperature=0.6
             )
-
-            if response.text:
-                print(f"Modification response: {len(response.text)} characters")
-                print("\n\n" + "="*40)
-                print("MODIFIED SCRIPT RESPONSE:")
-                print("="*40)
-                print(response.text)
-                print("="*40 + "\n\n")
-                return response.text
+            
+            if modified_script:
+                modified_script = modified_script.strip()
+                actual_words = len(modified_script.split())
+                
+                print(f"\n{'='*60}")
+                print(f"SCRIPT MODIFICATION COMPLETE")
+                print(f"{'='*60}")
+                print(f"✓ Modified script: {len(modified_script):,} characters")
+                print(f"✓ Word count: {actual_words:,} words")
+                print(f"{'='*60}\n")
+                
+                return modified_script
             else:
-                print("Empty response from modification.")
+                print("❌ Empty response from modification")
                 return "Could not modify script - empty response"
-
+                
         except Exception as e:
             logger.error(f"Error modifying script: {str(e)}")
-            print(f"Error in script modification: {str(e)}")
+            print(f"❌ Script modification error: {str(e)}")
             return f"Error modifying script: {str(e)}"
 # Initialize processors for export
 # Initialize processors for export

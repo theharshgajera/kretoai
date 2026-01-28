@@ -139,54 +139,224 @@ def load_whisper_model():
 
 print(f"✓ Whisper config: Model directory = {WHISPER_MODEL_DIR}")
 
-class DocumentProcessor:
-    """Passes document URLs directly to Gemini for analysis"""
-    
-    def __init__(self):
-        self.max_chars = 100000 
-    
-    def allowed_file(self, filename):
-        return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+"""
+COMPLETE DocumentProcessor CLASS - READY TO USE
+Copy this entire class and replace your existing DocumentProcessor class
+"""
 
-    def process_document(self, source, filename=None):
+class DocumentProcessor:
+    def __init__(self):
+        self.anthropic_client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+        self.max_file_size = 32 * 1024 * 1024  # 32MB limit
+        
+    def process_document(self, url, filename=None):
         """
-        Direct Link Analysis: Passes the URL to Gemini.
+        Process document from URL using Claude API
+        Args:
+            url: Document URL (must start with http/https)
+            filename: Optional filename for reference
         """
-        print(f"\n--- Passing Document Link to Gemini: {filename or source} ---")
+        print(f"\n{'='*60}")
+        print(f"DOCUMENT PROCESSING (CLAUDE): {filename or url}")
+        print(f"{'='*60}\n")
         
         try:
-            model = genai.GenerativeModel("gemini-2.0-flash")
-            
-            # This prompt tells Gemini to fetch and analyze the specific link
-            prompt = f"""
-            Analyze the document at this URL: {source}
-            
-            Please perform a DEEP SCAN and extract:
-            1. Every major argument and core concept.
-            2. All specific data, facts, and statistics.
-            3. Technical details and patterns (especially if it's an exam paper).
-            
-            Ensure the output is a high-density Knowledge Base for a YouTube script.
-            """
-
-            response = model.generate_content(prompt)
-
-            if response.text:
-                full_text = response.text.strip()
+            # Validate URL
+            if not url or not url.strip():
                 return {
-                    "error": None,
-                    "text": full_text,
-                    "stats": {
-                        "word_count": len(full_text.split()),
-                        "source_type": "gemini_direct_doc_link"
-                    },
-                    "filename": filename or "Document"
+                    "error": "Empty URL provided",
+                    "text": None,
+                    "stats": None
                 }
-            return {"error": "Gemini returned empty text for this document link", "text": None}
-
+            
+            if not url.startswith(('http://', 'https://')):
+                return {
+                    "error": f"Invalid URL format (must start with http/https): {url}",
+                    "text": None,
+                    "stats": None
+                }
+            
+            # Download document
+            print(f"Downloading document from URL: {url}")
+            import requests
+            response = requests.get(url, timeout=60, allow_redirects=True)
+            
+            if response.status_code != 200:
+                return {
+                    "error": f"Failed to download: HTTP {response.status_code}",
+                    "text": None,
+                    "stats": None
+                }
+            
+            print(f"✓ Downloaded: {len(response.content):,} bytes ({len(response.content)/(1024*1024):.2f} MB)")
+            
+            # Validate size
+            if len(response.content) > self.max_file_size:
+                return {
+                    "error": f"File too large ({len(response.content)/(1024*1024):.1f}MB). Max: 32MB",
+                    "text": None,
+                    "stats": None
+                }
+            
+            # Save to temp file
+            import tempfile
+            file_extension = os.path.splitext(url.split('?')[0])[1] or '.pdf'
+            temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=file_extension)
+            temp_file.write(response.content)
+            temp_file.close()
+            
+            print(f"✓ Saved to temp: {temp_file.name}")
+            
+            # Extract text based on file type
+            if file_extension == '.pdf':
+                extracted_text = self._extract_pdf_text(temp_file.name)
+            elif file_extension in ['.docx', '.doc']:
+                extracted_text = self._extract_docx_text(temp_file.name)
+            elif file_extension == '.txt':
+                extracted_text = self._extract_txt_text(temp_file.name)
+            else:
+                os.remove(temp_file.name)
+                return {
+                    "error": f"Unsupported file type: {file_extension}",
+                    "text": None,
+                    "stats": None
+                }
+            
+            # Cleanup temp file
+            os.remove(temp_file.name)
+            
+            if not extracted_text:
+                return {
+                    "error": "Could not extract text from document",
+                    "text": None,
+                    "stats": None
+                }
+            
+            print(f"✓ Text extracted: {len(extracted_text):,} characters")
+            
+            # Analyze with Claude
+            print("Analyzing document with Claude...")
+            analysis = self._analyze_with_claude(extracted_text, filename)
+            
+            if not analysis:
+                return {
+                    "error": "Claude analysis failed",
+                    "text": None,
+                    "stats": None
+                }
+            
+            word_count = len(analysis.split())
+            
+            print(f"\n{'='*60}")
+            print(f"✓ DOCUMENT PROCESSING COMPLETE")
+            print(f"{'='*60}")
+            print(f"Analysis: {len(analysis):,} chars, {word_count:,} words")
+            print(f"{'='*60}\n")
+            
+            return {
+                "error": None,
+                "text": analysis,
+                "stats": {
+                    "word_count": word_count,
+                    "char_count": len(analysis),
+                    "source_type": "document",
+                    "filename": filename or "Document"
+                },
+                "filename": filename or "Document"
+            }
+            
         except Exception as e:
-            logger.error(f"Document Link Error: {str(e)}")
-            return {"error": f"Gemini could not process document link: {str(e)}", "text": None}
+            error_msg = f"Document processing failed: {str(e)}"
+            print(f"❌ {error_msg}")
+            import traceback
+            print(traceback.format_exc())
+            return {"error": error_msg, "text": None, "stats": None}
+    
+    def _extract_pdf_text(self, pdf_path):
+        """Extract text from PDF"""
+        try:
+            import fitz  # PyMuPDF
+            doc = fitz.open(pdf_path)
+            text_parts = []
+            
+            for page_num in range(len(doc)):
+                page = doc[page_num]
+                text = page.get_text()
+                if text.strip():
+                    text_parts.append(text)
+            
+            doc.close()
+            return "\n\n".join(text_parts)
+        except Exception as e:
+            print(f"❌ PDF extraction failed: {e}")
+            return None
+    
+    def _extract_docx_text(self, docx_path):
+        """Extract text from DOCX"""
+        try:
+            import docx
+            doc = docx.Document(docx_path)
+            text_parts = [para.text for para in doc.paragraphs if para.text.strip()]
+            return "\n\n".join(text_parts)
+        except Exception as e:
+            print(f"❌ DOCX extraction failed: {e}")
+            return None
+    
+    def _extract_txt_text(self, txt_path):
+        """Extract text from TXT"""
+        try:
+            with open(txt_path, 'r', encoding='utf-8', errors='ignore') as f:
+                return f.read()
+        except Exception as e:
+            print(f"❌ TXT reading failed: {e}")
+            return None
+    
+    def _analyze_with_claude(self, document_text, filename):
+        """Analyze document text using Claude API"""
+        try:
+            # Truncate if too long (Claude has token limits)
+            max_chars = 100000
+            if len(document_text) > max_chars:
+                chunk_size = max_chars // 2
+                document_text = (
+                    f"{document_text[:chunk_size]}\n\n"
+                    f"[...MIDDLE CONTENT OMITTED...]\n\n"
+                    f"{document_text[-chunk_size:]}"
+                )
+            
+            # ✅ FIXED: Proper prompt formatting without extra indentation
+            prompt = f"""Analyze this document and extract key insights for YouTube content creation.
+
+Extract:
+1. Core concepts, arguments, and themes
+2. Specific data, facts, and statistics
+3. Technical details and processes
+4. Actionable insights and best practices
+
+**DOCUMENT: {filename or 'Untitled'}**
+
+{document_text}
+
+Provide a comprehensive knowledge base for script writing."""
+
+            message = self.anthropic_client.messages.create(
+                model="claude-sonnet-4-20250514",
+                max_tokens=4000,
+                temperature=0.2,
+                messages=[{"role": "user", "content": prompt}]
+            )
+            
+            analysis = message.content[0].text.strip()
+            
+            print(f"✓ Claude analysis complete: {len(analysis):,} characters")
+            
+            return analysis
+            
+        except Exception as e:
+            print(f"❌ Claude API error: {str(e)}")
+            import traceback
+            print(traceback.format_exc())
+            return None
 class VideoProcessor:
     """High-performance video processor with parallel chunks - NO quality compromise"""
     

@@ -1,8 +1,12 @@
 from flask import Flask, render_template, request, jsonify, session
 from flask_cors import CORS
 from dotenv import load_dotenv
+import requests
+from google import genai
+from google.genai import types
+from google.genai.types import HttpOptions, Part
+
 import os
-import google.generativeai as genai
 from youtube_transcript_api import YouTubeTranscriptApi
 from youtube_transcript_api._errors import TranscriptsDisabled, NoTranscriptFound, VideoUnavailable
 import time
@@ -35,8 +39,9 @@ import anthropic
 
 # Load environment variables
 load_dotenv()
-
-# Configure Anthropic client
+client = genai.Client()
+if not os.getenv("GEMINI_API_KEY"):
+    raise ValueError("GEMINI_API_KEY not found. Check your .env file!")
 ANTHROPIC_API_KEY = os.getenv('ANTHROPIC_API_KEY')
 if not ANTHROPIC_API_KEY:
     raise ValueError("ANTHROPIC_API_KEY not found in environment variables")
@@ -545,103 +550,57 @@ class VideoProcessor:
         self.last_api_call = time.time()
     
     def extract_transcript_details(self, youtube_video_url):
-        """
-        Downloads the YouTube video and uses Gemini 1.5 Pro/Flash 
-        to create an intelligent 500-word summary from the video content.
-        """
         print(f"\n{'='*60}")
         print(f"PROCESSING VIDEO VIA GEMINI API: {youtube_video_url}")
         print(f"{'='*60}\n")
         
-        video_file = None
-        
         try:
-            # Step 1: Download Video using pytube
-            print("Step 1: Downloading video stream...")
-            yt = YouTube(youtube_video_url)
-            # Select low-res stream to speed up upload/processing
-            stream = yt.streams.filter(file_extension='mp4', progressive=True).order_by('resolution').first()
-            video_file_path = stream.download(filename="temp_video_for_gemini.mp4")
-            print(f"✓ Video downloaded: {video_file_path}")
-
-            # Step 2: Upload to Gemini File API
-            print("Step 2: Uploading video to Gemini File API...")
-            video_file = genai.upload_file(path=video_file_path)
-            print(f"✓ File uploaded: {video_file.name}")
-
-            # Step 3: Wait for video processing
-            # Large videos need time to be 'ACTIVE' before prompting
-            print("Step 3: Waiting for Gemini to process video...")
-            while video_file.state.name == "PROCESSING":
-                time.sleep(2)
-                video_file = genai.get_file(video_file.name)
+            model_id = "gemini-2.0-flash" 
             
-            if video_file.state.name == "FAILED":
-                raise Exception("Gemini video processing failed.")
+            summary_prompt = """Create a comprehensive 500-word summary of this video...
+            (Include your detailed instructions here)"""
 
-            # Step 4: Generate Intelligent Summary
-            print("Step 4: Generating 500-word intelligent summary...")
-            model = genai.GenerativeModel("gemini-2.0-flash") # or gemini-1.5-pro
+            print("Step 1: Sending request to Gemini...")
             
-            summary_prompt = """Create a comprehensive 500-word summary of this video that captures EVERY important point.
-            
-            INSTRUCTIONS:
-            1. Extract ALL key arguments, main points, and core concepts.
-            2. Include specific data, statistics, examples, and facts mentioned.
-            3. Preserve technical details and terminology.
-            4. Maintain the speaker's key insights and unique perspectives.
-            5. Organize logically by topic/theme.
-            6. Write in dense, information-rich prose (NO fluff).
-            7. Target EXACTLY 500 words - make every word count.
-            
-            OUTPUT FORMAT:
-            - Write as continuous prose (paragraphs, not bullet points).
-            - Focus on WHAT was said and shown.
-            - Be comprehensive yet concise."""
-
-            response = model.generate_content(
-                [summary_prompt, video_file],
-                generation_config=genai.types.GenerationConfig(
+            # CORRECT SYNTAX for google-genai v1
+            response = client.models.generate_content(
+                model=model_id,
+                contents=[
+                    types.Part.from_uri(
+                        file_uri=youtube_video_url,
+                        mime_type="video/mp4",
+                    ),
+                    summary_prompt,
+                ],
+                config=types.GenerateContentConfig( # Use GenerateContentConfig
                     temperature=0.2,
-                    max_output_tokens=1000
+                    max_output_tokens=2000,
+                    # Note: 'tools' would go here if you were using them, 
+                    # but NOT inside a nested GenerationConfig.
                 )
             )
 
             summary = response.text.strip()
             word_count = len(summary.split())
 
-            # Cleanup: Delete the local file and the remote Gemini file
-            if os.path.exists(video_file_path):
-                os.remove(video_file_path)
-            genai.delete_file(video_file.name)
-
-            print(f"\n{'='*60}")
-            print(f"✓ ANALYSIS COMPLETE")
-            print(f"Words: {word_count:,} (target: 500)")
-            print(f"{'='*60}\n")
-
             return {
                 "error": None,
-                "transcript": summary, # Summary returned as transcript for compatibility
+                "transcript": summary, 
                 "stats": {
                     'char_count': len(summary),
                     'word_count': word_count,
-                    'source_type': 'gemini_video_analysis',
+                    'source_type': 'gemini_native_video_analysis',
                     'url': youtube_video_url
                 }
             }
 
         except Exception as e:
-            # Cleanup on failure
-            if video_file:
-                genai.delete_file(video_file.name)
             print(f"❌ Error: {str(e)}")
             return {
                 "error": f"Video processing failed: {str(e)}",
                 "transcript": None,
                 "stats": None
             }
-    
     def _calculate_transcript_stats(self, transcript_text):
         if not transcript_text:
             return {

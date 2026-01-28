@@ -545,46 +545,156 @@ class VideoProcessor:
     
     def extract_transcript_details(self, youtube_video_url):
         """
-        DIRECT GEMINI LINK ANALYSIS: 
-        No scraping, no downloading. Passes URL directly to Gemini.
+        Extract COMPLETE YouTube transcript, then create intelligent 500-word summary
+        Preserves ALL important points while being concise
+        
+        SAME METHOD NAME - Just replace the entire method body
         """
-        print(f"\n--- Passing URL to Gemini for Direct Analysis: {youtube_video_url} ---")
+        print(f"\n{'='*60}")
+        print(f"EXTRACTING YOUTUBE TRANSCRIPT: {youtube_video_url}")
+        print(f"{'='*60}\n")
         
         try:
-            # We use the flash model for high-speed link reasoning
-            model = genai.GenerativeModel("gemini-2.0-flash")
+            # Step 1: Extract video ID
+            video_id = self.extract_video_id(youtube_video_url)
+            if not video_id:
+                return {"error": "Could not extract video ID from URL", "transcript": None, "stats": None}
             
-            # The prompt asks Gemini to use its internal knowledge of the YouTube video
-            prompt = f"""
-            Analyze the video content at this URL: {youtube_video_url}
+            print(f"Video ID: {video_id}")
             
-            Please provide:
-            1. A deep, 500-word authoritative summary of the video's content.
-            2. Extract all specific data points, statistics, and arguments mentioned.
-            3. Ensure the context is preserved for a YouTube script generation.
-            
-            Format: High-density Knowledge Base.
-            """
-
-            response = model.generate_content(prompt)
-
-            if response.text:
-                summary = response.text.strip()
-                print(f"✓ Gemini analyzed link: {len(summary.split())} words")
-                return {
-                    "error": None, 
-                    "transcript": summary, 
-                    "stats": {
-                        'word_count': len(summary.split()), 
-                        'source_type': 'gemini_direct_link'
-                    }
-                }
-            return {"error": "Gemini returned an empty response for this link", "transcript": None}
-
-        except Exception as e:
-            logger.error(f"Link Analysis Error: {str(e)}")
-            return {"error": f"Gemini could not process this URL: {str(e)}", "transcript": None}
+            # Step 2: Get COMPLETE transcript from YouTube
+            print("Fetching full transcript from YouTube...")
+            try:
+                transcript_list = YouTubeTranscriptApi.get_transcript(video_id)
+                
+                # Combine all transcript segments
+                raw_transcript = " ".join([entry['text'] for entry in transcript_list])
+                
+                if not raw_transcript or len(raw_transcript.strip()) < 100:
+                    print("⚠️ Transcript too short")
+                    raise Exception("Transcript too short")
+                
+                print(f"✓ Full transcript extracted: {len(raw_transcript):,} characters")
+                print(f"✓ Word count: {len(raw_transcript.split()):,} words")
+                
+                # Step 3: Create INTELLIGENT 500-word summary with Gemini
+                print("Creating intelligent 500-word summary...")
+                model = genai.GenerativeModel("gemini-2.0-flash")
+                
+                # Smart truncation if transcript is MASSIVE (> 100k chars)
+                max_chars = 100000
+                if len(raw_transcript) > max_chars:
+                    print(f"⚠️ Truncating transcript from {len(raw_transcript):,} to {max_chars:,} chars for processing")
+                    # Keep beginning, middle sample, and end
+                    chunk_size = max_chars // 3
+                    raw_transcript = (
+                        f"{raw_transcript[:chunk_size]}\n\n"
+                        f"[...MIDDLE CONTENT...]\n\n"
+                        f"{raw_transcript[len(raw_transcript)//2:len(raw_transcript)//2 + chunk_size]}\n\n"
+                        f"[...MORE CONTENT...]\n\n"
+                        f"{raw_transcript[-chunk_size:]}"
+                    )
+                
+                summary_prompt = f"""Create a comprehensive 500-word summary of this YouTube transcript that captures EVERY important point.
     
+    TRANSCRIPT:
+    {raw_transcript}
+    
+    INSTRUCTIONS:
+    1. Extract ALL key arguments, main points, and core concepts
+    2. Include specific data, statistics, examples, and facts mentioned
+    3. Preserve technical details and terminology
+    4. Maintain the speaker's key insights and unique perspectives
+    5. Organize logically by topic/theme
+    6. Write in dense, information-rich prose (NO fluff)
+    7. Target EXACTLY 500 words - make every word count
+    
+    OUTPUT FORMAT:
+    - Write as continuous prose (paragraphs, not bullet points)
+    - Focus on WHAT was said, not meta-commentary
+    - Preserve context needed for script generation
+    - Be comprehensive yet concise
+    
+    Generate the 500-word summary now:"""
+                
+                response = model.generate_content(
+                    summary_prompt,
+                    generation_config=genai.types.GenerationConfig(
+                        temperature=0.2,  # Low temp for accuracy
+                        max_output_tokens=800  # ~500 words + buffer
+                    )
+                )
+                
+                if response.text:
+                    summary = response.text.strip()
+                    word_count = len(summary.split())
+                    
+                    print(f"\n{'='*60}")
+                    print(f"✓ INTELLIGENT SUMMARY COMPLETE")
+                    print(f"{'='*60}")
+                    print(f"Summary: {len(summary):,} chars")
+                    print(f"Words: {word_count:,} (target: 500)")
+                    print(f"Compression: {len(raw_transcript):,} → {len(summary):,} chars")
+                    print(f"{'='*60}\n")
+                    
+                    # Preview first 300 chars
+                    print(f"Summary Preview:")
+                    print(f"{'-'*60}")
+                    print(summary[:300] + "..." if len(summary) > 300 else summary)
+                    print(f"{'='*60}\n")
+                    
+                    return {
+                        "error": None,
+                        "transcript": summary,  # Return summary, not full transcript
+                        "stats": {
+                            'char_count': len(summary),
+                            'word_count': word_count,
+                            'original_length': len(raw_transcript),
+                            'original_words': len(raw_transcript.split()),
+                            'source_type': 'youtube_transcript',
+                            'video_id': video_id,
+                            'url': youtube_video_url
+                        }
+                    }
+                else:
+                    # Fallback: create basic summary from first 500 words
+                    print("⚠️ Gemini summary failed, using first 500 words of transcript")
+                    words = raw_transcript.split()[:500]
+                    fallback_summary = " ".join(words) + "..."
+                    
+                    return {
+                        "error": None,
+                        "transcript": fallback_summary,
+                        "stats": {
+                            'char_count': len(fallback_summary),
+                            'word_count': 500,
+                            'source_type': 'youtube_transcript_fallback',
+                            'video_id': video_id,
+                            'url': youtube_video_url
+                        }
+                    }
+                    
+            except (TranscriptsDisabled, NoTranscriptFound):
+                print("⚠️ No transcript available - video may not have captions")
+                return {
+                    "error": "This video does not have available transcripts/captions. Please try a video with captions enabled.",
+                    "transcript": None,
+                    "stats": None
+                }
+            except VideoUnavailable:
+                return {
+                    "error": "Video is unavailable or private",
+                    "transcript": None,
+                    "stats": None
+                }
+                
+        except Exception as e:
+            logger.error(f"YouTube transcript extraction error: {str(e)}")
+            return {
+                "error": f"Could not extract transcript: {str(e)}",
+                "transcript": None,
+                "stats": None
+            }
     def _calculate_transcript_stats(self, transcript_text):
         if not transcript_text:
             return {

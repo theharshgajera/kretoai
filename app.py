@@ -2708,7 +2708,6 @@ def format_number(num):
         return str(num)
     
 # app
-
 @app.route('/api/whole_script', methods=['POST'])
 def whole_script():
     """ULTRA-OPTIMIZED: Fast script generation with parallel processing + ALL MEDIA TYPES"""

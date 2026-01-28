@@ -715,7 +715,7 @@ class VideoProcessor:
         }
         
 class AudioProcessor:
-    """Process audio files with Gemini for transcription (instead of Whisper)"""
+    """Process audio files with Whisper for transcription (MORE RELIABLE than Gemini)"""
     
     def __init__(self):
         self.supported_audio_formats = {'.mp3', '.wav', '.m4a', '.flac', '.ogg', '.opus', '.webm', '.wma', '.aac'}
@@ -746,91 +746,104 @@ class AudioProcessor:
                 
                 return True, None
             except Exception as e:
+                # If moviepy fails, just check file exists and size
+                if os.path.exists(file_path):
+                    return True, None
                 return False, f"Could not read audio file: {str(e)}"
                 
         except Exception as e:
             return False, f"Invalid audio file: {str(e)}"
     
-    def transcribe_with_gemini(self, audio_path):
+    def convert_to_wav_if_needed(self, audio_path):
         """
-        Transcribe audio using Gemini API (same as video processing)
+        Convert audio to WAV format if it's not already WAV
+        Whisper works best with WAV files
+        Returns: (wav_path, needs_cleanup)
+        """
+        file_ext = Path(audio_path).suffix.lower()
+        
+        # If already WAV, no conversion needed
+        if file_ext == '.wav':
+            return audio_path, False
+        
+        try:
+            print(f"Converting {file_ext} to WAV for better Whisper compatibility...")
+            
+            from moviepy.editor import AudioFileClip
+            
+            # Create temporary WAV file
+            wav_path = os.path.join(
+                self.temp_folder,
+                f"converted_{int(time.time()*1000)}.wav"
+            )
+            
+            # Convert to WAV
+            audio = AudioFileClip(audio_path)
+            audio.write_audiofile(
+                wav_path,
+                fps=16000,  # 16kHz optimal for speech
+                nbytes=2,
+                codec='pcm_s16le',
+                verbose=False,
+                logger=None
+            )
+            audio.close()
+            
+            print(f"✓ Converted to WAV: {wav_path}")
+            return wav_path, True  # needs cleanup
+            
+        except Exception as e:
+            print(f"⚠️ Conversion failed, will try original file: {e}")
+            return audio_path, False
+    
+    def transcribe_with_whisper(self, audio_path):
+        """
+        Transcribe audio using Whisper (LOCAL MODEL - FAST & RELIABLE)
         Returns: (transcript_text, error)
         """
         try:
-            print(f"Uploading audio to Gemini for transcription: {audio_path}")
+            print(f"Transcribing with Whisper local model...")
             
-            # Upload audio file to Gemini
-            audio_file = genai.upload_file(audio_path)
+            # Load cached Whisper model
+            model = load_whisper_model()
             
-            # Smart polling with exponential backoff
-            max_wait = 180  # 3 minutes max
-            wait_interval = 2  # Start with 2 seconds
-            wait_time = 0
-            check_count = 0
+            if model is None:
+                return None, "Whisper model not loaded. Please run download_whisper_model.py first."
             
-            print("Waiting for Gemini to process audio...")
-            while audio_file.state.name == "PROCESSING" and wait_time < max_wait:
-                time.sleep(wait_interval)
-                wait_time += wait_interval
-                check_count += 1
-                
-                # Exponential backoff: 2s, 2s, 3s, 3s, 5s, 5s, 5s...
-                if check_count > 2 and check_count % 2 == 0:
-                    wait_interval = min(wait_interval + 1, 5)
-                
-                audio_file = genai.get_file(audio_file.name)
-                
-                if wait_time % 15 == 0:
-                    print(f"  Processing audio... {wait_time}s")
-            
-            if audio_file.state.name == "FAILED":
-                print("Audio upload to Gemini failed")
-                return None, "Audio upload failed"
-            
-            if wait_time >= max_wait:
-                print("Audio processing timeout")
-                return None, "Audio processing timeout"
-            
-            # Generate transcription with Gemini
-            print("Generating transcription with Gemini...")
-            model = genai.GenerativeModel("gemini-2.0-flash")
-            prompt = "Transcribe this audio completely and accurately. Output only the transcription text."
-            
-            response = model.generate_content(
-                [prompt, audio_file],
-                generation_config=genai.types.GenerationConfig(
-                    temperature=0.1,  # Low temp for accuracy
-                    max_output_tokens=5000
-                )
+            # Transcribe with Whisper
+            print("Processing audio with Whisper...")
+            result = model.transcribe(
+                audio_path,
+                language=None,  # Auto-detect language
+                fp16=False,  # CPU compatibility
+                verbose=False  # Suppress progress output
             )
             
-            # Cleanup uploaded file
-            try:
-                genai.delete_file(audio_file.name)
-                print("Cleaned up Gemini uploaded file")
-            except:
-                pass
+            transcript = result["text"].strip()
+            detected_language = result.get("language", "unknown")
             
-            if response.text and len(response.text.strip()) > 20:
-                print(f"✓ Transcription complete: {len(response.text)} characters")
-                return response.text, None
+            if len(transcript) < 20:
+                return None, "Transcript too short or empty"
             
-            return None, "Transcript too short or empty"
+            print(f"✓ Transcription complete: {len(transcript)} chars, language: {detected_language}")
+            
+            return transcript, None
                 
         except Exception as e:
-            logger.error(f"Gemini transcription error: {str(e)}")
+            logger.error(f"Whisper transcription error: {str(e)}")
             return None, f"Transcription failed: {str(e)}"
     
     def process_audio_file(self, audio_path, filename):
         """
-        Complete audio processing pipeline using Gemini
+        Complete audio processing pipeline using Whisper
         Returns: {error, transcript, stats}
         """
         print(f"\n{'='*60}")
-        print(f"AUDIO FILE PROCESSING (GEMINI): {filename}")
+        print(f"AUDIO FILE PROCESSING (WHISPER): {filename}")
         print(f"{'='*60}\n")
         
         total_start = time.time()
+        converted_wav = None
         
         try:
             # Validate audio file
@@ -843,6 +856,7 @@ class AudioProcessor:
                 }
             
             # Get duration
+            duration = None
             try:
                 from moviepy.editor import AudioFileClip
                 audio = AudioFileClip(audio_path)
@@ -851,12 +865,24 @@ class AudioProcessor:
                 print(f"Duration: {duration:.1f}s ({duration/60:.1f} min)")
             except Exception as e:
                 print(f"Warning: Could not get duration: {e}")
-                duration = None
             
-            # Transcribe with Gemini
+            # Convert to WAV if needed (Whisper works best with WAV)
+            transcribe_audio_path, needs_cleanup = self.convert_to_wav_if_needed(audio_path)
+            if needs_cleanup:
+                converted_wav = transcribe_audio_path
+            
+            # Transcribe with Whisper
             transcribe_start = time.time()
-            transcript, transcribe_error = self.transcribe_with_gemini(audio_path)
+            transcript, transcribe_error = self.transcribe_with_whisper(transcribe_audio_path)
             transcribe_time = time.time() - transcribe_start
+            
+            # Cleanup converted WAV if we created one
+            if converted_wav and os.path.exists(converted_wav):
+                try:
+                    os.remove(converted_wav)
+                    print("✓ Cleaned up temporary WAV file")
+                except:
+                    pass
             
             if transcribe_error:
                 return {
@@ -911,12 +937,20 @@ class AudioProcessor:
             }
             
         except Exception as e:
+            # Cleanup on error
+            if converted_wav and os.path.exists(converted_wav):
+                try:
+                    os.remove(converted_wav)
+                except:
+                    pass
+            
             logger.error(f"Audio processing error: {str(e)}")
             return {
                 "error": f"Processing error: {str(e)}",
                 "transcript": None,
                 "stats": None
             }
+
 class InstagramProcessor:
     """OPTIMIZED: Process Instagram with direct audio download (NO video) + Whisper"""
     

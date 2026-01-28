@@ -2817,24 +2817,45 @@ def whole_script():
                 for idx, audio_url in enumerate(audio_files):
                     if audio_url and isinstance(audio_url, str) and audio_url.strip():
                         try:
-                            print(f"Downloading audio {idx+1}/{len(audio_files)}: {audio_url[:50]}...")
+                            # ✅ Clean the URL (remove any $ or other invalid characters)
+                            audio_url = audio_url.strip().lstrip('$')
+                            
+                            # ✅ Validate URL format
+                            if not audio_url.startswith(('http://', 'https://')):
+                                print(f"  ✗ Invalid URL format: {audio_url}")
+                                continue
+                            
+                            print(f"Downloading audio {idx+1}/{len(audio_files)}: {audio_url[:80]}...")
+                            
                             response = requests.get(audio_url, timeout=60)
+                            
                             if response.status_code == 200:
+                                # Extract filename from URL
                                 filename = audio_url.split('/')[-1].split('?')[0] or f'audio_{idx+1}.mp3'
+                                
+                                # Encode to base64
                                 audio_data = base64.b64encode(response.content).decode('utf-8')
+                                
                                 audio_folder['items'].append({
                                     'type': 'audio_file',
                                     'filename': filename,
                                     'data': audio_data
                                 })
-                                print(f"  ✓ Downloaded: {len(response.content):,} bytes")
+                                
+                                print(f"  ✓ Downloaded: {len(response.content):,} bytes ({len(response.content)/(1024*1024):.2f} MB)")
                             else:
                                 print(f"  ✗ Failed: HTTP {response.status_code}")
+                                
                         except Exception as e:
-                            print(f"  ✗ Error downloading audio {audio_url}: {e}")
+                            print(f"  ✗ Error downloading audio {audio_url[:80]}: {str(e)}")
+                            import traceback
+                            print(traceback.format_exc())
+                
                 if audio_folder['items']:
                     folders.append(audio_folder)
-                    print(f"Added {len(audio_folder['items'])} audio files")
+                    print(f"✓ Added {len(audio_folder['items'])} audio files")
+                else:
+                    print(f"⚠️  No audio files were successfully downloaded")
             
             # Image Files (Download from URLs)
             image_files = data.get('image_files', [])

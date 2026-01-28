@@ -1871,7 +1871,7 @@ def comp_analysis():
                 type="video",
                 maxResults=50,
                 relevanceLanguage="en",
-                videoDuration="medium"  # filter medium/long
+                videoDuration="medium"
             ).execute()
 
             for item in search_resp.get("items", []):
@@ -1885,14 +1885,14 @@ def comp_analysis():
                     competitor_counts[ch_id] = {"title": ch_title, "count": 0}
                 competitor_counts[ch_id]["count"] += 1
 
-        # sort competitors by frequency (descending) and take top 50
+        # sort competitors by frequency and take top 50
         competitors = sorted(
             competitor_counts.items(),
             key=lambda kv: kv[1]["count"],
             reverse=True
         )[:50]
 
-        # 4. For each competitor, fetch latest 4 videos with avg views + channel thumbnail
+        # 4. For each competitor: fetch latest 4 videos + avg views + thumbnail
         competitors_data = []
         for comp_id, comp_data in competitors:
             comp_resp = youtube.channels().list(
@@ -1906,10 +1906,15 @@ def comp_analysis():
             comp_info = comp_resp["items"][0]
             comp_title = comp_data["title"]
             comp_subs = int(comp_info["statistics"].get("subscriberCount", 1))
-            comp_uploads = comp_info["contentDetails"]["relatedPlaylists"]["uploads"]
-            comp_thumbnail = comp_info["snippet"]["thumbnails"]["high"]["url"]  # competitor profile picture
 
-            # Fetch up to 20 recent uploads for duration filtering
+            # 🔥 FILTER: SKIP channels with < 1000 subscribers
+            if comp_subs < 1000:
+                continue
+
+            comp_uploads = comp_info["contentDetails"]["relatedPlaylists"]["uploads"]
+            comp_thumbnail = comp_info["snippet"]["thumbnails"]["high"]["url"]
+
+            # Fetch up to 20 recent uploads
             comp_uploads_resp = youtube.playlistItems().list(
                 part="contentDetails",
                 playlistId=comp_uploads,
@@ -1922,7 +1927,7 @@ def comp_analysis():
             if not all_videos:
                 continue
 
-            # Categorize videos by duration
+            # Categorize by duration
             medium_videos = []
             long_videos = []
             short_videos = []
@@ -1947,14 +1952,14 @@ def comp_analysis():
             if len(selected) < 4:
                 selected.extend(short_videos[:4 - len(selected)])
 
-            selected = selected[:4]  # ensure exactly 4
+            selected = selected[:4]
 
-            # calculate avg recent views
+            # Avg recent views (last 5 videos)
             avg_recent_views = sum(
                 int(v["statistics"].get("viewCount", 0)) for v in all_videos[:5]
             ) / max(len(all_videos[:5]), 1)
 
-            # Prepare video data
+            # Prepare selected video data
             video_data = []
             for v in selected:
                 duration = parse_duration(v.get("contentDetails", {}).get("duration", ""))

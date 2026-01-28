@@ -7,6 +7,7 @@ from youtube_transcript_api import YouTubeTranscriptApi
 from youtube_transcript_api._errors import TranscriptsDisabled, NoTranscriptFound, VideoUnavailable
 import time
 import re
+from pytubefix import YouTube
 import whisper
 import uuid
 import json
@@ -545,156 +546,102 @@ class VideoProcessor:
     
     def extract_transcript_details(self, youtube_video_url):
         """
-        Extract COMPLETE YouTube transcript, then create intelligent 500-word summary
-        Preserves ALL important points while being concise
-        
-        SAME METHOD NAME - Just replace the entire method body
+        Downloads the YouTube video and uses Gemini 1.5 Pro/Flash 
+        to create an intelligent 500-word summary from the video content.
         """
         print(f"\n{'='*60}")
-        print(f"EXTRACTING YOUTUBE TRANSCRIPT: {youtube_video_url}")
+        print(f"PROCESSING VIDEO VIA GEMINI API: {youtube_video_url}")
         print(f"{'='*60}\n")
         
+        video_file = None
+        
         try:
-            # Step 1: Extract video ID
-            video_id = self.extract_video_id(youtube_video_url)
-            if not video_id:
-                return {"error": "Could not extract video ID from URL", "transcript": None, "stats": None}
+            # Step 1: Download Video using pytube
+            print("Step 1: Downloading video stream...")
+            yt = YouTube(youtube_video_url)
+            # Select low-res stream to speed up upload/processing
+            stream = yt.streams.filter(file_extension='mp4', progressive=True).order_by('resolution').first()
+            video_file_path = stream.download(filename="temp_video_for_gemini.mp4")
+            print(f"✓ Video downloaded: {video_file_path}")
+
+            # Step 2: Upload to Gemini File API
+            print("Step 2: Uploading video to Gemini File API...")
+            video_file = genai.upload_file(path=video_file_path)
+            print(f"✓ File uploaded: {video_file.name}")
+
+            # Step 3: Wait for video processing
+            # Large videos need time to be 'ACTIVE' before prompting
+            print("Step 3: Waiting for Gemini to process video...")
+            while video_file.state.name == "PROCESSING":
+                time.sleep(2)
+                video_file = genai.get_file(video_file.name)
             
-            print(f"Video ID: {video_id}")
+            if video_file.state.name == "FAILED":
+                raise Exception("Gemini video processing failed.")
+
+            # Step 4: Generate Intelligent Summary
+            print("Step 4: Generating 500-word intelligent summary...")
+            model = genai.GenerativeModel("gemini-2.0-flash") # or gemini-1.5-pro
             
-            # Step 2: Get COMPLETE transcript from YouTube
-            print("Fetching full transcript from YouTube...")
-            try:
-                transcript_list = YouTubeTranscriptApi.get_transcript(video_id)
-                
-                # Combine all transcript segments
-                raw_transcript = " ".join([entry['text'] for entry in transcript_list])
-                
-                if not raw_transcript or len(raw_transcript.strip()) < 100:
-                    print("⚠️ Transcript too short")
-                    raise Exception("Transcript too short")
-                
-                print(f"✓ Full transcript extracted: {len(raw_transcript):,} characters")
-                print(f"✓ Word count: {len(raw_transcript.split()):,} words")
-                
-                # Step 3: Create INTELLIGENT 500-word summary with Gemini
-                print("Creating intelligent 500-word summary...")
-                model = genai.GenerativeModel("gemini-2.0-flash")
-                
-                # Smart truncation if transcript is MASSIVE (> 100k chars)
-                max_chars = 100000
-                if len(raw_transcript) > max_chars:
-                    print(f"⚠️ Truncating transcript from {len(raw_transcript):,} to {max_chars:,} chars for processing")
-                    # Keep beginning, middle sample, and end
-                    chunk_size = max_chars // 3
-                    raw_transcript = (
-                        f"{raw_transcript[:chunk_size]}\n\n"
-                        f"[...MIDDLE CONTENT...]\n\n"
-                        f"{raw_transcript[len(raw_transcript)//2:len(raw_transcript)//2 + chunk_size]}\n\n"
-                        f"[...MORE CONTENT...]\n\n"
-                        f"{raw_transcript[-chunk_size:]}"
-                    )
-                
-                summary_prompt = f"""Create a comprehensive 500-word summary of this YouTube transcript that captures EVERY important point.
-    
-    TRANSCRIPT:
-    {raw_transcript}
-    
-    INSTRUCTIONS:
-    1. Extract ALL key arguments, main points, and core concepts
-    2. Include specific data, statistics, examples, and facts mentioned
-    3. Preserve technical details and terminology
-    4. Maintain the speaker's key insights and unique perspectives
-    5. Organize logically by topic/theme
-    6. Write in dense, information-rich prose (NO fluff)
-    7. Target EXACTLY 500 words - make every word count
-    
-    OUTPUT FORMAT:
-    - Write as continuous prose (paragraphs, not bullet points)
-    - Focus on WHAT was said, not meta-commentary
-    - Preserve context needed for script generation
-    - Be comprehensive yet concise
-    
-    Generate the 500-word summary now:"""
-                
-                response = model.generate_content(
-                    summary_prompt,
-                    generation_config=genai.types.GenerationConfig(
-                        temperature=0.2,  # Low temp for accuracy
-                        max_output_tokens=800  # ~500 words + buffer
-                    )
+            summary_prompt = """Create a comprehensive 500-word summary of this video that captures EVERY important point.
+            
+            INSTRUCTIONS:
+            1. Extract ALL key arguments, main points, and core concepts.
+            2. Include specific data, statistics, examples, and facts mentioned.
+            3. Preserve technical details and terminology.
+            4. Maintain the speaker's key insights and unique perspectives.
+            5. Organize logically by topic/theme.
+            6. Write in dense, information-rich prose (NO fluff).
+            7. Target EXACTLY 500 words - make every word count.
+            
+            OUTPUT FORMAT:
+            - Write as continuous prose (paragraphs, not bullet points).
+            - Focus on WHAT was said and shown.
+            - Be comprehensive yet concise."""
+
+            response = model.generate_content(
+                [summary_prompt, video_file],
+                generation_config=genai.types.GenerationConfig(
+                    temperature=0.2,
+                    max_output_tokens=1000
                 )
-                
-                if response.text:
-                    summary = response.text.strip()
-                    word_count = len(summary.split())
-                    
-                    print(f"\n{'='*60}")
-                    print(f"✓ INTELLIGENT SUMMARY COMPLETE")
-                    print(f"{'='*60}")
-                    print(f"Summary: {len(summary):,} chars")
-                    print(f"Words: {word_count:,} (target: 500)")
-                    print(f"Compression: {len(raw_transcript):,} → {len(summary):,} chars")
-                    print(f"{'='*60}\n")
-                    
-                    # Preview first 300 chars
-                    print(f"Summary Preview:")
-                    print(f"{'-'*60}")
-                    print(summary[:300] + "..." if len(summary) > 300 else summary)
-                    print(f"{'='*60}\n")
-                    
-                    return {
-                        "error": None,
-                        "transcript": summary,  # Return summary, not full transcript
-                        "stats": {
-                            'char_count': len(summary),
-                            'word_count': word_count,
-                            'original_length': len(raw_transcript),
-                            'original_words': len(raw_transcript.split()),
-                            'source_type': 'youtube_transcript',
-                            'video_id': video_id,
-                            'url': youtube_video_url
-                        }
-                    }
-                else:
-                    # Fallback: create basic summary from first 500 words
-                    print("⚠️ Gemini summary failed, using first 500 words of transcript")
-                    words = raw_transcript.split()[:500]
-                    fallback_summary = " ".join(words) + "..."
-                    
-                    return {
-                        "error": None,
-                        "transcript": fallback_summary,
-                        "stats": {
-                            'char_count': len(fallback_summary),
-                            'word_count': 500,
-                            'source_type': 'youtube_transcript_fallback',
-                            'video_id': video_id,
-                            'url': youtube_video_url
-                        }
-                    }
-                    
-            except (TranscriptsDisabled, NoTranscriptFound):
-                print("⚠️ No transcript available - video may not have captions")
-                return {
-                    "error": "This video does not have available transcripts/captions. Please try a video with captions enabled.",
-                    "transcript": None,
-                    "stats": None
-                }
-            except VideoUnavailable:
-                return {
-                    "error": "Video is unavailable or private",
-                    "transcript": None,
-                    "stats": None
-                }
-                
-        except Exception as e:
-            logger.error(f"YouTube transcript extraction error: {str(e)}")
+            )
+
+            summary = response.text.strip()
+            word_count = len(summary.split())
+
+            # Cleanup: Delete the local file and the remote Gemini file
+            if os.path.exists(video_file_path):
+                os.remove(video_file_path)
+            genai.delete_file(video_file.name)
+
+            print(f"\n{'='*60}")
+            print(f"✓ ANALYSIS COMPLETE")
+            print(f"Words: {word_count:,} (target: 500)")
+            print(f"{'='*60}\n")
+
             return {
-                "error": f"Could not extract transcript: {str(e)}",
+                "error": None,
+                "transcript": summary, # Summary returned as transcript for compatibility
+                "stats": {
+                    'char_count': len(summary),
+                    'word_count': word_count,
+                    'source_type': 'gemini_video_analysis',
+                    'url': youtube_video_url
+                }
+            }
+
+        except Exception as e:
+            # Cleanup on failure
+            if video_file:
+                genai.delete_file(video_file.name)
+            print(f"❌ Error: {str(e)}")
+            return {
+                "error": f"Video processing failed: {str(e)}",
                 "transcript": None,
                 "stats": None
             }
+    
     def _calculate_transcript_stats(self, transcript_text):
         if not transcript_text:
             return {
@@ -715,7 +662,7 @@ class VideoProcessor:
         }
         
 class AudioProcessor:
-    """Process audio files with Whisper for transcription (MORE RELIABLE than Gemini)"""
+    """Process audio files with Gemini for transcription (instead of Whisper)"""
     
     def __init__(self):
         self.supported_audio_formats = {'.mp3', '.wav', '.m4a', '.flac', '.ogg', '.opus', '.webm', '.wma', '.aac'}
@@ -746,104 +693,91 @@ class AudioProcessor:
                 
                 return True, None
             except Exception as e:
-                # If moviepy fails, just check file exists and size
-                if os.path.exists(file_path):
-                    return True, None
                 return False, f"Could not read audio file: {str(e)}"
                 
         except Exception as e:
             return False, f"Invalid audio file: {str(e)}"
     
-    def convert_to_wav_if_needed(self, audio_path):
+    def transcribe_with_gemini(self, audio_path):
         """
-        Convert audio to WAV format if it's not already WAV
-        Whisper works best with WAV files
-        Returns: (wav_path, needs_cleanup)
-        """
-        file_ext = Path(audio_path).suffix.lower()
-        
-        # If already WAV, no conversion needed
-        if file_ext == '.wav':
-            return audio_path, False
-        
-        try:
-            print(f"Converting {file_ext} to WAV for better Whisper compatibility...")
-            
-            from moviepy.editor import AudioFileClip
-            
-            # Create temporary WAV file
-            wav_path = os.path.join(
-                self.temp_folder,
-                f"converted_{int(time.time()*1000)}.wav"
-            )
-            
-            # Convert to WAV
-            audio = AudioFileClip(audio_path)
-            audio.write_audiofile(
-                wav_path,
-                fps=16000,  # 16kHz optimal for speech
-                nbytes=2,
-                codec='pcm_s16le',
-                verbose=False,
-                logger=None
-            )
-            audio.close()
-            
-            print(f"✓ Converted to WAV: {wav_path}")
-            return wav_path, True  # needs cleanup
-            
-        except Exception as e:
-            print(f"⚠️ Conversion failed, will try original file: {e}")
-            return audio_path, False
-    
-    def transcribe_with_whisper(self, audio_path):
-        """
-        Transcribe audio using Whisper (LOCAL MODEL - FAST & RELIABLE)
+        Transcribe audio using Gemini API (same as video processing)
         Returns: (transcript_text, error)
         """
         try:
-            print(f"Transcribing with Whisper local model...")
+            print(f"Uploading audio to Gemini for transcription: {audio_path}")
             
-            # Load cached Whisper model
-            model = load_whisper_model()
+            # Upload audio file to Gemini
+            audio_file = genai.upload_file(audio_path)
             
-            if model is None:
-                return None, "Whisper model not loaded. Please run download_whisper_model.py first."
+            # Smart polling with exponential backoff
+            max_wait = 180  # 3 minutes max
+            wait_interval = 2  # Start with 2 seconds
+            wait_time = 0
+            check_count = 0
             
-            # Transcribe with Whisper
-            print("Processing audio with Whisper...")
-            result = model.transcribe(
-                audio_path,
-                language=None,  # Auto-detect language
-                fp16=False,  # CPU compatibility
-                verbose=False  # Suppress progress output
+            print("Waiting for Gemini to process audio...")
+            while audio_file.state.name == "PROCESSING" and wait_time < max_wait:
+                time.sleep(wait_interval)
+                wait_time += wait_interval
+                check_count += 1
+                
+                # Exponential backoff: 2s, 2s, 3s, 3s, 5s, 5s, 5s...
+                if check_count > 2 and check_count % 2 == 0:
+                    wait_interval = min(wait_interval + 1, 5)
+                
+                audio_file = genai.get_file(audio_file.name)
+                
+                if wait_time % 15 == 0:
+                    print(f"  Processing audio... {wait_time}s")
+            
+            if audio_file.state.name == "FAILED":
+                print("Audio upload to Gemini failed")
+                return None, "Audio upload failed"
+            
+            if wait_time >= max_wait:
+                print("Audio processing timeout")
+                return None, "Audio processing timeout"
+            
+            # Generate transcription with Gemini
+            print("Generating transcription with Gemini...")
+            model = genai.GenerativeModel("gemini-2.0-flash")
+            prompt = "Transcribe this audio completely and accurately. Output only the transcription text."
+            
+            response = model.generate_content(
+                [prompt, audio_file],
+                generation_config=genai.types.GenerationConfig(
+                    temperature=0.1,  # Low temp for accuracy
+                    max_output_tokens=5000
+                )
             )
             
-            transcript = result["text"].strip()
-            detected_language = result.get("language", "unknown")
+            # Cleanup uploaded file
+            try:
+                genai.delete_file(audio_file.name)
+                print("Cleaned up Gemini uploaded file")
+            except:
+                pass
             
-            if len(transcript) < 20:
-                return None, "Transcript too short or empty"
+            if response.text and len(response.text.strip()) > 20:
+                print(f"✓ Transcription complete: {len(response.text)} characters")
+                return response.text, None
             
-            print(f"✓ Transcription complete: {len(transcript)} chars, language: {detected_language}")
-            
-            return transcript, None
+            return None, "Transcript too short or empty"
                 
         except Exception as e:
-            logger.error(f"Whisper transcription error: {str(e)}")
+            logger.error(f"Gemini transcription error: {str(e)}")
             return None, f"Transcription failed: {str(e)}"
     
     def process_audio_file(self, audio_path, filename):
         """
-        Complete audio processing pipeline using Whisper
+        Complete audio processing pipeline using Gemini
         Returns: {error, transcript, stats}
         """
         print(f"\n{'='*60}")
-        print(f"AUDIO FILE PROCESSING (WHISPER): {filename}")
+        print(f"AUDIO FILE PROCESSING (GEMINI): {filename}")
         print(f"{'='*60}\n")
         
         total_start = time.time()
-        converted_wav = None
         
         try:
             # Validate audio file
@@ -856,7 +790,6 @@ class AudioProcessor:
                 }
             
             # Get duration
-            duration = None
             try:
                 from moviepy.editor import AudioFileClip
                 audio = AudioFileClip(audio_path)
@@ -865,24 +798,12 @@ class AudioProcessor:
                 print(f"Duration: {duration:.1f}s ({duration/60:.1f} min)")
             except Exception as e:
                 print(f"Warning: Could not get duration: {e}")
+                duration = None
             
-            # Convert to WAV if needed (Whisper works best with WAV)
-            transcribe_audio_path, needs_cleanup = self.convert_to_wav_if_needed(audio_path)
-            if needs_cleanup:
-                converted_wav = transcribe_audio_path
-            
-            # Transcribe with Whisper
+            # Transcribe with Gemini
             transcribe_start = time.time()
-            transcript, transcribe_error = self.transcribe_with_whisper(transcribe_audio_path)
+            transcript, transcribe_error = self.transcribe_with_gemini(audio_path)
             transcribe_time = time.time() - transcribe_start
-            
-            # Cleanup converted WAV if we created one
-            if converted_wav and os.path.exists(converted_wav):
-                try:
-                    os.remove(converted_wav)
-                    print("✓ Cleaned up temporary WAV file")
-                except:
-                    pass
             
             if transcribe_error:
                 return {
@@ -937,20 +858,12 @@ class AudioProcessor:
             }
             
         except Exception as e:
-            # Cleanup on error
-            if converted_wav and os.path.exists(converted_wav):
-                try:
-                    os.remove(converted_wav)
-                except:
-                    pass
-            
             logger.error(f"Audio processing error: {str(e)}")
             return {
                 "error": f"Processing error: {str(e)}",
                 "transcript": None,
                 "stats": None
             }
-
 class InstagramProcessor:
     """OPTIMIZED: Process Instagram with direct audio download (NO video) + Whisper"""
     

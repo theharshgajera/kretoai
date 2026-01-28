@@ -3,6 +3,8 @@ from flask_cors import CORS
 from dotenv import load_dotenv
 import requests
 from google import genai
+from pathlib import Path
+
 from google.genai import types
 from google.genai.types import HttpOptions, Part
 
@@ -25,7 +27,7 @@ import speech_recognition as sr
 import moviepy.editor as mp
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import multiprocessing
-
+import base64
 # Document processing imports
 import PyPDF2
 import docx
@@ -790,13 +792,18 @@ class VideoProcessor:
             'estimated_read_time': max(1, word_count // 200)
         }
         
+"""
+FIXED AudioProcessor - NO FFMPEG/MOVIEPY REQUIRED
+This version removes the moviepy dependency for validation
+since Gemini handles the transcription anyway
+"""
+
 class AudioProcessor:
-    """Process audio files with Gemini for transcription (instead of Whisper)"""
+    """Process audio files with Gemini for transcription"""
     
     def __init__(self):
         self.supported_audio_formats = {'.mp3', '.wav', '.m4a', '.flac', '.ogg', '.opus', '.webm', '.wma', '.aac'}
         self.max_audio_size = 500 * 1024 * 1024  # 500MB
-        self.max_duration = 3600  # 1 hour
         self.temp_folder = UPLOAD_FOLDER
         
     def is_supported_audio_format(self, filename):
@@ -804,97 +811,118 @@ class AudioProcessor:
         return Path(filename).suffix.lower() in self.supported_audio_formats
     
     def validate_audio_file(self, file_path):
-        """Validate audio file"""
+        """Validate audio file (simple validation)"""
         try:
+            # Check if file exists
+            if not os.path.exists(file_path):
+                return False, f"File not found: {file_path}"
+            
+            # Check file size
             file_size = os.path.getsize(file_path)
             if file_size > self.max_audio_size:
-                return False, f"Audio too large. Max: {self.max_audio_size // (1024*1024)}MB"
+                return False, f"Audio too large ({file_size/(1024*1024):.1f}MB). Max: {self.max_audio_size // (1024*1024)}MB"
             
-            # Get duration using moviepy
-            try:
-                from moviepy.editor import AudioFileClip
-                audio = AudioFileClip(file_path)
-                duration = audio.duration
-                audio.close()
-                
-                if duration > self.max_duration:
-                    return False, f"Audio too long. Max: {self.max_duration // 60} minutes"
-                
-                return True, None
-            except Exception as e:
-                return False, f"Could not read audio file: {str(e)}"
+            if file_size == 0:
+                return False, "Audio file is empty"
+            
+            return True, None
                 
         except Exception as e:
             return False, f"Invalid audio file: {str(e)}"
     
     def transcribe_with_gemini(self, audio_path):
         """
-        Transcribe audio using Gemini API (same as video processing)
+        Transcribe audio using Gemini API
         Returns: (transcript_text, error)
         """
         try:
-            print(f"Uploading audio to Gemini for transcription: {audio_path}")
+            print(f"Uploading audio to Gemini: {audio_path}")
             
-            # Upload audio file to Gemini
-            audio_file = genai.upload_file(audio_path)
+            # Determine MIME type from file extension
+            extension = Path(audio_path).suffix.lower()
+            mime_type_map = {
+                '.mp3': 'audio/mpeg',
+                '.wav': 'audio/wav',
+                '.m4a': 'audio/mp4',
+                '.flac': 'audio/flac',
+                '.ogg': 'audio/ogg',
+                '.opus': 'audio/opus',
+                '.webm': 'audio/webm',
+                '.wma': 'audio/x-ms-wma',
+                '.aac': 'audio/aac'
+            }
+            mime_type = mime_type_map.get(extension, 'audio/mpeg')
             
-            # Smart polling with exponential backoff
-            max_wait = 180  # 3 minutes max
-            wait_interval = 2  # Start with 2 seconds
-            wait_time = 0
-            check_count = 0
+            # Upload file to Gemini (CORRECT SYNTAX)
+            print("Uploading audio file...")
+            with open(audio_path, 'rb') as f:
+                audio_file = client.files.upload(
+                    file=f,
+                    config={'mime_type': mime_type} 
+                ) # ✅ Use 'file' not 'path'
             
+            print(f"✓ Uploaded: {audio_file.name}")
+            
+            # Wait for processing (if needed)
             print("Waiting for Gemini to process audio...")
+            max_wait = 180  # 3 minutes
+            wait_time = 0
             while audio_file.state.name == "PROCESSING" and wait_time < max_wait:
-                time.sleep(wait_interval)
-                wait_time += wait_interval
-                check_count += 1
-                
-                # Exponential backoff: 2s, 2s, 3s, 3s, 5s, 5s, 5s...
-                if check_count > 2 and check_count % 2 == 0:
-                    wait_interval = min(wait_interval + 1, 5)
-                
-                audio_file = genai.get_file(audio_file.name)
-                
-                if wait_time % 15 == 0:
-                    print(f"  Processing audio... {wait_time}s")
+                time.sleep(2)
+                wait_time += 2
+                audio_file = client.files.get(name=audio_file.name)
+                if wait_time % 10 == 0:
+                    print(f"  Processing... {wait_time}s")
             
             if audio_file.state.name == "FAILED":
-                print("Audio upload to Gemini failed")
                 return None, "Audio upload failed"
             
             if wait_time >= max_wait:
-                print("Audio processing timeout")
                 return None, "Audio processing timeout"
             
-            # Generate transcription with Gemini
+            # Transcribe with Gemini
             print("Generating transcription with Gemini...")
-            model = genai.GenerativeModel("gemini-2.0-flash")
-            prompt = "Transcribe this audio completely and accurately. Output only the transcription text."
+            model_id = "gemini-2.0-flash"
             
-            response = model.generate_content(
-                [prompt, audio_file],
-                generation_config=genai.types.GenerationConfig(
-                    temperature=0.1,  # Low temp for accuracy
-                    max_output_tokens=5000
+            transcription_prompt = """Transcribe this audio file completely and accurately. 
+            
+Output ONLY the transcription text with no preamble, no explanation, and no formatting. 
+Just provide the raw transcript of what is being said in the audio."""
+
+            response = client.models.generate_content(
+                model=model_id,
+                contents=[
+                    types.Part.from_uri(
+                        file_uri=audio_file.uri,
+                        mime_type=mime_type,
+                    ),
+                    transcription_prompt,
+                ],
+                config=types.GenerateContentConfig(
+                    temperature=0.1,  # Low temperature for accuracy
+                    max_output_tokens=8000,
                 )
             )
             
+            transcript = response.text.strip()
+            
             # Cleanup uploaded file
             try:
-                genai.delete_file(audio_file.name)
+                client.files.delete(name=audio_file.name)
                 print("Cleaned up Gemini uploaded file")
             except:
                 pass
             
-            if response.text and len(response.text.strip()) > 20:
-                print(f"✓ Transcription complete: {len(response.text)} characters")
-                return response.text, None
+            if transcript and len(transcript) > 20:
+                print(f"✓ Transcription complete: {len(transcript)} characters")
+                return transcript, None
             
             return None, "Transcript too short or empty"
                 
         except Exception as e:
-            logger.error(f"Gemini transcription error: {str(e)}")
+            print(f"❌ Gemini transcription error: {str(e)}")
+            import traceback
+            print(traceback.format_exc())
             return None, f"Transcription failed: {str(e)}"
     
     def process_audio_file(self, audio_path, filename):
@@ -918,16 +946,9 @@ class AudioProcessor:
                     "stats": None
                 }
             
-            # Get duration
-            try:
-                from moviepy.editor import AudioFileClip
-                audio = AudioFileClip(audio_path)
-                duration = audio.duration
-                audio.close()
-                print(f"Duration: {duration:.1f}s ({duration/60:.1f} min)")
-            except Exception as e:
-                print(f"Warning: Could not get duration: {e}")
-                duration = None
+            # Get file size for stats
+            file_size = os.path.getsize(audio_path)
+            print(f"File size: {file_size:,} bytes ({file_size/(1024*1024):.2f} MB)")
             
             # Transcribe with Gemini
             transcribe_start = time.time()
@@ -948,7 +969,7 @@ class AudioProcessor:
             stats = {
                 'char_count': len(transcript),
                 'word_count': word_count,
-                'actual_duration': duration,
+                'file_size': file_size,
                 'processing_time': round(total_time, 1),
                 'transcribe_time': round(transcribe_time, 1),
                 'estimated_read_time': max(1, word_count // 200),
@@ -961,9 +982,7 @@ class AudioProcessor:
             print(f"{'='*60}")
             print(f"Transcript: {len(transcript):,} chars")
             print(f"Words: {word_count:,}")
-            print(f"Duration: {duration:.1f}s" if duration else "Duration: Unknown")
             print(f"Total Time: {total_time:.1f}s")
-            print(f"Speed: {duration/total_time:.1f}x realtime" if duration else "")
             print(f"{'='*60}\n")
             
             # PRINT TRANSCRIPT PREVIEW
@@ -987,12 +1006,15 @@ class AudioProcessor:
             }
             
         except Exception as e:
-            logger.error(f"Audio processing error: {str(e)}")
+            print(f"❌ Audio processing error: {str(e)}")
+            import traceback
+            print(traceback.format_exc())
             return {
                 "error": f"Processing error: {str(e)}",
                 "transcript": None,
                 "stats": None
             }
+
 class InstagramProcessor:
     """OPTIMIZED: Process Instagram with direct audio download (NO video) + Whisper"""
     

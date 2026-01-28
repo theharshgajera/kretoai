@@ -4,8 +4,11 @@ from dotenv import load_dotenv
 import requests
 from google import genai
 from pathlib import Path
+from urllib.parse import urlparse
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from moviepy.config import change_settings
 
-from google.genai import types
+from google.genai import types, Client
 from google.genai.types import HttpOptions, Part
 
 import os
@@ -360,427 +363,214 @@ Provide a comprehensive knowledge base for script writing."""
             print(traceback.format_exc())
             return None
 class VideoProcessor:
-    """High-performance video processor with parallel chunks - NO quality compromise"""
+    """
+    High-performance video processor using Gemini Native Video Analysis.
+    Now unified: Both YouTube and Local files are processed via API upload 
+    to avoid local FFMPEG dependencies and improve accuracy.
+    """
     
-    def __init__(self):
-        self.rate_limit_delay = 1
-        self.last_api_call = 0
+    def __init__(self, client=None, api_key=None):
+        """
+        Initialize the VideoProcessor.
+        :param client: An instance of google.genai.Client
+        :param api_key: Optional API key to initialize a client if one isn't provided.
+        """
+        # Priority 1: Use provided client instance
+        self.client = client 
+        
+        # Priority 2: Use provided API key to create a client
+        if self.client is None and api_key:
+            try:
+                self.client = Client(api_key=api_key, http_options={'api_version': 'v1alpha'})
+            except Exception as e:
+                logger.error(f"Failed to initialize GenAI Client with provided API key: {e}")
+
+        # Priority 3: Explicitly check environment variable loaded by load_dotenv()
+        env_key = os.getenv("GEMINI_API_KEY")
+        if self.client is None and env_key:
+            try:
+                self.client = Client(api_key=env_key, http_options={'api_version': 'v1alpha'})
+            except Exception as e:
+                logger.error(f"Failed to initialize GenAI Client from .env GEMINI_API_KEY: {e}")
+
+        # Final Fallback: Attempt default initialization
+        if self.client is None:
+            try:
+                self.client = Client(http_options={'api_version': 'v1alpha'})
+            except Exception as e:
+                logger.warning(f"Default client initialization failed. Please ensure GEMINI_API_KEY is in .env: {e}")
+
         self.supported_video_formats = {'.mp4', '.avi', '.mov', '.mkv', '.wmv', '.flv', '.webm', '.m4v'}
         self.max_video_size = 500 * 1024 * 1024  # 500MB
         self.max_duration = 3600  # 1 hour
-        
-        # PERFORMANCE: Smart chunking for speed without quality loss
-        self.chunk_duration = 240  # 4-minute chunks (optimal for Gemini)
-        self.max_chunks = 8  # Up to 32 minutes
-        self.max_workers = 3  # Parallel chunk processing
-    
-    def is_supported_video_format(self, filename):
-        """Check if video format is supported"""
-        return Path(filename).suffix.lower() in self.supported_video_formats
-    
-    def validate_video_file(self, file_path):
-        """Validate video file"""
+        self.last_api_call = 0
+        self.rate_limit_delay = 1.0
+
+    def _normalize_path(self, path):
+        """Helper to ensure paths are absolute and OS-compliant."""
+        if not path:
+            return path
+        clean_path = str(path).strip().strip('"').strip("'")
+        normalized = Path(clean_path).expanduser().resolve()
+        return str(normalized)
+
+    def process_video_content(self, source, source_type='youtube'):
+        """Universal entry point for all video types using Cloud Processing"""
         try:
-            file_size = os.path.getsize(file_path)
-            if file_size > self.max_video_size:
-                return False, f"Video too large. Max: {self.max_video_size // (1024*1024)}MB"
-            
-            video = mp.VideoFileClip(file_path)
-            duration = video.duration
-            video.close()
-            
-            if duration > self.max_duration:
-                return False, f"Video too long. Max: {self.max_duration // 60} minutes"
-            
-            return True, None
-        except Exception as e:
-            return False, f"Invalid video: {str(e)}"
-    
-    def extract_audio_optimized(self, video_path, output_path=None, start_time=0, end_time=None):
-        """
-        OPTIMIZED: Fast audio extraction with GOOD quality for accurate transcription
-        Uses 16kHz (not 8kHz) to maintain transcription accuracy
-        """
-        try:
-            if output_path is None:
-                output_path = os.path.join(
-                    tempfile.gettempdir(), 
-                    f"audio_{os.getpid()}_{int(time.time()*1000)}.wav"
-                )
-            
-            video = mp.VideoFileClip(video_path)
-            
-            # Extract segment if specified
-            if start_time > 0 or end_time:
-                video = video.subclip(start_time, end_time)
-            
-            audio = video.audio
-            
-            # OPTIMIZED: 16kHz is optimal for speech (maintains quality, faster than 44.1kHz)
-            audio.write_audiofile(
-                output_path,
-                fps=16000,  # 16kHz - perfect for speech recognition
-                nbytes=2,
-                codec='pcm_s16le',
-                bitrate='64k',  # Good quality for speech
-                verbose=False,
-                logger=None
-            )
-            
-            audio.close()
-            video.close()
-            
-            return output_path
-            
-        except Exception as e:
-            logger.error(f"Audio extraction failed: {str(e)}")
-            return None
-    
-    def transcribe_with_gemini_fast(self, audio_path, chunk_idx=0):
-        """
-        OPTIMIZED: Faster Gemini transcription without quality loss
-        - Shorter wait times with smart polling
-        - Efficient error handling
-        """
-        try:
-            print(f"[Chunk {chunk_idx}] Uploading to Gemini...")
-            
-            # Upload audio
-            audio_file = genai.upload_file(audio_path)
-            
-            # OPTIMIZED: Smart polling with exponential backoff
-            max_wait = 150  # 2.5 minutes max
-            wait_interval = 2  # Start with 2 seconds
-            wait_time = 0
-            check_count = 0
-            
-            while audio_file.state.name == "PROCESSING" and wait_time < max_wait:
-                time.sleep(wait_interval)
-                wait_time += wait_interval
-                check_count += 1
-                
-                # Exponential backoff: 2s, 2s, 3s, 3s, 5s, 5s, 5s...
-                if check_count > 2 and check_count % 2 == 0:
-                    wait_interval = min(wait_interval + 1, 5)
-                
-                audio_file = genai.get_file(audio_file.name)
-                
-                if wait_time % 15 == 0:
-                    print(f"  [Chunk {chunk_idx}] Processing... {wait_time}s")
-            
-            if audio_file.state.name == "FAILED":
-                print(f"  [Chunk {chunk_idx}] Upload failed")
-                return None
-            
-            if wait_time >= max_wait:
-                print(f"  [Chunk {chunk_idx}] Timeout")
-                return None
-            
-            # OPTIMIZED: Minimal prompt for speed
-            model = genai.GenerativeModel("gemini-2.0-flash")
-            prompt = "Transcribe this audio completely and accurately. Output only the transcription text."
-            
-            response = model.generate_content(
-                [prompt, audio_file],
-                generation_config=genai.types.GenerationConfig(
-                    temperature=0.1,  # Low temp for accuracy
-                    max_output_tokens=5000
-                )
-            )
-            
-            # Cleanup
-            try:
-                genai.delete_file(audio_file.name)
-            except:
-                pass
-            
-            if response.text and len(response.text.strip()) > 20:
-                print(f"  [Chunk {chunk_idx}] ✓ {len(response.text)} chars")
-                return response.text
-            
-            return None
-                
-        except Exception as e:
-            logger.error(f"Chunk {chunk_idx} transcription failed: {str(e)}")
-            return None
-    
-    def process_video_parallel_chunks(self, video_path, duration):
-        """
-        HIGH-PERFORMANCE: Process video in parallel chunks
-        Maintains quality while achieving 2-3x speed improvement
-        """
-        from concurrent.futures import ThreadPoolExecutor, as_completed
-        
-        try:
-            # Strategy: Short videos single-threaded, long videos parallel
-            if duration <= 300:  # 5 minutes or less
-                print(f"Short video ({duration:.0f}s) - single chunk processing")
-                return self._process_single_chunk(video_path, duration)
-            
-            # Long videos: parallel chunk processing
-            print(f"Long video ({duration:.0f}s) - parallel chunk processing")
-            return self._process_parallel_chunks(video_path, duration)
-            
-        except Exception as e:
-            logger.error(f"Parallel processing error: {str(e)}")
-            return None
-    
-    def _process_single_chunk(self, video_path, duration):
-        """Process short video as single chunk"""
-        temp_audio = self.extract_audio_optimized(video_path)
-        if not temp_audio:
-            return None
-        
-        try:
-            transcript = self.transcribe_with_gemini_fast(temp_audio, 0)
-            return transcript
-        finally:
-            if os.path.exists(temp_audio):
-                try:
-                    os.remove(temp_audio)
-                except:
-                    pass
-    
-    def _process_parallel_chunks(self, video_path, duration):
-        """
-        PARALLEL: Process video chunks simultaneously for maximum speed
-        """
-        from concurrent.futures import ThreadPoolExecutor, as_completed
-        
-        # Calculate optimal chunks
-        num_chunks = min(
-            int(duration // self.chunk_duration) + 1,
-            self.max_chunks
-        )
-        chunk_size = duration / num_chunks
-        
-        print(f"Processing {num_chunks} chunks (size: {chunk_size:.1f}s) with {self.max_workers} workers")
-        
-        def process_chunk(chunk_idx):
-            """Process single chunk"""
-            start_time = chunk_idx * chunk_size
-            end_time = min((chunk_idx + 1) * chunk_size, duration)
-            
-            temp_audio = self.extract_audio_optimized(
-                video_path,
-                start_time=start_time,
-                end_time=end_time
-            )
-            
-            if not temp_audio:
-                return chunk_idx, None
-            
-            try:
-                transcript = self.transcribe_with_gemini_fast(temp_audio, chunk_idx)
-                return chunk_idx, transcript
-            finally:
-                if os.path.exists(temp_audio):
-                    try:
-                        os.remove(temp_audio)
-                    except:
-                        pass
-        
-        # Process chunks in parallel
-        chunk_results = {}
-        
-        with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
-            futures = {
-                executor.submit(process_chunk, i): i 
-                for i in range(num_chunks)
-            }
-            
-            for future in as_completed(futures):
-                chunk_idx, transcript = future.result()
-                if transcript:
-                    chunk_results[chunk_idx] = transcript
-                    print(f"✓ Chunk {chunk_idx + 1}/{num_chunks} complete ({len(transcript)} chars)")
-                else:
-                    print(f"✗ Chunk {chunk_idx + 1}/{num_chunks} failed")
-        
-        # Combine results
-        if not chunk_results:
-            print("❌ No chunks succeeded")
-            return None
-        
-        if len(chunk_results) < num_chunks * 0.7:  # Need at least 70% success
-            print(f"⚠ Only {len(chunk_results)}/{num_chunks} chunks succeeded")
-        
-        combined = " ".join(
-            chunk_results[i] 
-            for i in sorted(chunk_results.keys())
-        )
-        
-        print(f"✓ Combined {len(chunk_results)}/{num_chunks} chunks: {len(combined):,} chars")
-        return combined
-    
-    def process_local_video_file(self, video_path, filename):
-        """
-        HIGH-PERFORMANCE: Process local video with parallel chunks
-        2-3x faster while maintaining transcription quality
-        """
-        try:
-            print(f"\n{'='*60}")
-            print(f"HIGH-PERFORMANCE VIDEO PROCESSING: {filename}")
-            print(f"{'='*60}\n")
-            
-            # Validate
-            is_valid, error_msg = self.validate_video_file(video_path)
-            if not is_valid:
-                return {"error": error_msg, "transcript": None, "stats": None}
-            
-            # Get duration
-            video = mp.VideoFileClip(video_path)
-            duration = video.duration
-            video.close()
-            
-            print(f"Duration: {duration:.1f}s ({duration/60:.1f} min)")
-            
-            # Process with parallel chunks
-            start_time = time.time()
-            transcript = self.process_video_parallel_chunks(video_path, duration)
-            process_time = time.time() - start_time
-            
-            if not transcript or len(transcript.strip()) < 50:
+            # Critical Check: Ensure client exists before processing
+            if self.client is None:
                 return {
-                    "error": "Could not extract meaningful transcript",
-                    "transcript": None,
+                    "error": "GenAI Client not initialized. Please ensure GEMINI_API_KEY is set in your .env file or passed to the constructor.", 
+                    "transcript": None, 
                     "stats": None
                 }
+
+            if source_type == 'youtube':
+                if not self.validate_youtube_url(source):
+                    return {"error": "Invalid YouTube URL", "transcript": None, "stats": None}
+                return self.extract_youtube_transcript_details(source)
             
-            stats = self._calculate_transcript_stats(transcript)
-            stats['filename'] = filename
-            stats['source_type'] = 'local_video'
-            stats['actual_duration'] = duration
-            stats['processing_time'] = round(process_time, 1)
+            elif source_type == 'local':
+                source = self._normalize_path(source)
+                if not self.is_supported_video_format(source):
+                    return {"error": f"Unsupported format: {Path(source).suffix}", "transcript": None, "stats": None}
+                
+                if not os.path.exists(source):
+                    return {"error": f"File not found at: {source}", "transcript": None, "stats": None}
+                
+                filename = os.path.basename(source)
+                return self.process_local_video_via_api(source, filename)
             
-            print(f"\n{'='*60}")
-            print(f"✓ PROCESSING COMPLETE in {process_time:.1f}s")
-            print(f"{'='*60}")
-            print(f"Transcript: {len(transcript):,} chars")
-            print(f"Words: {stats['word_count']:,}")
-            print(f"Speed: {duration/process_time:.1f}x realtime")
-            print(f"{'='*60}\n")
-            
-            return {
-                "error": None,
-                "transcript": transcript,
-                "stats": stats,
-                "source": filename
-            }
-                    
+            return {"error": f"Unknown source type: {source_type}", "transcript": None, "stats": None}
         except Exception as e:
-            logger.error(f"Video processing error: {str(e)}")
-            return {
-                "error": f"Error: {str(e)}",
-                "transcript": None,
-                "stats": None
-            }
-    
-    def process_video_content(self, source, source_type='youtube'):
-        """Universal video processing"""
-        if source_type == 'youtube':
-            if not self.validate_youtube_url(source):
-                return {"error": "Invalid YouTube URL", "transcript": None, "stats": None}
-            return self.extract_transcript_details(source)
-        
-        elif source_type == 'local':
-            if not self.is_supported_video_format(source):
-                return {"error": "Unsupported format", "transcript": None, "stats": None}
-            filename = os.path.basename(source)
-            return self.process_local_video_file(source, filename)
-        
-        return {"error": "Unknown source type", "transcript": None, "stats": None}
-    
-    # ========================================
-    # YOUTUBE METHODS (Keep all existing)
-    # ========================================
-    
-    def extract_video_id(self, youtube_url):
-        patterns = [
-            r'(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/embed\/)([^&\n?#]+)',
-            r'youtube\.com\/watch\?.*v=([^&\n?#]+)'
-        ]
-        for pattern in patterns:
-            match = re.search(pattern, youtube_url)
-            if match:
-                return match.group(1)
-        return None
-    
+            logger.error(f"Top-level processing error: {str(e)}")
+            return {"error": f"Processing Exception: {str(e)}", "transcript": None, "stats": None}
+
+    def is_supported_video_format(self, filename):
+        return Path(filename).suffix.lower() in self.supported_video_formats
+
+    def process_local_video_via_api(self, video_path, filename):
+        """
+        DEDICATED LOCAL VIDEO PIPELINE:
+        Uploads local video to Gemini File API and performs analysis.
+        """
+        print(f"\n{'='*60}\nUPLOADING LOCAL VIDEO TO GEMINI: {filename}\n{'='*60}")
+        try:
+            start_time = time.time()
+            
+            # 1. Create a v1 client for file operations
+            import google.generativeai as genai
+            genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
+            
+            # Upload using standard genai library
+            video_file = genai.upload_file(path=video_path, display_name=filename)
+            
+            # 2. Wait for processing
+            while video_file.state.name == "PROCESSING":
+                time.sleep(2)
+                video_file = genai.get_file(video_file.name)
+            
+            if video_file.state.name != "ACTIVE":
+                return {"error": f"Video processing failed: {video_file.state.name}", "transcript": None}
+
+            # 3. Analyze with standard model
+            model = genai.GenerativeModel("gemini-2.0-flash")
+            response = model.generate_content([
+                video_file,
+                "Provide a detailed transcription and a comprehensive summary of this video content."
+            ])
+            
+            transcript = response.text.strip()
+            
+            # 4. Cleanup
+            try: genai.delete_file(video_file.name)
+            except: pass
+            
+            process_time = time.time() - start_time
+            stats = self._calculate_transcript_stats(transcript)
+            stats.update({
+                'filename': filename,
+                'source_type': 'local_native_analysis',
+                'processing_time': round(process_time, 1)
+            })
+            
+            return {"error": None, "transcript": transcript, "stats": stats, "source": filename}
+            
+        except Exception as e:
+            logger.error(f"Cloud-based local processing error: {str(e)}")
+            return {"error": f"Local processing error: {str(e)}", "transcript": None}
+    def _call_gemini_local_analysis(self, video_file):
+        """
+        Dedicated API call function for local files.
+        Uses the uploaded file reference correctly.
+        """
+        try:
+            analysis_prompt = "Provide a detailed transcription and a comprehensive summary of this video content."
+            response = self.client.models.generate_content(
+                model="gemini-2.0-flash",
+                contents=[
+                    {
+                        "parts": [
+                            {"file_data": {"file_uri": video_file.uri, "mime_type": video_file.mime_type}},
+                            {"text": analysis_prompt}
+                        ]
+                    }
+                ]
+            )
+            return response.text.strip()
+        except Exception as e:
+            logger.error(f"Gemini local analysis error: {str(e)}")
+            raise Exception(f"from_file_data") from e
+
     def validate_youtube_url(self, url):
         youtube_domains = ['youtube.com', 'youtu.be', 'www.youtube.com']
         try:
             parsed_url = urlparse(url)
             return any(domain in parsed_url.netloc for domain in youtube_domains)
-        except:
-            return False
-    
-    def rate_limit_wait(self):
-        current_time = time.time()
-        time_since_last_call = current_time - self.last_api_call
-        if time_since_last_call < self.rate_limit_delay:
-            time.sleep(self.rate_limit_delay - time_since_last_call)
-        self.last_api_call = time.time()
-    
-    def extract_transcript_details(self, youtube_video_url):
-        print(f"\n{'='*60}")
-        print(f"PROCESSING VIDEO VIA GEMINI API: {youtube_video_url}")
-        print(f"{'='*60}\n")
-        
+        except: return False
+
+    def extract_youtube_transcript_details(self, youtube_video_url):
+        """
+        DEDICATED YOUTUBE PIPELINE:
+        Processes YouTube video via native URI support in Gemini.
+        """
+        print(f"\n{'='*60}\nPROCESSING YOUTUBE VIA GEMINI API: {youtube_video_url}\n{'='*60}")
         try:
-            model_id = "gemini-2.0-flash" 
+            transcript = self._call_gemini_youtube_analysis(youtube_video_url)
             
-            summary_prompt = """Create a comprehensive 500-word summary of this video...
-            (Include your detailed instructions here)"""
-
-            print("Step 1: Sending request to Gemini...")
-            
-            # CORRECT SYNTAX for google-genai v1
-            response = client.models.generate_content(
-                model=model_id,
-                contents=[
-                    types.Part.from_uri(
-                        file_uri=youtube_video_url,
-                        mime_type="video/mp4",
-                    ),
-                    summary_prompt,
-                ],
-                config=types.GenerateContentConfig( # Use GenerateContentConfig
-                    temperature=0.2,
-                    max_output_tokens=2000,
-                    # Note: 'tools' would go here if you were using them, 
-                    # but NOT inside a nested GenerationConfig.
-                )
-            )
-
-            summary = response.text.strip()
-            word_count = len(summary.split())
-
             return {
                 "error": None,
-                "transcript": summary, 
+                "transcript": transcript, 
                 "stats": {
-                    'char_count': len(summary),
-                    'word_count': word_count,
+                    'char_count': len(transcript),
+                    'word_count': len(transcript.split()),
                     'source_type': 'gemini_native_video_analysis',
                     'url': youtube_video_url
                 }
             }
-
         except Exception as e:
-            print(f"❌ Error: {str(e)}")
-            return {
-                "error": f"Video processing failed: {str(e)}",
-                "transcript": None,
-                "stats": None
-            }
+            logger.error(f"YouTube processing error: {str(e)}")
+            return {"error": f"Video processing failed: {str(e)}", "transcript": None, "stats": None}
+
+    def _call_gemini_youtube_analysis(self, youtube_url):
+        """Dedicated API call function for YouTube URLs."""
+        summary_prompt = "Generate a detailed transcript and a comprehensive 500-word summary of this video."
+        response = self.client.models.generate_content(
+            model="gemini-2.0-flash",
+            contents=[
+                types.Part.from_uri(file_uri=youtube_url, mime_type="video/mp4"),
+                summary_prompt,
+            ],
+            config=types.GenerateContentConfig(
+                temperature=0.2,
+                max_output_tokens=2000,
+            )
+        )
+        return response.text.strip()
+
     def _calculate_transcript_stats(self, transcript_text):
         if not transcript_text:
-            return {
-                'char_count': 0,
-                'word_count': 0,
-                'estimated_duration': 0,
-                'estimated_read_time': 0
-            }
+            return {'char_count': 0, 'word_count': 0, 'estimated_duration': 0, 'estimated_read_time': 0}
         
         char_count = len(transcript_text)
         word_count = len(transcript_text.split())
@@ -792,12 +582,6 @@ class VideoProcessor:
             'estimated_read_time': max(1, word_count // 200)
         }
         
-"""
-FIXED AudioProcessor - NO FFMPEG/MOVIEPY REQUIRED
-This version removes the moviepy dependency for validation
-since Gemini handles the transcription anyway
-"""
-
 class AudioProcessor:
     """Process audio files with Gemini for transcription"""
     

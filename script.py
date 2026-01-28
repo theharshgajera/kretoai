@@ -42,7 +42,7 @@ if not ANTHROPIC_API_KEY:
     raise ValueError("ANTHROPIC_API_KEY not found in environment variables")
 
 anthropic_client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
-
+client = genai.Client(http_options=HttpOptions(api_version="v1"))
 # ========================================
 # CONFIGURATION (will be set by app.py)
 # ========================================

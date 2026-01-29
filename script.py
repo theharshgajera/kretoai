@@ -7,7 +7,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from moviepy.config import change_settings
-
+import shutil
 from google.genai import types, Client
 from google.genai.types import HttpOptions, Part
 
@@ -17,7 +17,7 @@ from youtube_transcript_api._errors import TranscriptsDisabled, NoTranscriptFoun
 import time
 import re
 from pytubefix import YouTube
-import whisper
+import whisper_timestamped as whisper
 import uuid
 import json
 from datetime import datetime
@@ -800,12 +800,28 @@ Just provide the raw transcript of what is being said in the audio."""
             }
 
 class InstagramProcessor:
-    """OPTIMIZED: Process Instagram with direct audio download (NO video) + Whisper"""
+    """Process Instagram videos by downloading and uploading to Gemini"""
     
-    def __init__(self):
+    def __init__(self, client=None):
         self.supported_domains = ['instagram.com', 'www.instagram.com']
-        self.max_duration = 600  # 10 minutes max
-        self.temp_folder = UPLOAD_FOLDER
+        if client is None:
+            import google.generativeai as genai_config
+            genai_config.configure(api_key=os.getenv("GEMINI_API_KEY"))
+            self.genai = genai_config
+        else:
+            self.client = client
+        self.temp_folder = tempfile.gettempdir()
+        self._check_ytdlp()
+        
+    def _check_ytdlp(self):
+        """Check if yt-dlp is available"""
+        self.ytdlp_available = shutil.which('yt-dlp') is not None
+        if not self.ytdlp_available:
+            print("⚠️  WARNING: yt-dlp not found in system PATH")
+            print("   Instagram processing will fail until yt-dlp is installed")
+            print("   Install with: pip install yt-dlp")
+        else:
+            print("✓ yt-dlp found and ready")
         
     def validate_instagram_url(self, url):
         """Validate Instagram URL"""
@@ -815,189 +831,173 @@ class InstagramProcessor:
         except:
             return False
     
-    def download_instagram_audio_direct(self, instagram_url):
+    def download_instagram_video(self, instagram_url):
         """
-        OPTIMIZED: Download ONLY audio (no video) - 5-10x faster
-        Returns: (audio_path, duration, error)
+        Download Instagram video using yt-dlp
+        Returns: (video_path, error)
         """
+        # Check if yt-dlp is available
+        if not self.ytdlp_available:
+            error_msg = (
+                "yt-dlp is not installed or not in PATH.\n"
+                "Please install with: pip install yt-dlp\n"
+                "Then restart your application."
+            )
+            return None, error_msg
+        
         try:
-            audio_path = os.path.join(
+            video_path = os.path.join(
                 self.temp_folder,
-                f"instagram_audio_{int(time.time()*1000)}.mp3"
+                f"instagram_{int(time.time()*1000)}.mp4"
             )
             
-            print(f"Downloading Instagram AUDIO ONLY from: {instagram_url}")
+            print(f"Downloading Instagram video: {instagram_url}")
             
-            # yt-dlp: Extract ONLY audio (no video download)
+            # Download video with yt-dlp
             cmd = [
                 'yt-dlp',
-                '-x',  # Extract audio only
-                '--audio-format', 'mp3',  # Convert to MP3
-                '--audio-quality', '5',  # Good quality (0=best, 9=worst)
+                '-f', 'worst',  # Best quality
                 '--no-playlist',
                 '--no-warnings',
-                '--postprocessor-args', '-ar 16000',  # 16kHz for Whisper
-                '-o', audio_path.replace('.mp3', '.%(ext)s'),  # Let yt-dlp handle extension
+                '-o', video_path,
                 instagram_url
             ]
             
-            start_time = time.time()
+            print(f"Running command: {' '.join(cmd[:5])}... {instagram_url}")
+            
             result = subprocess.run(
                 cmd,
                 capture_output=True,
                 text=True,
-                timeout=120  # 2 minutes timeout (much faster than video)
+                timeout=120,
+                shell=False  # Explicit for Windows
             )
-            download_time = time.time() - start_time
             
             if result.returncode != 0:
-                print(f"yt-dlp error: {result.stderr}")
-                return None, None, f"Audio download failed: {result.stderr[:200]}"
+                error_msg = result.stderr if result.stderr else result.stdout
+                print(f"yt-dlp error output: {error_msg}")
+                
+                # Check for common errors
+                if "HTTP Error 429" in error_msg:
+                    return None, "Instagram rate limit reached. Please try again later."
+                elif "Private video" in error_msg or "login" in error_msg.lower():
+                    return None, "Video is private or requires login. Please use a public video."
+                else:
+                    return None, f"Download failed: {error_msg[:200]}"
             
-            # yt-dlp might save as .mp3 or with temp extension
-            actual_audio_path = audio_path
-            if not os.path.exists(audio_path):
-                # Try with .mp3 extension
-                base_path = audio_path.replace('.mp3', '')
-                for ext in ['.mp3', '.m4a', '.opus', '.webm']:
-                    test_path = base_path + ext
-                    if os.path.exists(test_path):
-                        actual_audio_path = test_path
-                        break
+            # Verify file was created
+            if not os.path.exists(video_path):
+                return None, "Video file was not created. Video may be unavailable or private."
             
-            if not os.path.exists(actual_audio_path):
-                return None, None, "Audio file not created"
+            file_size = os.path.getsize(video_path)
+            if file_size == 0:
+                os.remove(video_path)
+                return None, "Downloaded file is empty. Video may be unavailable."
             
-            file_size = os.path.getsize(actual_audio_path)
-            print(f"✓ Audio downloaded: {file_size:,} bytes ({file_size/(1024*1024):.2f} MB) in {download_time:.1f}s")
+            print(f"✓ Downloaded: {file_size:,} bytes ({file_size/(1024*1024):.2f} MB)")
             
-            # Get duration using moviepy (fast for audio)
-            try:
-                from moviepy.editor import AudioFileClip
-                audio_clip = AudioFileClip(actual_audio_path)
-                duration = audio_clip.duration
-                audio_clip.close()
-                print(f"  Duration: {duration:.1f}s ({duration/60:.1f} min)")
-            except Exception as e:
-                print(f"  Warning: Could not get duration: {e}")
-                duration = None
-            
-            return actual_audio_path, duration, None
+            return video_path, None
             
         except subprocess.TimeoutExpired:
-            return None, None, "Audio download timeout (2 minutes)"
-        except Exception as e:
-            return None, None, f"Download error: {str(e)}"
-    
-    def transcribe_with_whisper_optimized(self, audio_path, chunk_idx=0):
-        """
-        OPTIMIZED: Fast Whisper transcription using pre-downloaded model
-        NO downloads, uses cached model from disk
-        Returns: (transcript_text, error)
-        """
-        try:
-            print(f"Transcribing with Whisper (using cached model)...")
-            
-            # Load cached model (NO download, instant load from your custom path)
-            model = load_whisper_model()
-            
-            if model is None:
-                return None, "Whisper model not loaded. Please run download_whisper_model.py first."
-            
-            # Transcribe
-            result = model.transcribe(
-                audio_path,
-                language=None,  # Auto-detect
-                fp16=False,  # CPU compatibility
-                verbose=False  # Suppress logging
+            return None, "Download timeout (2 minutes). Video may be too long or connection is slow."
+        except FileNotFoundError:
+            return None, (
+                "yt-dlp command not found. Please install with: pip install yt-dlp\n"
+                "Make sure to restart your terminal/application after installation."
             )
-            
-            transcript = result["text"].strip()
-            detected_language = result.get("language", "unknown")
-            
-            if len(transcript) < 20:
-                return None, "Transcript too short or empty"
-            
-            print(f"✓ Transcription complete: {len(transcript)} chars, language: {detected_language}")
-            
-            return transcript, None
-            
         except Exception as e:
-            logger.error(f"Whisper transcription error: {str(e)}")
-            return None, f"Transcription failed: {str(e)}"
+            return None, f"Download error: {str(e)}"
     
     def process_instagram_url(self, instagram_url):
         """
-        OPTIMIZED: Complete Instagram processing with audio-only download
-        5-10x faster than video download
+        Process Instagram video: Download → Upload to Gemini → Analyze
         Returns: {error, transcript, stats}
         """
         print(f"\n{'='*60}")
-        print(f"FAST INSTAGRAM PROCESSING: {instagram_url}")
+        print(f"PROCESSING INSTAGRAM: {instagram_url}")
         print(f"{'='*60}\n")
         
-        audio_path = None
-        total_start = time.time()
+        video_path = None
         
         try:
             # Validate URL
             if not self.validate_instagram_url(instagram_url):
                 return {
-                    "error": "Invalid Instagram URL",
+                    "error": "Invalid Instagram URL. Expected format: https://www.instagram.com/p/...",
                     "transcript": None,
                     "stats": None
                 }
             
-            # Download audio only (FAST)
-            audio_path, duration, download_error = self.download_instagram_audio_direct(instagram_url)
+            # Step 1: Download video
+            video_path, download_error = self.download_instagram_video(instagram_url)
             
             if download_error:
+                print(f"❌ Download failed: {download_error}")
                 return {
                     "error": download_error,
                     "transcript": None,
                     "stats": None
                 }
             
-            # Check duration
-            if duration and duration > self.max_duration:
+            # Step 2: Upload to Gemini
+            print(f"Uploading to Gemini for analysis...")
+            video_file = self.genai.upload_file(path=video_path, display_name="instagram_video.mp4")
+            
+            # Wait for processing
+            print("Waiting for Gemini to process...")
+            max_wait = 120
+            wait_time = 0
+            while video_file.state.name == "PROCESSING" and wait_time < max_wait:
+                time.sleep(2)
+                wait_time += 2
+                video_file = self.genai.get_file(video_file.name)
+                if wait_time % 10 == 0:
+                    print(f"  Processing... {wait_time}s")
+            
+            if video_file.state.name != "ACTIVE":
+                # Cleanup
                 try:
-                    os.remove(audio_path)
+                    os.remove(video_path)
+                    self.genai.delete_file(video_file.name)
                 except:
                     pass
                 return {
-                    "error": f"Audio too long ({duration/60:.1f} min). Max: {self.max_duration/60} min",
+                    "error": f"Gemini processing failed: {video_file.state.name}",
                     "transcript": None,
                     "stats": None
                 }
             
-            # Transcribe with Whisper (OPTIMIZED - uses your cached model)
-            transcribe_start = time.time()
-            transcript, transcribe_error = self.transcribe_with_whisper_optimized(audio_path)
-            transcribe_time = time.time() - transcribe_start
+            # Step 3: Generate analysis
+            print("Generating 500-word summary...")
+            model = self.genai.GenerativeModel("gemini-2.0-flash")
             
-            # Cleanup audio
+            response = model.generate_content([
+                video_file,
+                "Generate a detailed transcript and a comprehensive 500-word summary of this Instagram video content."
+            ])
+            
+            transcript = response.text.strip()
+            
+            # Cleanup
             try:
-                os.remove(audio_path)
-            except:
-                pass
+                os.remove(video_path)
+                self.genai.delete_file(video_file.name)
+                print("✓ Cleaned up temporary files")
+            except Exception as e:
+                print(f"⚠️  Cleanup warning: {e}")
             
-            if transcribe_error:
+            if not transcript or len(transcript) < 50:
                 return {
-                    "error": transcribe_error,
+                    "error": "Could not extract content from video. Video may have no audio or visual content.",
                     "transcript": None,
                     "stats": None
                 }
-            
-            total_time = time.time() - total_start
             
             # Calculate stats
             word_count = len(transcript.split())
             stats = {
                 'char_count': len(transcript),
                 'word_count': word_count,
-                'actual_duration': duration,
-                'processing_time': round(total_time, 1),
-                'transcribe_time': round(transcribe_time, 1),
                 'estimated_read_time': max(1, word_count // 200),
                 'source_type': 'instagram',
                 'url': instagram_url
@@ -1008,15 +1008,11 @@ class InstagramProcessor:
             print(f"{'='*60}")
             print(f"Transcript: {len(transcript):,} chars")
             print(f"Words: {word_count:,}")
-            print(f"Duration: {duration:.1f}s" if duration else "Duration: Unknown")
-            print(f"Total Time: {total_time:.1f}s")
-            print(f"Transcribe Time: {transcribe_time:.1f}s")
-            print(f"Speed: {duration/total_time:.1f}x realtime" if duration else "")
             print(f"{'='*60}\n")
             
             # PRINT TRANSCRIPT PREVIEW
             print(f"\n{'='*80}")
-            print(f"INSTAGRAM TRANSCRIPT EXTRACTED: {instagram_url}")
+            print(f"INSTAGRAM TRANSCRIPT: {instagram_url}")
             print(f"{'='*80}")
             print(f"Length: {len(transcript):,} characters")
             print(f"Words: {word_count:,}")
@@ -1036,26 +1032,46 @@ class InstagramProcessor:
             
         except Exception as e:
             # Cleanup on error
-            if audio_path and os.path.exists(audio_path):
+            if video_path and os.path.exists(video_path):
                 try:
-                    os.remove(audio_path)
+                    os.remove(video_path)
                 except:
                     pass
             
-            logger.error(f"Instagram processing error: {str(e)}")
+            import logging
+            import traceback
+            logging.error(f"Instagram processing error: {str(e)}")
+            print(f"❌ Instagram error: {str(e)}")
+            print(traceback.format_exc())
+            
             return {
                 "error": f"Processing error: {str(e)}",
                 "transcript": None,
                 "stats": None
             }
-            
 class FacebookProcessor:
-    """OPTIMIZED: Process Facebook videos with direct audio download + Whisper"""
+    """Process Facebook videos by downloading and uploading to Gemini"""
     
-    def __init__(self):
+    def __init__(self, client=None):
         self.supported_domains = ['facebook.com', 'fb.com', 'www.facebook.com', 'fb.watch', 'm.facebook.com']
-        self.max_duration = 600  # 10 minutes max
-        self.temp_folder = UPLOAD_FOLDER
+        if client is None:
+            import google.generativeai as genai_config
+            genai_config.configure(api_key=os.getenv("GEMINI_API_KEY"))
+            self.genai = genai_config
+        else:
+            self.client = client
+        self.temp_folder = tempfile.gettempdir()
+        self._check_ytdlp()
+        
+    def _check_ytdlp(self):
+        """Check if yt-dlp is available"""
+        self.ytdlp_available = shutil.which('yt-dlp') is not None
+        if not self.ytdlp_available:
+            print("⚠️  WARNING: yt-dlp not found in system PATH")
+            print("   Facebook processing will fail until yt-dlp is installed")
+            print("   Install with: pip install yt-dlp")
+        else:
+            print("✓ yt-dlp found and ready for Facebook")
         
     def validate_facebook_url(self, url):
         """Validate Facebook URL"""
@@ -1065,186 +1081,175 @@ class FacebookProcessor:
         except:
             return False
     
-    def download_facebook_audio_direct(self, facebook_url):
+    def download_facebook_video(self, facebook_url):
         """
-        OPTIMIZED: Download ONLY audio (no video) - 5-10x faster
-        Returns: (audio_path, duration, error)
+        Download Facebook video using yt-dlp
+        Returns: (video_path, error)
         """
+        # Check if yt-dlp is available
+        if not self.ytdlp_available:
+            error_msg = (
+                "yt-dlp is not installed or not in PATH.\n"
+                "Please install with: pip install yt-dlp\n"
+                "Then restart your application."
+            )
+            return None, error_msg
+        
         try:
-            audio_path = os.path.join(
+            video_path = os.path.join(
                 self.temp_folder,
-                f"facebook_audio_{int(time.time()*1000)}.mp3"
+                f"facebook_{int(time.time()*1000)}.mp4"
             )
             
-            print(f"Downloading Facebook AUDIO ONLY from: {facebook_url}")
+            print(f"Downloading Facebook video: {facebook_url}")
             
-            # yt-dlp: Extract ONLY audio (no video download)
+            # Download video with yt-dlp
             cmd = [
                 'yt-dlp',
-                '-x',  # Extract audio only
-                '--audio-format', 'mp3',  # Convert to MP3
-                '--audio-quality', '5',  # Good quality
+                '-f', 'best',  # Best quality
                 '--no-playlist',
                 '--no-warnings',
-                '--postprocessor-args', '-ar 16000',  # 16kHz for Whisper
-                '-o', audio_path.replace('.mp3', '.%(ext)s'),
+                '-o', video_path,
                 facebook_url
             ]
             
-            start_time = time.time()
+            print(f"Running command: {' '.join(cmd[:5])}... {facebook_url}")
+            
             result = subprocess.run(
                 cmd,
                 capture_output=True,
                 text=True,
-                timeout=180  # 3 minutes timeout for Facebook
+                timeout=180,  # 3 minutes for Facebook (can be slower)
+                shell=False
             )
-            download_time = time.time() - start_time
             
             if result.returncode != 0:
-                print(f"yt-dlp error: {result.stderr}")
-                return None, None, f"Audio download failed: {result.stderr[:200]}"
+                error_msg = result.stderr if result.stderr else result.stdout
+                print(f"yt-dlp error output: {error_msg}")
+                
+                # Check for common errors
+                if "HTTP Error 429" in error_msg:
+                    return None, "Facebook rate limit reached. Please try again later."
+                elif "Private video" in error_msg or "login" in error_msg.lower():
+                    return None, "Video is private or requires login. Please use a public video."
+                elif "Video unavailable" in error_msg:
+                    return None, "Video is unavailable or has been deleted."
+                else:
+                    return None, f"Download failed: {error_msg[:200]}"
             
-            # yt-dlp might save as .mp3 or with temp extension
-            actual_audio_path = audio_path
-            if not os.path.exists(audio_path):
-                base_path = audio_path.replace('.mp3', '')
-                for ext in ['.mp3', '.m4a', '.opus', '.webm']:
-                    test_path = base_path + ext
-                    if os.path.exists(test_path):
-                        actual_audio_path = test_path
-                        break
+            # Verify file was created
+            if not os.path.exists(video_path):
+                return None, "Video file was not created. Video may be unavailable or private."
             
-            if not os.path.exists(actual_audio_path):
-                return None, None, "Audio file not created"
+            file_size = os.path.getsize(video_path)
+            if file_size == 0:
+                os.remove(video_path)
+                return None, "Downloaded file is empty. Video may be unavailable."
             
-            file_size = os.path.getsize(actual_audio_path)
-            print(f"✓ Audio downloaded: {file_size:,} bytes ({file_size/(1024*1024):.2f} MB) in {download_time:.1f}s")
+            print(f"✓ Downloaded: {file_size:,} bytes ({file_size/(1024*1024):.2f} MB)")
             
-            # Get duration
-            try:
-                from moviepy.editor import AudioFileClip
-                audio_clip = AudioFileClip(actual_audio_path)
-                duration = audio_clip.duration
-                audio_clip.close()
-                print(f"  Duration: {duration:.1f}s ({duration/60:.1f} min)")
-            except Exception as e:
-                print(f"  Warning: Could not get duration: {e}")
-                duration = None
-            
-            return actual_audio_path, duration, None
+            return video_path, None
             
         except subprocess.TimeoutExpired:
-            return None, None, "Audio download timeout (3 minutes)"
-        except Exception as e:
-            return None, None, f"Download error: {str(e)}"
-    
-    def transcribe_with_whisper_optimized(self, audio_path):
-        """
-        OPTIMIZED: Fast Whisper transcription using pre-downloaded model
-        Returns: (transcript_text, error)
-        """
-        try:
-            print(f"Transcribing with Whisper (using cached model)...")
-            
-            # Load cached model
-            model = load_whisper_model()
-            
-            if model is None:
-                return None, "Whisper model not loaded. Please run download_whisper_model.py first."
-            
-            # Transcribe
-            result = model.transcribe(
-                audio_path,
-                language=None,  # Auto-detect
-                fp16=False,
-                verbose=False
+            return None, "Download timeout (3 minutes). Video may be too long or connection is slow."
+        except FileNotFoundError:
+            return None, (
+                "yt-dlp command not found. Please install with: pip install yt-dlp\n"
+                "Make sure to restart your terminal/application after installation."
             )
-            
-            transcript = result["text"].strip()
-            detected_language = result.get("language", "unknown")
-            
-            if len(transcript) < 20:
-                return None, "Transcript too short or empty"
-            
-            print(f"✓ Transcription complete: {len(transcript)} chars, language: {detected_language}")
-            
-            return transcript, None
-            
         except Exception as e:
-            logger.error(f"Whisper transcription error: {str(e)}")
-            return None, f"Transcription failed: {str(e)}"
+            return None, f"Download error: {str(e)}"
     
     def process_facebook_url(self, facebook_url):
         """
-        OPTIMIZED: Complete Facebook processing with audio-only download
+        Process Facebook video: Download → Upload to Gemini → Analyze
         Returns: {error, transcript, stats}
         """
         print(f"\n{'='*60}")
-        print(f"FAST FACEBOOK PROCESSING: {facebook_url}")
+        print(f"PROCESSING FACEBOOK: {facebook_url}")
         print(f"{'='*60}\n")
         
-        audio_path = None
-        total_start = time.time()
+        video_path = None
         
         try:
             # Validate URL
             if not self.validate_facebook_url(facebook_url):
                 return {
-                    "error": "Invalid Facebook URL",
+                    "error": "Invalid Facebook URL. Expected format: https://www.facebook.com/watch/?v=...",
                     "transcript": None,
                     "stats": None
                 }
             
-            # Download audio only (FAST)
-            audio_path, duration, download_error = self.download_facebook_audio_direct(facebook_url)
+            # Step 1: Download video
+            video_path, download_error = self.download_facebook_video(facebook_url)
             
             if download_error:
+                print(f"❌ Download failed: {download_error}")
                 return {
                     "error": download_error,
                     "transcript": None,
                     "stats": None
                 }
             
-            # Check duration
-            if duration and duration > self.max_duration:
+            # Step 2: Upload to Gemini
+            print(f"Uploading to Gemini for analysis...")
+            video_file = self.genai.upload_file(path=video_path, display_name="facebook_video.mp4")
+            
+            # Wait for processing
+            print("Waiting for Gemini to process...")
+            max_wait = 120
+            wait_time = 0
+            while video_file.state.name == "PROCESSING" and wait_time < max_wait:
+                time.sleep(2)
+                wait_time += 2
+                video_file = self.genai.get_file(video_file.name)
+                if wait_time % 10 == 0:
+                    print(f"  Processing... {wait_time}s")
+            
+            if video_file.state.name != "ACTIVE":
+                # Cleanup
                 try:
-                    os.remove(audio_path)
+                    os.remove(video_path)
+                    self.genai.delete_file(video_file.name)
                 except:
                     pass
                 return {
-                    "error": f"Audio too long ({duration/60:.1f} min). Max: {self.max_duration/60} min",
+                    "error": f"Gemini processing failed: {video_file.state.name}",
                     "transcript": None,
                     "stats": None
                 }
             
-            # Transcribe with Whisper
-            transcribe_start = time.time()
-            transcript, transcribe_error = self.transcribe_with_whisper_optimized(audio_path)
-            transcribe_time = time.time() - transcribe_start
+            # Step 3: Generate analysis
+            print("Generating 500-word summary...")
+            model = self.genai.GenerativeModel("gemini-2.0-flash")
             
-            # Cleanup audio
+            response = model.generate_content([
+                video_file,
+                "Generate a detailed transcript and a comprehensive 500-word summary of this Facebook video content."
+            ])
+            
+            transcript = response.text.strip()
+            
+            # Cleanup
             try:
-                os.remove(audio_path)
-            except:
-                pass
+                os.remove(video_path)
+                self.genai.delete_file(video_file.name)
+                print("✓ Cleaned up temporary files")
+            except Exception as e:
+                print(f"⚠️  Cleanup warning: {e}")
             
-            if transcribe_error:
+            if not transcript or len(transcript) < 50:
                 return {
-                    "error": transcribe_error,
+                    "error": "Could not extract content from video. Video may have no audio or visual content.",
                     "transcript": None,
                     "stats": None
                 }
-            
-            total_time = time.time() - total_start
             
             # Calculate stats
             word_count = len(transcript.split())
             stats = {
                 'char_count': len(transcript),
                 'word_count': word_count,
-                'actual_duration': duration,
-                'processing_time': round(total_time, 1),
-                'transcribe_time': round(transcribe_time, 1),
                 'estimated_read_time': max(1, word_count // 200),
                 'source_type': 'facebook',
                 'url': facebook_url
@@ -1255,15 +1260,11 @@ class FacebookProcessor:
             print(f"{'='*60}")
             print(f"Transcript: {len(transcript):,} chars")
             print(f"Words: {word_count:,}")
-            print(f"Duration: {duration:.1f}s" if duration else "Duration: Unknown")
-            print(f"Total Time: {total_time:.1f}s")
-            print(f"Transcribe Time: {transcribe_time:.1f}s")
-            print(f"Speed: {duration/total_time:.1f}x realtime" if duration else "")
             print(f"{'='*60}\n")
             
             # PRINT TRANSCRIPT PREVIEW
             print(f"\n{'='*80}")
-            print(f"FACEBOOK TRANSCRIPT EXTRACTED: {facebook_url}")
+            print(f"FACEBOOK TRANSCRIPT: {facebook_url}")
             print(f"{'='*80}")
             print(f"Length: {len(transcript):,} characters")
             print(f"Words: {word_count:,}")
@@ -1283,13 +1284,18 @@ class FacebookProcessor:
             
         except Exception as e:
             # Cleanup on error
-            if audio_path and os.path.exists(audio_path):
+            if video_path and os.path.exists(video_path):
                 try:
-                    os.remove(audio_path)
+                    os.remove(video_path)
                 except:
                     pass
             
-            logger.error(f"Facebook processing error: {str(e)}")
+            import logging
+            import traceback
+            logging.error(f"Facebook processing error: {str(e)}")
+            print(f"❌ Facebook error: {str(e)}")
+            print(traceback.format_exc())
+            
             return {
                 "error": f"Processing error: {str(e)}",
                 "transcript": None,

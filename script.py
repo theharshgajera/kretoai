@@ -1420,12 +1420,15 @@ class ImageProcessor:
     
     def process_image_url(self, image_url, filename=None):
         """
-        Process image DIRECTLY from URL using Gemini Vision
+        Process image from URL: Download → Upload to Gemini → Get 50-100 word summary
         Returns: {error, text, stats}
         """
         print(f"\n{'='*60}")
         print(f"IMAGE PROCESSING (URL): {filename or image_url}")
         print(f"{'='*60}\n")
+        
+        temp_file = None
+        uploaded_file = None
         
         try:
             # Validate URL
@@ -1439,42 +1442,133 @@ class ImageProcessor:
             if not filename:
                 filename = image_url.split('/')[-1].split('?')[0] or 'image.jpg'
             
-            print(f"Processing image from URL: {image_url}")
-            print(f"Filename: {filename}")
+            print(f"Downloading image from: {image_url}")
             
-            # ✅ OPTIMIZED: Send URL directly to Gemini (no download needed!)
-            print("Analyzing image with Gemini Vision (direct URL)...")
+            # ✅ STEP 1: Download the image
+            import requests
+            response = requests.get(image_url, timeout=30, allow_redirects=True)
             
-            prompt = """Analyze this image and provide:
+            if response.status_code != 200:
+                return {"error": f"Download failed: HTTP {response.status_code}", "text": None, "stats": None}
+            
+            print(f"✓ Downloaded: {len(response.content):,} bytes ({len(response.content)/(1024*1024):.2f} MB)")
+            
+            # Validate size
+            if len(response.content) > self.max_image_size:
+                return {"error": f"Image too large ({len(response.content)/(1024*1024):.1f}MB). Max: {self.max_image_size // (1024*1024)}MB", "text": None, "stats": None}
+            
+            # ✅ STEP 2: Save to temporary file
+            import tempfile
+            import os
+            
+            # Determine file extension and MIME type
+            file_ext = os.path.splitext(filename)[1].lower()
+            if not file_ext or file_ext not in ['.jpg', '.jpeg', '.png', '.gif', '.webp']:
+                # Try to detect from content-type header
+                content_type = response.headers.get('content-type', '')
+                if 'jpeg' in content_type or 'jpg' in content_type:
+                    file_ext = '.jpg'
+                elif 'png' in content_type:
+                    file_ext = '.png'
+                elif 'webp' in content_type:
+                    file_ext = '.webp'
+                else:
+                    file_ext = '.jpg'  # Default
+            
+            temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=file_ext)
+            temp_file.write(response.content)
+            temp_file.close()
+            
+            print(f"✓ Saved to temp: {temp_file.name}")
+            
+            # ✅ STEP 3: Upload to Gemini
+            print("Uploading to Gemini...")
+            
+            # Determine MIME type
+            mime_type_map = {
+                '.jpg': 'image/jpeg',
+                '.jpeg': 'image/jpeg',
+                '.png': 'image/png',
+                '.gif': 'image/gif',
+                '.webp': 'image/webp',
+                '.bmp': 'image/bmp'
+            }
+            mime_type = mime_type_map.get(file_ext, 'image/jpeg')
+            
+            with open(temp_file.name, 'rb') as f:
+                uploaded_file = client.files.upload(
+                    file=f,
+                    config={'mime_type': mime_type}
+                )
+            
+            print(f"✓ Uploaded to Gemini: {uploaded_file.name}")
+            
+            # Wait for processing
+            max_wait = 60
+            wait_time = 0
+            while uploaded_file.state.name == "PROCESSING" and wait_time < max_wait:
+                time.sleep(2)
+                wait_time += 2
+                uploaded_file = client.files.get(name=uploaded_file.name)
+                if wait_time % 10 == 0:
+                    print(f"  Processing... {wait_time}s")
+            
+            if uploaded_file.state.name == "FAILED":
+                return {"error": "Gemini upload failed", "text": None, "stats": None}
+            
+            # ✅ STEP 4: Analyze with Gemini Vision
+            print("Analyzing with Gemini Vision...")
+            
+            prompt = """Analyze this image and provide a concise 50-100 word summary covering:
 
-1. **TEXT EXTRACTED:** Transcribe ALL visible text exactly as it appears (OCR)
-2. **VISUAL CONTENT:** Brief description of what's shown in the image
-3. **KEY INSIGHTS:** Main information, data, or important points
-4. **SUMMARY (50-100 words):** Concise summary suitable for YouTube script creation
+    1. What the image shows (main subject, scene, or content)
+    2. Any visible text or data (if present)
+    3. Key insights or information that would be useful for YouTube script creation
 
-Be specific and actionable. Focus on content that would be useful for creating video scripts."""
+    Be specific and actionable. Focus ONLY on information relevant for video content."""
             
-            # ✅ Use Part.from_uri to process image URL directly
             response = client.models.generate_content(
                 model="gemini-2.0-flash",
                 contents=[
                     types.Part.from_uri(
-                        file_uri=image_url,
-                        mime_type='image/jpeg'  # Gemini can handle various formats
+                        file_uri=uploaded_file.uri,  # ✅ Now using Gemini URI
+                        mime_type=mime_type
                     ),
                     prompt
                 ],
                 config=types.GenerateContentConfig(
-                    temperature=0.2,
-                    max_output_tokens=800
+                    temperature=0.3,
+                    max_output_tokens=200
                 )
             )
             
+            # ✅ STEP 5: Cleanup
+            try:
+                os.remove(temp_file.name)
+                print("✓ Cleaned up temp file")
+            except:
+                pass
+            
+            try:
+                client.files.delete(name=uploaded_file.name)
+                print("✓ Cleaned up Gemini file")
+            except:
+                pass
+            
             if not response.text or len(response.text.strip()) < 20:
-                return {"error": "Could not extract meaningful content from image", "text": None, "stats": None}
+                return {"error": "Could not extract content from image", "text": None, "stats": None}
             
             extracted_text = response.text.strip()
             word_count = len(extracted_text.split())
+            
+            # Validate word count
+            if word_count < 30:
+                print(f"⚠️ Warning: Summary too short ({word_count} words)")
+            elif word_count > 150:
+                print(f"⚠️ Warning: Summary too long ({word_count} words), truncating...")
+                words = extracted_text.split()
+                extracted_text = ' '.join(words[:100])
+                word_count = 100
             
             stats = {
                 'char_count': len(extracted_text),
@@ -1488,13 +1582,10 @@ Be specific and actionable. Focus on content that would be useful for creating v
             print(f"\n{'='*60}")
             print(f"✓ IMAGE PROCESSING COMPLETE")
             print(f"{'='*60}")
-            print(f"Extracted: {len(extracted_text):,} chars")
-            print(f"Words: {word_count:,}")
-            print(f"\nCONTENT PREVIEW:")
+            print(f"Summary: {word_count} words ({len(extracted_text)} chars)")
+            print(f"\nSUMMARY:")
             print(f"{'-'*60}")
-            print(extracted_text[:500])
-            if len(extracted_text) > 500:
-                print(f"... (truncated, {len(extracted_text) - 500:,} more chars)")
+            print(extracted_text)
             print(f"{'='*60}\n")
             
             return {
@@ -1505,20 +1596,40 @@ Be specific and actionable. Focus on content that would be useful for creating v
             }
             
         except Exception as e:
+            # Cleanup on error
+            if temp_file and os.path.exists(temp_file.name):
+                try:
+                    os.remove(temp_file.name)
+                except:
+                    pass
+            
+            if uploaded_file:
+                try:
+                    client.files.delete(name=uploaded_file.name)
+                except:
+                    pass
+            
             logger.error(f"Image URL processing error: {str(e)}")
             import traceback
             print(f"❌ Image processing error: {str(e)}")
             print(traceback.format_exc())
             return {"error": f"Processing error: {str(e)}", "text": None, "stats": None}
-    
+
+
+    # ==========================================================
+    # ALSO UPDATE process_image_file() to use same pattern
+    # ==========================================================
+
     def process_image_file(self, image_path, filename):
         """
-        Process image from local file path (fallback for uploaded files)
+        Process image from local file: Upload to Gemini → Get 50-100 word summary
         Returns: {error, text, stats}
         """
         print(f"\n{'='*60}")
         print(f"IMAGE PROCESSING (FILE): {filename}")
         print(f"{'='*60}\n")
+        
+        uploaded_file = None
         
         try:
             # Validate file
@@ -1529,69 +1640,86 @@ Be specific and actionable. Focus on content that would be useful for creating v
             if file_size > self.max_image_size:
                 return {"error": f"Image too large. Max: {self.max_image_size // (1024*1024)}MB", "text": None, "stats": None}
             
-            print(f"Uploading image file to Gemini: {filename}")
+            print(f"Uploading image to Gemini: {filename}")
             
-            # Upload image to Gemini
+            # Determine MIME type
+            file_ext = os.path.splitext(filename)[1].lower()
+            mime_type_map = {
+                '.jpg': 'image/jpeg',
+                '.jpeg': 'image/jpeg',
+                '.png': 'image/png',
+                '.gif': 'image/gif',
+                '.webp': 'image/webp',
+                '.bmp': 'image/bmp'
+            }
+            mime_type = mime_type_map.get(file_ext, 'image/jpeg')
+            
+            # Upload to Gemini
             with open(image_path, 'rb') as f:
-                image_file = client.files.upload(
+                uploaded_file = client.files.upload(
                     file=f,
-                    config={'mime_type': 'image/jpeg'}
+                    config={'mime_type': mime_type}
                 )
             
-            print(f"✓ Uploaded: {image_file.name}")
+            print(f"✓ Uploaded: {uploaded_file.name}")
             
             # Wait for processing
             max_wait = 60
             wait_time = 0
-            while image_file.state.name == "PROCESSING" and wait_time < max_wait:
+            while uploaded_file.state.name == "PROCESSING" and wait_time < max_wait:
                 time.sleep(2)
                 wait_time += 2
-                image_file = client.files.get(name=image_file.name)
+                uploaded_file = client.files.get(name=uploaded_file.name)
                 if wait_time % 10 == 0:
                     print(f"  Processing... {wait_time}s")
             
-            if image_file.state.name == "FAILED":
+            if uploaded_file.state.name == "FAILED":
                 return {"error": "Image upload failed", "text": None, "stats": None}
             
             # Analyze with Gemini Vision
-            print("Analyzing image with Gemini Vision...")
+            print("Analyzing with Gemini Vision...")
             
-            prompt = """Analyze this image and provide:
+            prompt = """Analyze this image and provide a concise 50-100 word summary covering:
 
-1. **TEXT EXTRACTED:** Transcribe ALL visible text exactly as it appears (OCR)
-2. **VISUAL CONTENT:** Brief description of what's shown in the image
-3. **KEY INSIGHTS:** Main information, data, or important points
-4. **SUMMARY (50-100 words):** Concise summary suitable for YouTube script creation
+    1. What the image shows (main subject, scene, or content)
+    2. Any visible text or data (if present)
+    3. Key insights or information that would be useful for YouTube script creation
 
-Be specific and actionable. Focus on content that would be useful for creating video scripts."""
+    Be specific and actionable. Focus ONLY on information relevant for video content."""
             
             response = client.models.generate_content(
                 model="gemini-2.0-flash",
                 contents=[
                     types.Part.from_uri(
-                        file_uri=image_file.uri,
-                        mime_type='image/jpeg'
+                        file_uri=uploaded_file.uri,
+                        mime_type=mime_type
                     ),
                     prompt
                 ],
                 config=types.GenerateContentConfig(
-                    temperature=0.2,
-                    max_output_tokens=800
+                    temperature=0.3,
+                    max_output_tokens=200
                 )
             )
             
             # Cleanup
             try:
-                client.files.delete(name=image_file.name)
+                client.files.delete(name=uploaded_file.name)
                 print("✓ Cleaned up Gemini file")
-            except Exception as e:
-                print(f"⚠️  Cleanup warning: {e}")
+            except:
+                pass
             
             if not response.text or len(response.text.strip()) < 20:
                 return {"error": "Could not extract meaningful content from image", "text": None, "stats": None}
             
             extracted_text = response.text.strip()
             word_count = len(extracted_text.split())
+            
+            # Validate word count
+            if word_count > 150:
+                words = extracted_text.split()
+                extracted_text = ' '.join(words[:100])
+                word_count = 100
             
             stats = {
                 'char_count': len(extracted_text),
@@ -1604,8 +1732,7 @@ Be specific and actionable. Focus on content that would be useful for creating v
             print(f"\n{'='*60}")
             print(f"✓ IMAGE PROCESSING COMPLETE")
             print(f"{'='*60}")
-            print(f"Extracted: {len(extracted_text):,} chars")
-            print(f"Words: {word_count:,}")
+            print(f"Summary: {word_count} words")
             print(f"{'='*60}\n")
             
             return {
@@ -1616,12 +1743,17 @@ Be specific and actionable. Focus on content that would be useful for creating v
             }
             
         except Exception as e:
+            if uploaded_file:
+                try:
+                    client.files.delete(name=uploaded_file.name)
+                except:
+                    pass
+            
             logger.error(f"Image file processing error: {str(e)}")
             import traceback
             print(f"❌ Image processing error: {str(e)}")
             print(traceback.format_exc())
             return {"error": f"Processing error: {str(e)}", "text": None, "stats": None}
-
 
 class TextProcessor:
     """Process direct text input"""
@@ -2150,7 +2282,7 @@ document_processor = DocumentProcessor()
 video_processor = VideoProcessor()
 script_generator = EnhancedScriptGenerator()
 instagram_processor = InstagramProcessor(
-    session_file=r"C:\Users\harsh\AppData\Local\Instaloader\session-aashitapatel17"
+    session_file=r"/home/harsh/kretoai/session-aashitapatel17"
 )
 facebook_processor = FacebookProcessor()  # ADD THIS LINE
 audio_processor = AudioProcessor()  # ADD THIS LINE

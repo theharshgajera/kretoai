@@ -1885,14 +1885,14 @@ def comp_analysis():
                     competitor_counts[ch_id] = {"title": ch_title, "count": 0}
                 competitor_counts[ch_id]["count"] += 1
 
-        # sort competitors by frequency and take top 50
+        # Sort and take top 50
         competitors = sorted(
             competitor_counts.items(),
             key=lambda kv: kv[1]["count"],
             reverse=True
         )[:50]
 
-        # 4. For each competitor: fetch latest 4 videos + avg views + thumbnail
+        # 4. Fetch competitor details + videos
         competitors_data = []
         for comp_id, comp_data in competitors:
             comp_resp = youtube.channels().list(
@@ -1907,14 +1907,14 @@ def comp_analysis():
             comp_title = comp_data["title"]
             comp_subs = int(comp_info["statistics"].get("subscriberCount", 1))
 
-            # 🔥 FILTER: SKIP channels with < 1000 subscribers
+            # 🔥 FILTER: Skip channels below 1000 subs
             if comp_subs < 1000:
                 continue
 
             comp_uploads = comp_info["contentDetails"]["relatedPlaylists"]["uploads"]
             comp_thumbnail = comp_info["snippet"]["thumbnails"]["high"]["url"]
 
-            # Fetch up to 20 recent uploads
+            # Fetch up to 20 uploads
             comp_uploads_resp = youtube.playlistItems().list(
                 part="contentDetails",
                 playlistId=comp_uploads,
@@ -1927,14 +1927,13 @@ def comp_analysis():
             if not all_videos:
                 continue
 
-            # Categorize by duration
+            # Categorize videos
             medium_videos = []
             long_videos = []
             short_videos = []
 
             for v in all_videos:
                 duration = parse_duration(v.get("contentDetails", {}).get("duration", ""))
-
                 if duration < 60:
                     short_videos.append(v)
                 elif duration <= 1200:
@@ -1942,24 +1941,20 @@ def comp_analysis():
                 else:
                     long_videos.append(v)
 
-            # Select 4 videos based on priority
+            # Pick 4 videos
             selected = []
             selected.extend(medium_videos[:4])
-
             if len(selected) < 4:
                 selected.extend(long_videos[:4 - len(selected)])
-
             if len(selected) < 4:
                 selected.extend(short_videos[:4 - len(selected)])
-
             selected = selected[:4]
 
-            # Avg recent views (last 5 videos)
+            # Avg recent views
             avg_recent_views = sum(
                 int(v["statistics"].get("viewCount", 0)) for v in all_videos[:5]
             ) / max(len(all_videos[:5]), 1)
 
-            # Prepare selected video data
             video_data = []
             for v in selected:
                 duration = parse_duration(v.get("contentDetails", {}).get("duration", ""))
@@ -2004,6 +1999,7 @@ def comp_analysis():
     except Exception as e:
         app.logger.error(f"Channel outliers error: {str(e)}")
         return jsonify({"error": str(e)}), 500
+
 
 
 @app.route('/api/generate_titles', methods=['POST'])
@@ -2822,24 +2818,45 @@ def whole_script():
                 for idx, audio_url in enumerate(audio_files):
                     if audio_url and isinstance(audio_url, str) and audio_url.strip():
                         try:
-                            print(f"Downloading audio {idx+1}/{len(audio_files)}: {audio_url[:50]}...")
+                            # ✅ Clean the URL (remove any $ or other invalid characters)
+                            audio_url = audio_url.strip().lstrip('$')
+                            
+                            # ✅ Validate URL format
+                            if not audio_url.startswith(('http://', 'https://')):
+                                print(f"  ✗ Invalid URL format: {audio_url}")
+                                continue
+                            
+                            print(f"Downloading audio {idx+1}/{len(audio_files)}: {audio_url[:80]}...")
+                            
                             response = requests.get(audio_url, timeout=60)
+                            
                             if response.status_code == 200:
+                                # Extract filename from URL
                                 filename = audio_url.split('/')[-1].split('?')[0] or f'audio_{idx+1}.mp3'
+                                
+                                # Encode to base64
                                 audio_data = base64.b64encode(response.content).decode('utf-8')
+                                
                                 audio_folder['items'].append({
                                     'type': 'audio_file',
                                     'filename': filename,
                                     'data': audio_data
                                 })
-                                print(f"  ✓ Downloaded: {len(response.content):,} bytes")
+                                
+                                print(f"  ✓ Downloaded: {len(response.content):,} bytes ({len(response.content)/(1024*1024):.2f} MB)")
                             else:
                                 print(f"  ✗ Failed: HTTP {response.status_code}")
+                                
                         except Exception as e:
-                            print(f"  ✗ Error downloading audio {audio_url}: {e}")
+                            print(f"  ✗ Error downloading audio {audio_url[:80]}: {str(e)}")
+                            import traceback
+                            print(traceback.format_exc())
+                
                 if audio_folder['items']:
                     folders.append(audio_folder)
-                    print(f"Added {len(audio_folder['items'])} audio files")
+                    print(f"✓ Added {len(audio_folder['items'])} audio files")
+                else:
+                    print(f"⚠️  No audio files were successfully downloaded")
             
             # Image Files (Download from URLs)
             image_files = data.get('image_files', [])
@@ -2871,27 +2888,14 @@ def whole_script():
             documents = data.get('documents', [])
             if documents and isinstance(documents, list):
                 doc_folder = {'name': 'Documents', 'type': 'document', 'items': []}
-                for idx, doc_url in enumerate(documents):
+                for doc_url in documents:
                     if doc_url and isinstance(doc_url, str) and doc_url.strip():
-                        try:
-                            print(f"Downloading document {idx+1}/{len(documents)}: {doc_url[:50]}...")
-                            response = requests.get(doc_url, timeout=60)
-                            if response.status_code == 200:
-                                filename = doc_url.split('/')[-1].split('?')[0] or f'document_{idx+1}.pdf'
-                                doc_data = base64.b64encode(response.content).decode('utf-8')
-                                doc_folder['items'].append({
-                                    'type': 'document',
-                                    'filename': filename,
-                                    'data': doc_data
-                                })
-                                print(f"  ✓ Downloaded: {len(response.content):,} bytes")
-                            else:
-                                print(f"  ✗ Failed: HTTP {response.status_code}")
-                        except Exception as e:
-                            print(f"  ✗ Error downloading document {doc_url}: {e}")
+                        doc_folder['items'].append({
+                            'type': 'document',
+                            'url': doc_url.strip()  # ✅ Just pass the URL
+                        })
                 if doc_folder['items']:
                     folders.append(doc_folder)
-                    print(f"Added {len(doc_folder['items'])} documents")
             
             # ========================================
             # TEXT INPUTS - NEW SCHEMA
@@ -3089,19 +3093,29 @@ def whole_script():
         
         def process_item(folder_name, folder_type, item, item_idx):
             """Process a single item (video/audio/doc/youtube/instagram/facebook/tiktok/image/text)"""
-            item_type = item.get('type')
-            
+
             try:
+                # -----------------------------
+                # DETECT ITEM TYPE
+                # -----------------------------
+                if isinstance(item, str):
+                    # Legacy/URL-only document
+                    item_type = 'document'
+                else:
+                    item_type = item.get('type')
+
+                # -----------------------------
                 # YOUTUBE
+                # -----------------------------
                 if item_type == 'youtube_url':
                     url = item.get('url', '').strip()
                     if url and video_processor.validate_youtube_url(url):
                         print(f"\n[{folder_name}] Processing YouTube: {url}")
                         result = video_processor.process_video_content(url, 'youtube')
-                        
+
                         if result['error']:
                             return ('error', f"[{folder_name}] YouTube {url}: {result['error']}")
-                        
+
                         transcript = result['transcript']
                         print(f"\n{'='*80}")
                         print(f"YOUTUBE TRANSCRIPT EXTRACTED: {url}")
@@ -3114,7 +3128,7 @@ def whole_script():
                         if len(transcript) > 500:
                             print(f"... (truncated, {len(transcript) - 500:,} more characters)")
                         print(f"{'='*80}\n")
-                        
+
                         return (folder_type if folder_type == 'personal' else 'inspiration', {
                             'folder_name': folder_name,
                             'url': url,
@@ -3123,19 +3137,21 @@ def whole_script():
                             'type': 'youtube'
                         })
                     return ('error', f"[{folder_name}] Invalid YouTube URL")
-                
+
+                # -----------------------------
                 # INSTAGRAM
+                # -----------------------------
                 elif item_type == 'instagram_url':
                     url = item.get('url', '').strip()
                     if url and instagram_processor.validate_instagram_url(url):
                         print(f"\n[{folder_name}] Processing Instagram: {url}")
                         result = instagram_processor.process_instagram_url(url)
-                        
+
                         if result['error']:
                             return ('error', f"[{folder_name}] Instagram {url}: {result['error']}")
-                        
+
                         transcript = result['transcript']
-                        
+
                         return (folder_type if folder_type == 'personal' else 'inspiration', {
                             'folder_name': folder_name,
                             'url': url,
@@ -3144,19 +3160,21 @@ def whole_script():
                             'type': 'instagram'
                         })
                     return ('error', f"[{folder_name}] Invalid Instagram URL")
-                
+
+                # -----------------------------
                 # FACEBOOK
+                # -----------------------------
                 elif item_type == 'facebook_url':
                     url = item.get('url', '').strip()
                     if url and facebook_processor.validate_facebook_url(url):
                         print(f"\n[{folder_name}] Processing Facebook: {url}")
                         result = facebook_processor.process_facebook_url(url)
-                        
+
                         if result['error']:
                             return ('error', f"[{folder_name}] Facebook {url}: {result['error']}")
-                        
+
                         transcript = result['transcript']
-                        
+
                         return (folder_type if folder_type == 'personal' else 'inspiration', {
                             'folder_name': folder_name,
                             'url': url,
@@ -3165,66 +3183,54 @@ def whole_script():
                             'type': 'facebook'
                         })
                     return ('error', f"[{folder_name}] Invalid Facebook URL")
-                
+
+                # -----------------------------
                 # TIKTOK
+                # -----------------------------
                 elif item_type == 'tiktok_url':
                     url = item.get('url', '').strip()
-                    # if url and tiktok_processor.validate_tiktok_url(url):
-                    #     print(f"\n[{folder_name}] Processing TikTok: {url}")
-                    #     result = tiktok_processor.process_tiktok_url(url)
-                        
-                    #     if result['error']:
-                    #         return ('error', f"[{folder_name}] TikTok {url}: {result['error']}")
-                        
-                    #     transcript = result['transcript']
-                        
-                    #     return (folder_type if folder_type == 'personal' else 'inspiration', {
-                    #         'folder_name': folder_name,
-                    #         'url': url,
-                    #         'transcript': transcript,
-                    #         'stats': result['stats'],
-                    #         'type': 'tiktok'
-                    #     })
                     return ('error', f"[{folder_name}] TikTok processing not implemented")
-                
+
+                # -----------------------------
                 # AUDIO FILE
+                # -----------------------------
                 elif item_type == 'audio_file':
                     filename = item.get('filename', 'audio.mp3')
                     file_data = item.get('data')
-                    
+
                     if not audio_processor.is_supported_audio_format(filename):
                         return ('error', f"[{folder_name}] Unsupported audio format: {filename}")
-                    
+
                     if not file_data:
                         return ('error', f"[{folder_name}] No data: {filename}")
-                    
+
                     print(f"\n[{folder_name}] Processing Audio File: {filename}")
-                    
+
                     safe_user_id = user_id.replace('.', '_').replace(':', '_')
                     audio_path = os.path.join(
                         UPLOAD_FOLDER,
                         f"temp_{safe_user_id}_{int(time.time())}_{item_idx}_{secure_filename(filename)}"
                     )
-                    
+
                     try:
                         audio_bytes = base64.b64decode(file_data)
                         with open(audio_path, 'wb') as f:
                             f.write(audio_bytes)
-                        
+
                         print(f"  Saved: {len(audio_bytes):,} bytes ({len(audio_bytes)/(1024*1024):.2f} MB)")
-                        
+
                         result = audio_processor.process_audio_file(audio_path, filename)
-                        
+
                         try:
                             os.remove(audio_path)
                         except:
                             pass
-                        
+
                         if result['error']:
                             return ('error', f"[{folder_name}] Audio {filename}: {result['error']}")
-                        
+
                         transcript = result['transcript']
-                        
+
                         return (folder_type if folder_type == 'personal' else 'inspiration', {
                             'folder_name': folder_name,
                             'source': filename,
@@ -3232,7 +3238,7 @@ def whole_script():
                             'stats': result['stats'],
                             'type': 'audio_file'
                         })
-                    
+
                     except Exception as e:
                         if os.path.exists(audio_path):
                             try:
@@ -3240,45 +3246,47 @@ def whole_script():
                             except:
                                 pass
                         return ('error', f"[{folder_name}] Audio error {filename}: {str(e)}")
-                
+
+                # -----------------------------
                 # VIDEO FILE
+                # -----------------------------
                 elif item_type == 'video_file':
                     filename = item.get('filename', 'video.mp4')
                     file_data = item.get('data')
-                    
+
                     if not video_processor.is_supported_video_format(filename):
                         return ('error', f"[{folder_name}] Unsupported: {filename}")
-                    
+
                     if not file_data:
                         return ('error', f"[{folder_name}] No data: {filename}")
-                    
+
                     print(f"\n[{folder_name}] Processing Video File: {filename}")
-                    
+
                     safe_user_id = user_id.replace('.', '_').replace(':', '_')
                     video_path = os.path.join(
                         UPLOAD_FOLDER,
                         f"temp_{safe_user_id}_{int(time.time())}_{item_idx}_{secure_filename(filename)}"
                     )
-                    
+
                     try:
                         video_bytes = base64.b64decode(file_data)
                         with open(video_path, 'wb') as f:
                             f.write(video_bytes)
-                        
+
                         print(f"  Saved: {len(video_bytes):,} bytes ({len(video_bytes)/(1024*1024):.2f} MB)")
-                        
+
                         result = video_processor.process_video_content(video_path, 'local')
-                        
+
                         try:
                             os.remove(video_path)
                         except:
                             pass
-                        
+
                         if result['error']:
                             return ('error', f"[{folder_name}] Video {filename}: {result['error']}")
-                        
+
                         transcript = result['transcript']
-                        
+
                         return (folder_type if folder_type == 'personal' else 'inspiration', {
                             'folder_name': folder_name,
                             'source': filename,
@@ -3286,7 +3294,7 @@ def whole_script():
                             'stats': result['stats'],
                             'type': 'local_video'
                         })
-                    
+
                     except Exception as e:
                         if os.path.exists(video_path):
                             try:
@@ -3294,76 +3302,98 @@ def whole_script():
                             except:
                                 pass
                         return ('error', f"[{folder_name}] Video error {filename}: {str(e)}")
-                
-                # DOCUMENT - LINK ONLY MODE
-                elif item_type == 'document':
-                    # Get the URL from your JSON input
-                    doc_url = item.get('url')
-                    filename = item.get('filename', 'document.pdf')
 
-                    if doc_url:
-                        print(f"[{folder_name}] Sending Document URL to Processor: {doc_url}")
-                        # Calls the simplified method in script.py
-                        result = document_processor.process_document(doc_url, filename)
-                        
-                        if result.get('error'):
-                            return ('error', f"[{folder_name}] {filename}: {result['error']}")
-                        
-                        return ('document', {
-                            'folder_name': folder_name,
-                            'filename': filename,
-                            'text': result['text'],
-                            'stats': result.get('stats', {})
-                        })
+                # -----------------------------
+                # DOCUMENT
+                # -----------------------------
+                elif item_type == 'document':
+                    # Extract URL from item
+                    if isinstance(item, str):
+                        doc_url = item.strip()
                     else:
-                        return ('error', f"[{folder_name}] No URL provided for document {filename}")
+                        doc_url = item.get("url", "").strip()
                     
-                
+                    # Validate URL exists
+                    if not doc_url:
+                        return ('error', f"[{folder_name}] No URL provided for document")
+                    
+                    # Validate URL format
+                    if not doc_url.startswith(('http://', 'https://')):
+                        return ('error', f"[{folder_name}] Invalid URL format: {doc_url}")
+                    
+                    # Extract filename from URL
+                    filename = os.path.basename(doc_url.split('?')[0])
+                    if not filename or '.' not in filename:
+                        filename = "document.pdf"
+                    
+                    print(f"\n[{folder_name}] Processing Document: {filename}")
+                    print(f"  URL: {doc_url}")
+                    
+                    # Process the document
+                    result = document_processor.process_document(doc_url, filename)
+                    
+                    if result.get("error"):
+                        return ('error', f"[{folder_name}] {filename}: {result['error']}")
+                    
+                    print(f"✓ Document processed successfully")
+                    print(f"  Text length: {len(result['text']):,} characters")
+                    print(f"  Word count: {result['stats'].get('word_count', 0):,}")
+                    
+                    return ('document', {
+                        "folder_name": folder_name,
+                        "filename": filename,
+                        "text": result["text"],
+                        "stats": result.get("stats", {}),
+                        "url": doc_url
+                    })
+
+                # -----------------------------
                 # IMAGE FILE
+                # -----------------------------
                 elif item_type == 'image_file':
                     filename = item.get('filename', 'image.jpg')
                     file_data = item.get('data')
-                    
+
                     if not image_processor.is_supported_image_format(filename):
                         return ('error', f"[{folder_name}] Unsupported image format: {filename}")
-                    
+
                     if not file_data:
                         return ('error', f"[{folder_name}] No data: {filename}")
-                    
+
                     print(f"\n[{folder_name}] Processing Image: {filename}")
-                    
+
                     safe_user_id = user_id.replace('.', '_').replace(':', '_')
                     image_path = os.path.join(
                         UPLOAD_FOLDER,
                         f"temp_{safe_user_id}_{int(time.time())}_{item_idx}_{secure_filename(filename)}"
                     )
-                    
+
                     try:
                         image_bytes = base64.b64decode(file_data)
                         with open(image_path, 'wb') as f:
                             f.write(image_bytes)
-                        
+
                         print(f"  Saved: {len(image_bytes):,} bytes ({len(image_bytes)/(1024*1024):.2f} MB)")
-                        
+
                         result = image_processor.process_image_with_gemini(image_path, filename)
-                        
+
                         try:
                             os.remove(image_path)
                         except:
                             pass
-                        
+
                         if result['error']:
                             return ('error', f"[{folder_name}] Image {filename}: {result['error']}")
-                        
+
                         extracted_text = result['text']
-                        
+
                         return ('document', {
                             'folder_name': folder_name,
                             'filename': filename,
                             'text': extracted_text,
                             'stats': result['stats']
                         })
-                    
+
                     except Exception as e:
                         if os.path.exists(image_path):
                             try:
@@ -3371,35 +3401,42 @@ def whole_script():
                             except:
                                 pass
                         return ('error', f"[{folder_name}] Image error {filename}: {str(e)}")
-                
+
+                # -----------------------------
                 # TEXT INPUT
+                # -----------------------------
                 elif item_type == 'text_input':
                     text_content = item.get('content', '').strip()
                     text_name = item.get('name', 'Text Input')
-                    
+
                     if not text_content:
                         return ('error', f"[{folder_name}] Empty text input")
-                    
+
                     print(f"\n[{folder_name}] Processing Text: {text_name}")
-                    
+
                     result = text_processor.process_text_input(text_content, text_name)
-                    
+
                     if result['error']:
                         return ('error', f"[{folder_name}] Text {text_name}: {result['error']}")
-                    
+
                     processed_text = result['text']
-                    
+
                     return ('document', {
                         'folder_name': folder_name,
                         'source_name': text_name,
                         'text': processed_text,
                         'stats': result['stats']
                     })
-                
-                return ('error', f"[{folder_name}] Unknown type: {item_type}")
-            
+
+                # -----------------------------
+                # UNKNOWN TYPE
+                # -----------------------------
+                else:
+                    return ('error', f"[{folder_name}] Unknown type: {item_type}")
+
             except Exception as e:
                 return ('error', f"[{folder_name}] Item error: {str(e)}")
+
         
         # Process all items in parallel
         print(f"\n{'='*60}")
@@ -3420,6 +3457,7 @@ def whole_script():
         # Process with ThreadPoolExecutor
         max_workers = min(5, len(all_tasks)) if all_tasks else 1
         
+        # In whole_script() - parallel processing section (around line 650)
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             futures = {
                 executor.submit(process_item, fn, ft, item, idx): (fn, ft, item, idx)
@@ -3429,11 +3467,20 @@ def whole_script():
             completed = 0
             for future in as_completed(futures):
                 completed += 1
-                result_type, result_data = future.result()
+                
+                try:
+                    result_type, result_data = future.result()
+                except Exception as e:
+                    # ✅ Catch exceptions from process_item
+                    print(f"[{completed}/{len(all_tasks)}] ❌ Exception in process_item: {str(e)}")
+                    import traceback
+                    print(traceback.format_exc())
+                    errors.append(f"Processing exception: {str(e)}")
+                    continue
                 
                 if result_type == 'error':
                     errors.append(result_data)
-                    print(f"[{completed}/{len(all_tasks)}] ❌ Error")
+                    print(f"[{completed}/{len(all_tasks)}] ❌ Error: {result_data}")  # ✅ Show actual error
                 elif result_type == 'personal':
                     processed_personal.append(result_data)
                     print(f"[{completed}/{len(all_tasks)}] ✓ Personal video")

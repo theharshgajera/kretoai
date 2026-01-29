@@ -800,23 +800,40 @@ Just provide the raw transcript of what is being said in the audio."""
             }
 
 class InstagramProcessor:
-    """Process Instagram videos by downloading and uploading to Gemini using instaloader"""
+    """Process Instagram videos by downloading and uploading to Gemini using instagrapi with session handling"""
     
-    def __init__(self, client=None):
+    def __init__(self, client=None, ig_username=None, ig_password=None, session_file=None):
         self.supported_domains = ['instagram.com', 'www.instagram.com']
+        self.temp_folder = tempfile.gettempdir()
+        
+        # Setup Gemini
         if client is None:
             import google.generativeai as genai_config
             genai_config.configure(api_key=os.getenv("GEMINI_API_KEY"))
             self.genai = genai_config
         else:
             self.client = client
-        self.temp_folder = tempfile.gettempdir()
         
+        # Setup Instagram login
         try:
-            import instaloader
-            self.instaloader = instaloader.Instaloader(download_videos=True, download_pictures=False)
+            from instagrapi import Client as IGClient
+            self.ig_client = IGClient()
+            self.session_file = session_file or os.path.join(self.temp_folder, "ig_session.json")
+            
+            if os.path.exists(self.session_file):
+                print(f"Loading Instagram session from {self.session_file}...")
+                self.ig_client.load_settings(self.session_file)
+                self.ig_client.login_by_session()
+                print("✓ Instagram session loaded successfully")
+            elif ig_username and ig_password:
+                print("Logging into Instagram...")
+                self.ig_client.login(ig_username, ig_password)
+                self.ig_client.dump_settings(self.session_file)
+                print(f"✓ Instagram login successful. Session saved to {self.session_file}")
+            else:
+                print("⚠️ Instagram login not provided. Only public posts may work (rate-limited).")
         except ImportError:
-            raise ImportError("Please install instaloader: pip install instaloader")
+            raise ImportError("Please install instagrapi: pip install instagrapi")
 
     def validate_instagram_url(self, url):
         """Validate Instagram URL"""
@@ -828,22 +845,24 @@ class InstagramProcessor:
 
     def download_instagram_video(self, instagram_url):
         """
-        Download Instagram video using instaloader
+        Download Instagram video using instagrapi
         Returns: (video_path, error)
         """
         try:
             shortcode = instagram_url.rstrip("/").split("/")[-1]
-            post = self.instaloader.check_profile(shortcode) if False else None
-            # Use instaloader Post object
-            from instaloader import Post, Instaloader
-            L = self.instaloader
-            post = Post.from_shortcode(L.context, shortcode)
             
-            video_url = post.video_url
-            if not video_url:
+            # Get media info from URL
+            media_id = self.ig_client.media_pk_from_url(instagram_url)
+            media = self.ig_client.media_info(media_id)
+            
+            if not media.video_url:
                 return None, "This Instagram post does not contain a video."
             
-            video_path = os.path.join(self.temp_folder, f"instagram_{shortcode}_{int(time.time()*1000)}.mp4")
+            video_url = media.video_url
+            video_path = os.path.join(
+                self.temp_folder,
+                f"instagram_{shortcode}_{int(time.time()*1000)}.mp4"
+            )
             
             print(f"Downloading Instagram video: {instagram_url}")
             r = requests.get(video_url, stream=True, headers={"User-Agent": "Mozilla/5.0"})
@@ -871,15 +890,11 @@ class InstagramProcessor:
         print(f"{'='*60}\n")
         
         video_path = None
-        
         try:
             # Validate URL
             if not self.validate_instagram_url(instagram_url):
-                return {
-                    "error": "Invalid Instagram URL. Expected format: https://www.instagram.com/p/...",
-                    "transcript": None,
-                    "stats": None
-                }
+                return {"error": "Invalid Instagram URL. Expected format: https://www.instagram.com/p/...",
+                        "transcript": None, "stats": None}
             
             # Step 1: Download video
             video_path, download_error = self.download_instagram_video(instagram_url)
@@ -909,7 +924,8 @@ class InstagramProcessor:
                     self.genai.delete_file(video_file.name)
                 except:
                     pass
-                return {"error": f"Gemini processing failed: {video_file.state.name}", "transcript": None, "stats": None}
+                return {"error": f"Gemini processing failed: {video_file.state.name}",
+                        "transcript": None, "stats": None}
             
             # Step 3: Generate analysis
             print("Generating 500-word summary...")
@@ -962,6 +978,7 @@ class InstagramProcessor:
             print(f"❌ Instagram error: {str(e)}")
             print(traceback.format_exc())
             return {"error": f"Processing error: {str(e)}", "transcript": None, "stats": None}
+
 class FacebookProcessor:
     """Process Facebook videos by downloading and uploading to Gemini"""
     

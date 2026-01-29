@@ -800,9 +800,9 @@ Just provide the raw transcript of what is being said in the audio."""
             }
 
 class InstagramProcessor:
-    """Process Instagram videos by downloading and uploading to Gemini using instagrapi with session handling"""
+    """Process Instagram videos by downloading and uploading to Gemini using instaloader with session cookies"""
     
-    def __init__(self, client=None, ig_username=None, ig_password=None, session_file=None):
+    def __init__(self, client=None, session_file=None):
         self.supported_domains = ['instagram.com', 'www.instagram.com']
         self.temp_folder = tempfile.gettempdir()
         
@@ -814,29 +814,21 @@ class InstagramProcessor:
         else:
             self.client = client
         
-        # Setup Instagram login
+        # Setup Instaloader
         try:
-            from instagrapi import Client as IGClient
-            self.ig_client = IGClient()
-            self.session_file = session_file or os.path.join(self.temp_folder, "ig_session.json")
+            import instaloader
+            self.instaloader = instaloader.Instaloader(download_videos=True, download_pictures=False)
+            self.session_file = session_file  # Path to previously saved session from CLI login
             
-            if os.path.exists(self.session_file):
-                print(f"Loading Instagram session from {self.session_file}...")
-                self.ig_client.load_settings(self.session_file)
-                self.ig_client.login_by_session()
-                print("✓ Instagram session loaded successfully")
-            elif ig_username and ig_password:
-                print("Logging into Instagram...")
-                self.ig_client.login(ig_username, ig_password)
-                self.ig_client.dump_settings(self.session_file)
-                print(f"✓ Instagram login successful. Session saved to {self.session_file}")
+            if self.session_file and os.path.exists(self.session_file):
+                self.instaloader.load_session_from_file(username=None, filename=self.session_file)
+                print(f"✓ Loaded Instagram session from {self.session_file}")
             else:
-                print("⚠️ Instagram login not provided. Only public posts may work (rate-limited).")
+                print("⚠️ Session file not provided or not found. Only public posts may work.")
         except ImportError:
-            raise ImportError("Please install instagrapi: pip install instagrapi")
+            raise ImportError("Please install instaloader: pip install instaloader")
 
     def validate_instagram_url(self, url):
-        """Validate Instagram URL"""
         try:
             parsed = urlparse(url)
             return any(domain in parsed.netloc for domain in self.supported_domains)
@@ -844,21 +836,16 @@ class InstagramProcessor:
             return False
 
     def download_instagram_video(self, instagram_url):
-        """
-        Download Instagram video using instagrapi
-        Returns: (video_path, error)
-        """
         try:
+            from instaloader import Post
+            
             shortcode = instagram_url.rstrip("/").split("/")[-1]
+            post = Post.from_shortcode(self.instaloader.context, shortcode)
             
-            # Get media info from URL
-            media_id = self.ig_client.media_pk_from_url(instagram_url)
-            media = self.ig_client.media_info(media_id)
-            
-            if not media.video_url:
+            if not post.is_video:
                 return None, "This Instagram post does not contain a video."
             
-            video_url = media.video_url
+            video_url = post.video_url
             video_path = os.path.join(
                 self.temp_folder,
                 f"instagram_{shortcode}_{int(time.time()*1000)}.mp4"
@@ -876,38 +863,30 @@ class InstagramProcessor:
             
             print(f"✓ Downloaded: {os.path.getsize(video_path)/(1024*1024):.2f} MB")
             return video_path, None
-        
         except Exception as e:
             return None, f"Download error: {str(e)}"
 
     def process_instagram_url(self, instagram_url):
-        """
-        Process Instagram video: Download → Upload to Gemini → Analyze
-        Returns: {error, transcript, stats}
-        """
         print(f"\n{'='*60}")
         print(f"PROCESSING INSTAGRAM: {instagram_url}")
         print(f"{'='*60}\n")
         
         video_path = None
         try:
-            # Validate URL
             if not self.validate_instagram_url(instagram_url):
                 return {"error": "Invalid Instagram URL. Expected format: https://www.instagram.com/p/...",
                         "transcript": None, "stats": None}
             
-            # Step 1: Download video
             video_path, download_error = self.download_instagram_video(instagram_url)
             if download_error:
                 print(f"❌ Download failed: {download_error}")
                 return {"error": download_error, "transcript": None, "stats": None}
             
-            # Step 2: Upload to Gemini
+            # Upload to Gemini
             print(f"Uploading to Gemini for analysis...")
             video_file = self.genai.upload_file(path=video_path, display_name="instagram_video.mp4")
             
             # Wait for processing
-            print("Waiting for Gemini to process...")
             max_wait = 120
             wait_time = 0
             while video_file.state.name == "PROCESSING" and wait_time < max_wait:
@@ -918,7 +897,6 @@ class InstagramProcessor:
                     print(f"  Processing... {wait_time}s")
             
             if video_file.state.name != "ACTIVE":
-                # Cleanup
                 try:
                     os.remove(video_path)
                     self.genai.delete_file(video_file.name)
@@ -927,8 +905,7 @@ class InstagramProcessor:
                 return {"error": f"Gemini processing failed: {video_file.state.name}",
                         "transcript": None, "stats": None}
             
-            # Step 3: Generate analysis
-            print("Generating 500-word summary...")
+            # Generate transcript/summary
             model = self.genai.GenerativeModel("gemini-2.0-flash")
             response = model.generate_content([
                 video_file,
@@ -936,7 +913,6 @@ class InstagramProcessor:
             ])
             transcript = response.text.strip()
             
-            # Cleanup
             try:
                 os.remove(video_path)
                 self.genai.delete_file(video_file.name)
@@ -948,7 +924,6 @@ class InstagramProcessor:
                 return {"error": "Could not extract content from video. Video may have no audio or visual content.",
                         "transcript": None, "stats": None}
             
-            # Calculate stats
             word_count = len(transcript.split())
             stats = {
                 'char_count': len(transcript),
@@ -957,13 +932,6 @@ class InstagramProcessor:
                 'source_type': 'instagram',
                 'url': instagram_url
             }
-            
-            print(f"\n{'='*60}")
-            print(f"✓ INSTAGRAM PROCESSING COMPLETE")
-            print(f"{'='*60}")
-            print(f"Transcript: {len(transcript):,} chars")
-            print(f"Words: {word_count:,}")
-            print(f"{'='*60}\n")
             
             return {"error": None, "transcript": transcript, "stats": stats, "source": instagram_url}
         
@@ -978,7 +946,6 @@ class InstagramProcessor:
             print(f"❌ Instagram error: {str(e)}")
             print(traceback.format_exc())
             return {"error": f"Processing error: {str(e)}", "transcript": None, "stats": None}
-
 class FacebookProcessor:
     """Process Facebook videos by downloading and uploading to Gemini"""
     
@@ -2182,7 +2149,9 @@ Generate the script now. Count words carefully.
 document_processor = DocumentProcessor()
 video_processor = VideoProcessor()
 script_generator = EnhancedScriptGenerator()
-instagram_processor = InstagramProcessor()
+instagram_processor = InstagramProcessor(
+    session_file=r"C:\Users\harsh\AppData\Local\Instaloader\session-aashitapatel17"
+)
 facebook_processor = FacebookProcessor()  # ADD THIS LINE
 audio_processor = AudioProcessor()  # ADD THIS LINE
 # tiktok_processor = TikTokProcessor()

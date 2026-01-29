@@ -1813,12 +1813,15 @@ def comp_analysis():
     try:
         data = request.get_json()
         channel_id = data.get("channel_id", "").strip()
+
         if not channel_id:
             return jsonify({"error": "Channel ID is required"}), 400
 
         youtube = googleapiclient.discovery.build("youtube", "v3", developerKey=YOUTUBE_API_KEY)
 
-        # 1. Fetch channel info (with snippet for thumbnail)
+        # -----------------------------------------------------------
+        # 1. FETCH ROOT CHANNEL DETAILS
+        # -----------------------------------------------------------
         channel_resp = youtube.channels().list(
             part="snippet,statistics,contentDetails",
             id=channel_id
@@ -1830,10 +1833,11 @@ def comp_analysis():
         channel_info = channel_resp["items"][0]
         channel_title = channel_info["snippet"]["title"]
         channel_thumbnail = channel_info["snippet"]["thumbnails"]["high"]["url"]
-        subs_count = int(channel_info["statistics"].get("subscriberCount", 1))
         uploads_playlist = channel_info["contentDetails"]["relatedPlaylists"]["uploads"]
 
-        # 2. Get last 10 uploads, filter medium/long → take 10
+        # -----------------------------------------------------------
+        # 2. FETCH LAST 10 UPLOADS → FILTER MEDIUM/LONG
+        # -----------------------------------------------------------
         videos_resp = youtube.playlistItems().list(
             part="contentDetails,snippet",
             playlistId=uploads_playlist,
@@ -1852,7 +1856,8 @@ def comp_analysis():
                 continue
 
             v = vid_details["items"][0]
-            duration = parse_duration(v.get("contentDetails", {}).get("duration", ""))
+            duration = parse_duration(v["contentDetails"].get("duration", ""))
+
             if duration >= 240:  # medium/long only
                 candidate_videos.append({
                     "id": vid_id,
@@ -1860,10 +1865,13 @@ def comp_analysis():
                 })
 
         if not candidate_videos:
-            return jsonify({"error": "No medium/long videos found for this channel"}), 404
+            return jsonify({"error": "No medium/long videos found"}), 404
 
-        # 3. Collect competitor channels with frequency count
+        # -----------------------------------------------------------
+        # 3. SEARCH FOR COMPETITORS (collect frequency)
+        # -----------------------------------------------------------
         competitor_counts = {}
+
         for video in candidate_videos:
             search_resp = youtube.search().list(
                 part="snippet",
@@ -1885,16 +1893,45 @@ def comp_analysis():
                     competitor_counts[ch_id] = {"title": ch_title, "count": 0}
                 competitor_counts[ch_id]["count"] += 1
 
-        # sort competitors by frequency and take top 50
+        # -----------------------------------------------------------
+        # 4. EARLY SUBSCRIBER FILTERING BEFORE TOP 50
+        # -----------------------------------------------------------
+        valid_competitors = {}
+
+        for comp_id, comp_data in competitor_counts.items():
+            comp_resp = youtube.channels().list(
+                part="statistics",
+                id=comp_id
+            ).execute()
+
+            if not comp_resp.get("items"):
+                continue
+
+            comp_subs = int(comp_resp["items"][0]["statistics"].get("subscriberCount", 0))
+
+            # SKIP channels below 1000 subs → EARLY FILTER (new logic)
+            if comp_subs >= 1000:
+                valid_competitors[comp_id] = {
+                    "title": comp_data["title"],
+                    "count": comp_data["count"],
+                    "subs": comp_subs
+                }
+
+        # Sort only after filtering
         competitors = sorted(
-            competitor_counts.items(),
+            valid_competitors.items(),
             key=lambda kv: kv[1]["count"],
             reverse=True
         )[:50]
 
-        # 4. For each competitor: fetch latest 4 videos + avg views + thumbnail
+        # -----------------------------------------------------------
+        # 5. PROCESS TOP COMPETITORS
+        # -----------------------------------------------------------
         competitors_data = []
-        for comp_id, comp_data in competitors:
+
+        for comp_id, comp_info in competitors:
+
+            # fetch full channel info
             comp_resp = youtube.channels().list(
                 part="snippet,statistics,contentDetails",
                 id=comp_id
@@ -1903,37 +1940,33 @@ def comp_analysis():
             if not comp_resp.get("items"):
                 continue
 
-            comp_info = comp_resp["items"][0]
-            comp_title = comp_data["title"]
-            comp_subs = int(comp_info["statistics"].get("subscriberCount", 1))
+            comp_details = comp_resp["items"][0]
+            comp_title = comp_info["title"]
+            comp_subs = comp_info["subs"]
+            comp_uploads = comp_details["contentDetails"]["relatedPlaylists"]["uploads"]
+            comp_thumbnail = comp_details["snippet"]["thumbnails"]["high"]["url"]
 
-            # 🔥 FILTER: SKIP channels with < 1000 subscribers
-            if comp_subs < 1000:
-                continue
-
-            comp_uploads = comp_info["contentDetails"]["relatedPlaylists"]["uploads"]
-            comp_thumbnail = comp_info["snippet"]["thumbnails"]["high"]["url"]
-
-            # Fetch up to 20 recent uploads
-            comp_uploads_resp = youtube.playlistItems().list(
+            # Fetch up to 20 uploads
+            uploads_resp = youtube.playlistItems().list(
                 part="contentDetails",
                 playlistId=comp_uploads,
                 maxResults=20
             ).execute()
 
-            comp_video_ids = [v["contentDetails"]["videoId"] for v in comp_uploads_resp.get("items", [])]
-            all_videos = fetch_video_details(youtube, comp_video_ids)
+            comp_video_ids = [
+                v["contentDetails"]["videoId"] 
+                for v in uploads_resp.get("items", [])
+            ]
 
+            all_videos = fetch_video_details(youtube, comp_video_ids)
             if not all_videos:
                 continue
 
             # Categorize by duration
-            medium_videos = []
-            long_videos = []
-            short_videos = []
+            medium_videos, long_videos, short_videos = [], [], []
 
             for v in all_videos:
-                duration = parse_duration(v.get("contentDetails", {}).get("duration", ""))
+                duration = parse_duration(v["contentDetails"].get("duration", ""))
 
                 if duration < 60:
                     short_videos.append(v)
@@ -1942,31 +1975,28 @@ def comp_analysis():
                 else:
                     long_videos.append(v)
 
-            # Select 4 videos based on priority
-            selected = []
-            selected.extend(medium_videos[:4])
-
+            # Select 4 videos
+            selected = medium_videos[:4]
             if len(selected) < 4:
                 selected.extend(long_videos[:4 - len(selected)])
-
             if len(selected) < 4:
                 selected.extend(short_videos[:4 - len(selected)])
-
             selected = selected[:4]
 
-            # Avg recent views (last 5 videos)
+            # Average views of recent 5
             avg_recent_views = sum(
-                int(v["statistics"].get("viewCount", 0)) for v in all_videos[:5]
+                int(v["statistics"].get("viewCount", 0))
+                for v in all_videos[:5]
             ) / max(len(all_videos[:5]), 1)
 
-            # Prepare selected video data
-            video_data = []
+            # Build video list
+            videos_out = []
             for v in selected:
-                duration = parse_duration(v.get("contentDetails", {}).get("duration", ""))
+                duration = parse_duration(v["contentDetails"].get("duration", ""))
                 views = int(v["statistics"].get("viewCount", 0))
-                multiplier = round(views / avg_recent_views, 2) if avg_recent_views > 0 else 0
+                multiplier = round(views / avg_recent_views, 2) if avg_recent_views else 0
 
-                video_data.append({
+                videos_out.append({
                     "video_id": v["id"],
                     "title": v["snippet"]["title"],
                     "channel_id": comp_id,
@@ -1985,14 +2015,18 @@ def comp_analysis():
                 "title": comp_title,
                 "subscriber_count": comp_subs,
                 "avg_recent_views": round(avg_recent_views, 2),
-                "frequency": comp_data.get("count", 0),
+                "frequency": comp_info["count"],
                 "thumbnail_url": comp_thumbnail,
-                "videos": video_data
+                "videos": videos_out
             })
 
+            # limit total output to 200 videos
             if len(competitors_data) * 4 >= 200:
                 break
 
+        # -----------------------------------------------------------
+        # 6. RESPONSE
+        # -----------------------------------------------------------
         return jsonify({
             "success": True,
             "channel_id": channel_id,
@@ -2002,8 +2036,9 @@ def comp_analysis():
         })
 
     except Exception as e:
-        app.logger.error(f"Channel outliers error: {str(e)}")
+        app.logger.error(f"comp_analysis error: {str(e)}")
         return jsonify({"error": str(e)}), 500
+
 
 
 

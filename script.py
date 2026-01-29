@@ -800,7 +800,7 @@ Just provide the raw transcript of what is being said in the audio."""
             }
 
 class InstagramProcessor:
-    """Process Instagram videos by downloading and uploading to Gemini"""
+    """Process Instagram videos by downloading and uploading to Gemini using instaloader"""
     
     def __init__(self, client=None):
         self.supported_domains = ['instagram.com', 'www.instagram.com']
@@ -811,18 +811,13 @@ class InstagramProcessor:
         else:
             self.client = client
         self.temp_folder = tempfile.gettempdir()
-        self._check_ytdlp()
         
-    def _check_ytdlp(self):
-        """Check if yt-dlp is available"""
-        self.ytdlp_available = shutil.which('yt-dlp') is not None
-        if not self.ytdlp_available:
-            print("⚠️  WARNING: yt-dlp not found in system PATH")
-            print("   Instagram processing will fail until yt-dlp is installed")
-            print("   Install with: pip install yt-dlp")
-        else:
-            print("✓ yt-dlp found and ready")
-        
+        try:
+            import instaloader
+            self.instaloader = instaloader.Instaloader(download_videos=True, download_pictures=False)
+        except ImportError:
+            raise ImportError("Please install instaloader: pip install instaloader")
+
     def validate_instagram_url(self, url):
         """Validate Instagram URL"""
         try:
@@ -830,84 +825,42 @@ class InstagramProcessor:
             return any(domain in parsed.netloc for domain in self.supported_domains)
         except:
             return False
-    
+
     def download_instagram_video(self, instagram_url):
         """
-        Download Instagram video using yt-dlp
+        Download Instagram video using instaloader
         Returns: (video_path, error)
         """
-        # Check if yt-dlp is available
-        if not self.ytdlp_available:
-            error_msg = (
-                "yt-dlp is not installed or not in PATH.\n"
-                "Please install with: pip install yt-dlp\n"
-                "Then restart your application."
-            )
-            return None, error_msg
-        
         try:
-            video_path = os.path.join(
-                self.temp_folder,
-                f"instagram_{int(time.time()*1000)}.mp4"
-            )
+            shortcode = instagram_url.rstrip("/").split("/")[-1]
+            post = self.instaloader.check_profile(shortcode) if False else None
+            # Use instaloader Post object
+            from instaloader import Post, Instaloader
+            L = self.instaloader
+            post = Post.from_shortcode(L.context, shortcode)
+            
+            video_url = post.video_url
+            if not video_url:
+                return None, "This Instagram post does not contain a video."
+            
+            video_path = os.path.join(self.temp_folder, f"instagram_{shortcode}_{int(time.time()*1000)}.mp4")
             
             print(f"Downloading Instagram video: {instagram_url}")
+            r = requests.get(video_url, stream=True, headers={"User-Agent": "Mozilla/5.0"})
+            with open(video_path, "wb") as f:
+                for chunk in r.iter_content(chunk_size=8192):
+                    if chunk:
+                        f.write(chunk)
             
-            # Download video with yt-dlp
-            cmd = [
-                'yt-dlp',
-                '-f', 'worst',  # Best quality
-                '--no-playlist',
-                '--no-warnings',
-                '-o', video_path,
-                instagram_url
-            ]
+            if not os.path.exists(video_path) or os.path.getsize(video_path) == 0:
+                return None, "Failed to download video. File is empty."
             
-            print(f"Running command: {' '.join(cmd[:5])}... {instagram_url}")
-            
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=120,
-                shell=False  # Explicit for Windows
-            )
-            
-            if result.returncode != 0:
-                error_msg = result.stderr if result.stderr else result.stdout
-                print(f"yt-dlp error output: {error_msg}")
-                
-                # Check for common errors
-                if "HTTP Error 429" in error_msg:
-                    return None, "Instagram rate limit reached. Please try again later."
-                elif "Private video" in error_msg or "login" in error_msg.lower():
-                    return None, "Video is private or requires login. Please use a public video."
-                else:
-                    return None, f"Download failed: {error_msg[:200]}"
-            
-            # Verify file was created
-            if not os.path.exists(video_path):
-                return None, "Video file was not created. Video may be unavailable or private."
-            
-            file_size = os.path.getsize(video_path)
-            if file_size == 0:
-                os.remove(video_path)
-                return None, "Downloaded file is empty. Video may be unavailable."
-            
-            print(f"✓ Downloaded: {file_size:,} bytes ({file_size/(1024*1024):.2f} MB)")
-            
+            print(f"✓ Downloaded: {os.path.getsize(video_path)/(1024*1024):.2f} MB")
             return video_path, None
-            
-        except subprocess.TimeoutExpired:
-            return None, "Download timeout (2 minutes). Video may be too long or connection is slow."
-        except FileNotFoundError:
-            return None, (
-                "yt-dlp command not found. Please install with: pip install yt-dlp\n"
-                "Make sure to restart your terminal/application after installation."
-            )
+        
         except Exception as e:
             return None, f"Download error: {str(e)}"
-    
+
     def process_instagram_url(self, instagram_url):
         """
         Process Instagram video: Download → Upload to Gemini → Analyze
@@ -930,14 +883,9 @@ class InstagramProcessor:
             
             # Step 1: Download video
             video_path, download_error = self.download_instagram_video(instagram_url)
-            
             if download_error:
                 print(f"❌ Download failed: {download_error}")
-                return {
-                    "error": download_error,
-                    "transcript": None,
-                    "stats": None
-                }
+                return {"error": download_error, "transcript": None, "stats": None}
             
             # Step 2: Upload to Gemini
             print(f"Uploading to Gemini for analysis...")
@@ -961,21 +909,15 @@ class InstagramProcessor:
                     self.genai.delete_file(video_file.name)
                 except:
                     pass
-                return {
-                    "error": f"Gemini processing failed: {video_file.state.name}",
-                    "transcript": None,
-                    "stats": None
-                }
+                return {"error": f"Gemini processing failed: {video_file.state.name}", "transcript": None, "stats": None}
             
             # Step 3: Generate analysis
             print("Generating 500-word summary...")
             model = self.genai.GenerativeModel("gemini-2.0-flash")
-            
             response = model.generate_content([
                 video_file,
                 "Generate a detailed transcript and a comprehensive 500-word summary of this Instagram video content."
             ])
-            
             transcript = response.text.strip()
             
             # Cleanup
@@ -987,11 +929,8 @@ class InstagramProcessor:
                 print(f"⚠️  Cleanup warning: {e}")
             
             if not transcript or len(transcript) < 50:
-                return {
-                    "error": "Could not extract content from video. Video may have no audio or visual content.",
-                    "transcript": None,
-                    "stats": None
-                }
+                return {"error": "Could not extract content from video. Video may have no audio or visual content.",
+                        "transcript": None, "stats": None}
             
             # Calculate stats
             word_count = len(transcript.split())
@@ -1010,45 +949,19 @@ class InstagramProcessor:
             print(f"Words: {word_count:,}")
             print(f"{'='*60}\n")
             
-            # PRINT TRANSCRIPT PREVIEW
-            print(f"\n{'='*80}")
-            print(f"INSTAGRAM TRANSCRIPT: {instagram_url}")
-            print(f"{'='*80}")
-            print(f"Length: {len(transcript):,} characters")
-            print(f"Words: {word_count:,}")
-            print(f"\nPREVIEW (first 500 chars):")
-            print(f"{'-'*80}")
-            print(transcript[:500])
-            if len(transcript) > 500:
-                print(f"... (truncated, {len(transcript) - 500:,} more characters)")
-            print(f"{'='*80}\n")
-            
-            return {
-                "error": None,
-                "transcript": transcript,
-                "stats": stats,
-                "source": instagram_url
-            }
-            
+            return {"error": None, "transcript": transcript, "stats": stats, "source": instagram_url}
+        
         except Exception as e:
-            # Cleanup on error
             if video_path and os.path.exists(video_path):
                 try:
                     os.remove(video_path)
                 except:
                     pass
-            
-            import logging
-            import traceback
+            import logging, traceback
             logging.error(f"Instagram processing error: {str(e)}")
             print(f"❌ Instagram error: {str(e)}")
             print(traceback.format_exc())
-            
-            return {
-                "error": f"Processing error: {str(e)}",
-                "transcript": None,
-                "stats": None
-            }
+            return {"error": f"Processing error: {str(e)}", "transcript": None, "stats": None}
 class FacebookProcessor:
     """Process Facebook videos by downloading and uploading to Gemini"""
     
@@ -1511,7 +1424,7 @@ class FacebookProcessor:
 
 
 class ImageProcessor:
-    """Process images with OCR and visual analysis using Gemini Vision"""
+    """Process images with OCR and visual analysis using Gemini Vision - OPTIMIZED FOR URLs"""
     
     def __init__(self):
         self.supported_image_formats = {'.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp'}
@@ -1521,34 +1434,127 @@ class ImageProcessor:
         """Check if image format is supported"""
         return Path(filename).suffix.lower() in self.supported_image_formats
     
-    def validate_image_file(self, file_path):
-        """Validate image file"""
-        try:
-            file_size = os.path.getsize(file_path)
-            if file_size > self.max_image_size:
-                return False, f"Image too large. Max: {self.max_image_size // (1024*1024)}MB"
-            return True, None
-        except Exception as e:
-            return False, f"Invalid image: {str(e)}"
-    
-    def process_image_with_gemini(self, image_path, filename):
+    def process_image_url(self, image_url, filename=None):
         """
-        Extract text and analyze image using Gemini Vision
+        Process image DIRECTLY from URL using Gemini Vision
         Returns: {error, text, stats}
         """
         print(f"\n{'='*60}")
-        print(f"IMAGE PROCESSING: {filename}")
+        print(f"IMAGE PROCESSING (URL): {filename or image_url}")
         print(f"{'='*60}\n")
         
         try:
-            is_valid, error_msg = self.validate_image_file(image_path)
-            if not is_valid:
-                return {"error": error_msg, "text": None, "stats": None}
+            # Validate URL
+            if not image_url or not image_url.strip():
+                return {"error": "Empty URL provided", "text": None, "stats": None}
             
-            print(f"Uploading image to Gemini Vision: {filename}")
+            if not image_url.startswith(('http://', 'https://')):
+                return {"error": f"Invalid URL format: {image_url}", "text": None, "stats": None}
+            
+            # Extract filename from URL if not provided
+            if not filename:
+                filename = image_url.split('/')[-1].split('?')[0] or 'image.jpg'
+            
+            print(f"Processing image from URL: {image_url}")
+            print(f"Filename: {filename}")
+            
+            # ✅ OPTIMIZED: Send URL directly to Gemini (no download needed!)
+            print("Analyzing image with Gemini Vision (direct URL)...")
+            
+            prompt = """Analyze this image and provide:
+
+1. **TEXT EXTRACTED:** Transcribe ALL visible text exactly as it appears (OCR)
+2. **VISUAL CONTENT:** Brief description of what's shown in the image
+3. **KEY INSIGHTS:** Main information, data, or important points
+4. **SUMMARY (50-100 words):** Concise summary suitable for YouTube script creation
+
+Be specific and actionable. Focus on content that would be useful for creating video scripts."""
+            
+            # ✅ Use Part.from_uri to process image URL directly
+            response = client.models.generate_content(
+                model="gemini-2.0-flash",
+                contents=[
+                    types.Part.from_uri(
+                        file_uri=image_url,
+                        mime_type='image/jpeg'  # Gemini can handle various formats
+                    ),
+                    prompt
+                ],
+                config=types.GenerateContentConfig(
+                    temperature=0.2,
+                    max_output_tokens=800
+                )
+            )
+            
+            if not response.text or len(response.text.strip()) < 20:
+                return {"error": "Could not extract meaningful content from image", "text": None, "stats": None}
+            
+            extracted_text = response.text.strip()
+            word_count = len(extracted_text.split())
+            
+            stats = {
+                'char_count': len(extracted_text),
+                'word_count': word_count,
+                'estimated_read_time': max(1, word_count // 200),
+                'source_type': 'image',
+                'filename': filename,
+                'url': image_url
+            }
+            
+            print(f"\n{'='*60}")
+            print(f"✓ IMAGE PROCESSING COMPLETE")
+            print(f"{'='*60}")
+            print(f"Extracted: {len(extracted_text):,} chars")
+            print(f"Words: {word_count:,}")
+            print(f"\nCONTENT PREVIEW:")
+            print(f"{'-'*60}")
+            print(extracted_text[:500])
+            if len(extracted_text) > 500:
+                print(f"... (truncated, {len(extracted_text) - 500:,} more chars)")
+            print(f"{'='*60}\n")
+            
+            return {
+                "error": None,
+                "text": extracted_text,
+                "stats": stats,
+                "source": filename
+            }
+            
+        except Exception as e:
+            logger.error(f"Image URL processing error: {str(e)}")
+            import traceback
+            print(f"❌ Image processing error: {str(e)}")
+            print(traceback.format_exc())
+            return {"error": f"Processing error: {str(e)}", "text": None, "stats": None}
+    
+    def process_image_file(self, image_path, filename):
+        """
+        Process image from local file path (fallback for uploaded files)
+        Returns: {error, text, stats}
+        """
+        print(f"\n{'='*60}")
+        print(f"IMAGE PROCESSING (FILE): {filename}")
+        print(f"{'='*60}\n")
+        
+        try:
+            # Validate file
+            if not os.path.exists(image_path):
+                return {"error": f"File not found: {image_path}", "text": None, "stats": None}
+            
+            file_size = os.path.getsize(image_path)
+            if file_size > self.max_image_size:
+                return {"error": f"Image too large. Max: {self.max_image_size // (1024*1024)}MB", "text": None, "stats": None}
+            
+            print(f"Uploading image file to Gemini: {filename}")
             
             # Upload image to Gemini
-            image_file = genai.upload_file(image_path)
+            with open(image_path, 'rb') as f:
+                image_file = client.files.upload(
+                    file=f,
+                    config={'mime_type': 'image/jpeg'}
+                )
+            
+            print(f"✓ Uploaded: {image_file.name}")
             
             # Wait for processing
             max_wait = 60
@@ -1556,36 +1562,46 @@ class ImageProcessor:
             while image_file.state.name == "PROCESSING" and wait_time < max_wait:
                 time.sleep(2)
                 wait_time += 2
-                image_file = genai.get_file(image_file.name)
+                image_file = client.files.get(name=image_file.name)
+                if wait_time % 10 == 0:
+                    print(f"  Processing... {wait_time}s")
             
             if image_file.state.name == "FAILED":
                 return {"error": "Image upload failed", "text": None, "stats": None}
             
             # Analyze with Gemini Vision
             print("Analyzing image with Gemini Vision...")
-            model = genai.GenerativeModel("gemini-2.0-flash")
             
-            prompt = """Analyze this image thoroughly and extract:
-1. ALL visible text (OCR)
-2. Visual content description
-3. Key information, data, or insights shown
-4. Context and relevance for content creation
+            prompt = """Analyze this image and provide:
 
-Provide a comprehensive analysis that can inform YouTube script creation."""
+1. **TEXT EXTRACTED:** Transcribe ALL visible text exactly as it appears (OCR)
+2. **VISUAL CONTENT:** Brief description of what's shown in the image
+3. **KEY INSIGHTS:** Main information, data, or important points
+4. **SUMMARY (50-100 words):** Concise summary suitable for YouTube script creation
+
+Be specific and actionable. Focus on content that would be useful for creating video scripts."""
             
-            response = model.generate_content(
-                [prompt, image_file],
-                generation_config=genai.types.GenerationConfig(
+            response = client.models.generate_content(
+                model="gemini-2.0-flash",
+                contents=[
+                    types.Part.from_uri(
+                        file_uri=image_file.uri,
+                        mime_type='image/jpeg'
+                    ),
+                    prompt
+                ],
+                config=types.GenerateContentConfig(
                     temperature=0.2,
-                    max_output_tokens=2000
+                    max_output_tokens=800
                 )
             )
             
             # Cleanup
             try:
-                genai.delete_file(image_file.name)
-            except:
-                pass
+                client.files.delete(name=image_file.name)
+                print("✓ Cleaned up Gemini file")
+            except Exception as e:
+                print(f"⚠️  Cleanup warning: {e}")
             
             if not response.text or len(response.text.strip()) < 20:
                 return {"error": "Could not extract meaningful content from image", "text": None, "stats": None}
@@ -1616,7 +1632,10 @@ Provide a comprehensive analysis that can inform YouTube script creation."""
             }
             
         except Exception as e:
-            logger.error(f"Image processing error: {str(e)}")
+            logger.error(f"Image file processing error: {str(e)}")
+            import traceback
+            print(f"❌ Image processing error: {str(e)}")
+            print(traceback.format_exc())
             return {"error": f"Processing error: {str(e)}", "text": None, "stats": None}
 
 

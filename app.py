@@ -2906,26 +2906,18 @@ def whole_script():
                 image_folder = {'name': 'Images', 'type': 'document', 'items': []}
                 for idx, image_url in enumerate(image_files):
                     if image_url and isinstance(image_url, str) and image_url.strip():
-                        try:
-                            print(f"Downloading image {idx+1}/{len(image_files)}: {image_url[:50]}...")
-                            response = requests.get(image_url, timeout=30)
-                            if response.status_code == 200:
-                                filename = image_url.split('/')[-1].split('?')[0] or f'image_{idx+1}.jpg'
-                                image_data = base64.b64encode(response.content).decode('utf-8')
-                                image_folder['items'].append({
-                                    'type': 'image_file',
-                                    'filename': filename,
-                                    'data': image_data
-                                })
-                                print(f"  ✓ Downloaded: {len(response.content):,} bytes")
-                            else:
-                                print(f"  ✗ Failed: HTTP {response.status_code}")
-                        except Exception as e:
-                            print(f"  ✗ Error downloading image {image_url}: {e}")
+                        filename = image_url.split('/')[-1].split('?')[0] or f'image_{idx+1}.jpg'
+                        image_folder['items'].append({
+                            'type': 'image_url',  # ← CHANGED
+                            'url': image_url,     # ← SIMPLIFIED
+                            'filename': filename
+                        })
+                        print(f"Added image URL {idx+1}: {filename}")
+                
                 if image_folder['items']:
                     folders.append(image_folder)
-                    print(f"Added {len(image_folder['items'])} image files")
-            
+                    print(f"✓ Added {len(image_folder['items'])} image URLs")
+
             # Documents (Download from URLs)
             documents = data.get('documents', [])
             if documents and isinstance(documents, list):
@@ -3388,61 +3380,74 @@ def whole_script():
                         "stats": result.get("stats", {}),
                         "url": doc_url
                     })
-
-                # -----------------------------
-                # IMAGE FILE
-                # -----------------------------
-                elif item_type == 'image_file':
+                elif item_type == 'image_files':
+                    # Handle case where frontend sends 'image_files' instead of 'image_file'
+                    # Treat it as image_url if URL is present, otherwise as image_file
+                    url = item.get('url', '').strip()
                     filename = item.get('filename', 'image.jpg')
                     file_data = item.get('data')
-
-                    if not image_processor.is_supported_image_format(filename):
-                        return ('error', f"[{folder_name}] Unsupported image format: {filename}")
-
-                    if not file_data:
-                        return ('error', f"[{folder_name}] No data: {filename}")
-
-                    print(f"\n[{folder_name}] Processing Image: {filename}")
-
-                    safe_user_id = user_id.replace('.', '_').replace(':', '_')
-                    image_path = os.path.join(
-                        UPLOAD_FOLDER,
-                        f"temp_{safe_user_id}_{int(time.time())}_{item_idx}_{secure_filename(filename)}"
-                    )
-
-                    try:
-                        image_bytes = base64.b64decode(file_data)
-                        with open(image_path, 'wb') as f:
-                            f.write(image_bytes)
-
-                        print(f"  Saved: {len(image_bytes):,} bytes ({len(image_bytes)/(1024*1024):.2f} MB)")
-
-                        result = image_processor.process_image_with_gemini(image_path, filename)
-
-                        try:
-                            os.remove(image_path)
-                        except:
-                            pass
-
+                    
+                    if url:
+                        # Process as URL
+                        print(f"\n[{folder_name}] Processing Image URL: {filename}")
+                        result = image_processor.process_image_url(url, filename)
+                        
                         if result['error']:
                             return ('error', f"[{folder_name}] Image {filename}: {result['error']}")
-
-                        extracted_text = result['text']
-
+                        
                         return ('document', {
                             'folder_name': folder_name,
                             'filename': filename,
-                            'text': extracted_text,
-                            'stats': result['stats']
+                            'text': result['text'],
+                            'stats': result['stats'],
+                            'url': url
                         })
-
-                    except Exception as e:
-                        if os.path.exists(image_path):
+                    elif file_data:
+                        # Process as file
+                        if not image_processor.is_supported_image_format(filename):
+                            return ('error', f"[{folder_name}] Unsupported image format: {filename}")
+                        
+                        print(f"\n[{folder_name}] Processing Image File: {filename}")
+                        
+                        safe_user_id = user_id.replace('.', '_').replace(':', '_')
+                        image_path = os.path.join(
+                            UPLOAD_FOLDER,
+                            f"temp_{safe_user_id}_{int(time.time())}_{item_idx}_{secure_filename(filename)}"
+                        )
+                        
+                        try:
+                            image_bytes = base64.b64decode(file_data)
+                            with open(image_path, 'wb') as f:
+                                f.write(image_bytes)
+                            
+                            print(f"  Saved: {len(image_bytes):,} bytes ({len(image_bytes)/(1024*1024):.2f} MB)")
+                            
+                            result = image_processor.process_image_file(image_path, filename)
+                            
                             try:
                                 os.remove(image_path)
                             except:
                                 pass
-                        return ('error', f"[{folder_name}] Image error {filename}: {str(e)}")
+                            
+                            if result['error']:
+                                return ('error', f"[{folder_name}] Image {filename}: {result['error']}")
+                            
+                            return ('document', {
+                                'folder_name': folder_name,
+                                'filename': filename,
+                                'text': result['text'],
+                                'stats': result['stats']
+                            })
+                        
+                        except Exception as e:
+                            if os.path.exists(image_path):
+                                try:
+                                    os.remove(image_path)
+                                except:
+                                    pass
+                            return ('error', f"[{folder_name}] Image error {filename}: {str(e)}")
+                    else:
+                        return ('error', f"[{folder_name}] Image has no URL or file data")
 
                 # -----------------------------
                 # TEXT INPUT

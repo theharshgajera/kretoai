@@ -1913,6 +1913,7 @@ Return the updated script only.
    Step 2: use \n to create blank line
    Step 3: Write content on new line
    (this point i smust even if the script is as small as 40-60 words)
+12. Make sure to check that we use \n\n before every time stamp to mentain formatting double check it. 
 
 **CONTENT RULES:**
 1. Use creator's natural voice from style profile

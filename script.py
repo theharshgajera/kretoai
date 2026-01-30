@@ -1919,18 +1919,18 @@ Return the updated script only.
 ```
 ## Your Engaging Title Here
 
-### [00:00-xx:xx] Hook
+\n\n### [00:00-xx:xx] Hook \n
 There will be starting hook of video in this section
 
-### [xx:xx-yy:yy] Introduction
+\n\n### [xx:xx-yy:yy] Introduction \n
 Continue building curiosity. Explain what viewers will learn and why it matters to them personally.
 
-### [yy:yy-zz:zz] Topic name
+\n\n### [yy:yy-zz:zz] Topic name \n
 Transition into first main point. Use creator's natural transitions and speaking style.
 
 [Continue with continuous timestamps until end ]
 
-### [{target_minutes:02d}:{target_seconds_remainder:02d}] Outrow
+\n\n### [{target_minutes:02d}:{target_seconds_remainder:02d}] Outrow\n
 Final thought and call to action in creator's style.
 ```
 

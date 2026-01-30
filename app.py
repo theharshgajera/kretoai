@@ -2901,6 +2901,7 @@ def whole_script():
                     print(f"⚠️  No audio files were successfully downloaded")
             
             # Image Files (Download from URLs)
+            # Image Files (Download from URLs)
             image_files = data.get('image_files', [])
             if image_files and isinstance(image_files, list):
                 image_folder = {'name': 'Images', 'type': 'document', 'items': []}

@@ -1902,7 +1902,7 @@ Return the updated script only.
 2. Immediately follow with hook: **### [00:00-00:XX] Hook, topic name or outrow** Content starts here...
 3. NO greetings ("Hey everyone") - start with impact
 4. Use continuous timestamps: [00:00-00:15], [00:15-00:32], [00:32-00:50]...
-5. Each timestamp = 10-20 seconds (25-50 words)
+5. Each timestamp = 10-20 seconds (25-50 words) (for below 100 words script timestamp can be of less than 5 seconds also but make sure to use \n\n before timestamp to separate it from previous timestamp it is must)
 6. End at [{target_minutes:02d}:{target_seconds_remainder:02d}]
 7. NO production notes, NO visual directions, NO tone descriptions
 8. Use **bold** only for title (## heading) and timestamps (### heading)

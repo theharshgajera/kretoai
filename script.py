@@ -2131,6 +2131,7 @@ Remember:
 - Stay within {min_words}-{max_words} words (±15% of {target_words})
 - Prioritize viewer value over rigid constraints
 - Use \\n\\n before EVERY timestamp heading
+- Don't use time (ex. 2024, May 2025 etc) in script
 """
 
     def _get_modification_prompt(self):

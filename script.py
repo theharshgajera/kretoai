@@ -1908,7 +1908,11 @@ Return the updated script only.
 8. Use **bold** only for title (## heading) and timestamps (### heading)
 9. Make sure to use Hook, Outrow or if topic then topic name beside timestamp its compulsary.
 10. Make sure \n\n ### [yy:yy-xx:xx] topic_name \n followed by content of that timestamp (it is compulsary to use \n)
-11. Even for the 0.5 minute video make sure to follow formatting rule dont forget to use \n even in short 30 second duration scripts 
+11.TIMESTAMP FORMAT (THIS IS MANDATORY):
+   Step 1: Write ### [MM:SS-MM:SS] Topic Name
+   Step 2: use \n to create blank line
+   Step 3: Write content on new line
+   (this point i smust even if the script is as small as 40-60 words)
 
 **CONTENT RULES:**
 1. Use creator's natural voice from style profile

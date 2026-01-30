@@ -1907,6 +1907,7 @@ Return the updated script only.
 7. NO production notes, NO visual directions, NO tone descriptions
 8. Use **bold** only for title (## heading) and timestamps (### heading)
 9. Make sure to use Hook, Outrow or if topic then topic name beside timestamp its compulsary.
+10. Make sure \n\n ### [yy:yy-xx:xx] topic_name \n followed by content of that timestamp (it is compulsary to use \n)
 
 **CONTENT RULES:**
 1. Use creator's natural voice from style profile

@@ -3140,6 +3140,31 @@ def whole_script():
                 else:
                     item_type = item.get('type')
 
+                # ========================================
+                # SMART TYPE DETECTION (NEW FIX)
+                # ========================================
+                # If type is video_file but has URL instead of data, detect actual type
+                if item_type == 'video_file' and 'url' in item and 'data' not in item:
+                    url = item.get('url', '').strip()
+                    
+                    # Detect actual source type from URL
+                    if 'youtube.com' in url or 'youtu.be' in url:
+                        print(f"[{folder_name}] Detected YouTube URL in video_file type, converting to youtube_url")
+                        item_type = 'youtube_url'
+                    elif 'instagram.com' in url:
+                        print(f"[{folder_name}] Detected Instagram URL in video_file type, converting to instagram_url")
+                        item_type = 'instagram_url'
+                    elif 'facebook.com' in url or 'fb.watch' in url:
+                        print(f"[{folder_name}] Detected Facebook URL in video_file type, converting to facebook_url")
+                        item_type = 'facebook_url'
+                    elif 'tiktok.com' in url:
+                        print(f"[{folder_name}] Detected TikTok URL in video_file type, converting to tiktok_url")
+                        item_type = 'tiktok_url'
+                    else:
+                        # Assume it's a direct video file URL that needs downloading
+                        print(f"[{folder_name}] video_file with URL - will download and process")
+                        # Continue as video_file but will need to download first
+
                 # -----------------------------
                 # YOUTUBE
                 # -----------------------------
@@ -3287,8 +3312,25 @@ def whole_script():
                 # VIDEO FILE
                 # -----------------------------
                 elif item_type == 'video_file':
+                    # Handle both: base64 data OR URL-based video files
                     filename = item.get('filename', 'video.mp4')
                     file_data = item.get('data')
+                    file_url = item.get('url')  # NEW: Check for URL
+
+                    # NEW: If URL provided instead of data, download first
+                    if file_url and not file_data:
+                        print(f"\n[{folder_name}] Video file provided as URL, downloading: {file_url}")
+                        try:
+                            import requests
+                            response = requests.get(file_url, timeout=120)
+                            if response.status_code == 200:
+                                file_data = base64.b64encode(response.content).decode('utf-8')
+                                filename = file_url.split('/')[-1].split('?')[0] or filename
+                                print(f"  ✓ Downloaded: {len(response.content):,} bytes")
+                            else:
+                                return ('error', f"[{folder_name}] Failed to download video: HTTP {response.status_code}")
+                        except Exception as e:
+                            return ('error', f"[{folder_name}] Video download error: {str(e)}")
 
                     if not video_processor.is_supported_video_format(filename):
                         return ('error', f"[{folder_name}] Unsupported: {filename}")
@@ -3382,9 +3424,12 @@ def whole_script():
                         "stats": result.get("stats", {}),
                         "url": doc_url
                     })
-                elif item_type == 'image_files':
+
+                # -----------------------------
+                # IMAGE FILES
+                # -----------------------------
+                elif item_type == 'image_files' or item_type == 'image_file':
                     # Handle case where frontend sends 'image_files' instead of 'image_file'
-                    # Treat it as image_url if URL is present, otherwise as image_file
                     url = item.get('url', '').strip()
                     filename = item.get('filename', 'image.jpg')
                     file_data = item.get('data')
@@ -3484,6 +3529,9 @@ def whole_script():
                     return ('error', f"[{folder_name}] Unknown type: {item_type}")
 
             except Exception as e:
+                import traceback
+                print(f"[{folder_name}] Exception in process_item: {str(e)}")
+                print(traceback.format_exc())
                 return ('error', f"[{folder_name}] Item error: {str(e)}")
 
         

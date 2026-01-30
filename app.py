@@ -2902,6 +2902,7 @@ def whole_script():
             
             # Image Files (Download from URLs)
             # Image Files (Download from URLs)
+            # Image Files (Download from URLs)
             image_files = data.get('image_files', [])
             if image_files and isinstance(image_files, list):
                 image_folder = {'name': 'Images', 'type': 'document', 'items': []}
@@ -2909,8 +2910,8 @@ def whole_script():
                     if image_url and isinstance(image_url, str) and image_url.strip():
                         filename = image_url.split('/')[-1].split('?')[0] or f'image_{idx+1}.jpg'
                         image_folder['items'].append({
-                            'type': 'image_url',  # ← CHANGED
-                            'url': image_url,     # ← SIMPLIFIED
+                            'type': 'image_files',  # ← KEEP AS 'image_files' to match your working handler
+                            'url': image_url,
                             'filename': filename
                         })
                         print(f"Added image URL {idx+1}: {filename}")

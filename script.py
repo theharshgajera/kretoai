@@ -1897,7 +1897,7 @@ Return the updated script only.
 - Main: [00:{intro_end:02d}-{main_minutes:02d}:{main_seconds:02d}] ({main_words} words)
 - Conclusion: [{main_minutes:02d}:{main_seconds:02d}-{target_minutes:02d}:{target_seconds_remainder:02d}] ({conclusion_words} words)
 
- Use this structure timing and fomat rules for duration of 1 minute and above for 0.5 minute you just need to generate 3-4 sentence so there will be no rule just make sure to have heading and \n\n sentences. (make sure to use \n\n to maintain line break between heading and sentences.)
+for 0.5 minute video scirpt don't follow structural timing or format rules. you just need to generate 3-4 sentence so there will be no rule just make sure to have heading and \n\n sentences. (make sure to use \n\n to maintain line break between heading and sentences.)
 
 **FORMAT RULES:**
 1. Start with: **## [Your Title]**

@@ -1822,7 +1822,13 @@ class EnhancedScriptGenerator:
             raise ValueError("ANTHROPIC_API_KEY not found in environment")
         
         self.anthropic_client = anthropic.Anthropic(api_key=api_key)
-        
+
+        if client is None:
+            import google.generativeai as genai_config
+            genai_config.configure(api_key=os.getenv("GEMINI_API_KEY"))
+            self.genai = genai_config
+        else:
+            self.client = client
         # Natural speaking rate
         self.WORDS_PER_MINUTE = 135
         
@@ -2521,57 +2527,415 @@ Return the complete modified script with updated timestamps and proper formattin
         
         return script
     
-    def modify_script_chat(
-        self,
-        current_script: str,
-        style_profile: str,
-        topic_insights: str,
-        document_insights: str,
-        user_message: str
-    ) -> str:
+    def generate_script_with_tone(self, tone_analyzer, knowledge_base, prompt, target_minutes=None):
         """
-        Modify existing script based on user feedback
+        Generate script with optional tone analyzer + knowledge base.
+        
+        Args:
+            tone_analyzer: Optional dict with full tone profile from tone_analyzer API
+            knowledge_base: Dict with 'inspiration_knowledge' and 'document_knowledge'
+            prompt: User's script requirements
+            target_minutes: Optional target duration
+        
+        Returns:
+            Formatted script with 1-2 sentence paragraphs
+        """
+        try:
+            # ============================================
+            # PART 1: BUILD TONE/STYLE INSTRUCTIONS
+            # ============================================
+            
+            if tone_analyzer:
+                # Extract all relevant fields
+                channel_name = tone_analyzer.get('channel_name', 'the creator')
+                
+                # Core tone profile
+                tone_profile = tone_analyzer.get('tone_profile', {})
+                primary_tone = tone_profile.get('primary_tone', 'professional')
+                secondary_tones = tone_profile.get('secondary_tones', [])
+                formality = tone_profile.get('formality_level', 'conversational')
+                energy = tone_profile.get('energy_level', 'moderate')
+                humor = tone_profile.get('humor_presence', 'subtle')
+                
+                # Voice characteristics
+                voice_chars = tone_analyzer.get('voice_characteristics', {})
+                speaking_style = voice_chars.get('speaking_style', 'clear and direct')
+                audience_address = voice_chars.get('audience_address', 'you')
+                signature_phrases = voice_chars.get('signature_phrases', [])
+                
+                # Language patterns
+                language = tone_analyzer.get('language_analysis', {})
+                vocab_level = language.get('vocabulary_level', 'moderate')
+                sentence_length = language.get('average_sentence_length', 'medium')
+                technical_terms = language.get('technical_terminology', 'moderate')
+                
+                # Structural patterns
+                structural = tone_analyzer.get('structural_patterns', {})
+                opening_style = structural.get('typical_opening', 'engaging hook')
+                transition_style = structural.get('transition_style', 'clear and smooth')
+                explanation_method = structural.get('explanation_method', 'step-by-step')
+                closing_pattern = structural.get('closing_pattern', 'strong call-to-action')
+                
+                # Guidelines
+                guidelines = tone_analyzer.get('script_writing_guidelines', {})
+                must_include = guidelines.get('must_include', [])
+                must_avoid = guidelines.get('avoid', [])
+                
+                # AI replication instructions (the master guide)
+                ai_instructions = tone_analyzer.get('ai_replication_instructions', '')
+                
+                # Build comprehensive tone instructions
+                tone_instructions = f"""**🎯 CRITICAL: REPLICATE {channel_name.upper()}'S EXACT TONE AND STYLE**
+
+    **MASTER REPLICATION GUIDE:**
+    {ai_instructions}
+
+    **TONE PROFILE:**
+    - Primary Tone: {primary_tone}
+    - Secondary Tones: {', '.join(secondary_tones) if secondary_tones else 'N/A'}
+    - Formality: {formality}
+    - Energy Level: {energy}
+    - Humor: {humor}
+
+    **VOICE & DELIVERY:**
+    - Speaking Style: {speaking_style}
+    - Address Audience As: {audience_address}
+    - Signature Phrases to Use: {', '.join(signature_phrases[:3]) if signature_phrases else 'N/A'}
+    {f"  → Naturally incorporate: {', '.join(signature_phrases)}" if signature_phrases else ""}
+
+    **LANGUAGE PATTERNS:**
+    - Vocabulary Level: {vocab_level}
+    - Sentence Length: {sentence_length}
+    - Technical Terminology: {technical_terms}
+
+    **STRUCTURE REQUIREMENTS:**
+    - Opening: {opening_style}
+    - Transitions: {transition_style}
+    - Explanations: {explanation_method}
+    - Closing: {closing_pattern}
+
+    **✅ MUST INCLUDE:**
+    {chr(10).join(['  • ' + item for item in must_include]) if must_include else '  • Engaging, valuable content'}
+
+    **❌ MUST AVOID:**
+    {chr(10).join(['  • ' + item for item in must_avoid]) if must_avoid else '  • Generic or boring content'}
+
+    **📝 FORMATTING RULE:**
+    Write in 1-2 sentence paragraphs for maximum readability. Each paragraph = one complete thought. Short and punchy."""
+            
+            else:
+                # Default professional tone (no tone_analyzer provided)
+                tone_instructions = """**🎯 DEFAULT PROFESSIONAL YOUTUBE TONE**
+
+    Use a professional, engaging, and conversational tone suitable for YouTube:
+    - Clear and direct communication
+    - Moderate energy and enthusiasm  
+    - Conversational but polished
+    - Accessible vocabulary (avoid jargon)
+    - Well-structured and organized
+    - Friendly and approachable
+
+    **📝 FORMATTING RULE:**
+    Write in 1-2 sentence paragraphs for maximum readability. Each paragraph = one complete thought. Short and punchy."""
+            
+            # ============================================
+            # PART 2: BUILD KNOWLEDGE CONTEXT
+            # ============================================
+            
+            inspiration_knowledge = knowledge_base.get('inspiration_knowledge', '')
+            document_knowledge = knowledge_base.get('document_knowledge', '')
+            
+            knowledge_context = f"""**📚 KNOWLEDGE BASE (Use as inspiration and reference, NOT as exact content)**
+
+    **From Inspiration Sources (videos, audio, etc.):**
+    {inspiration_knowledge if inspiration_knowledge else 'No inspiration sources provided.'}
+
+    **From Documents (PDFs, images, text inputs):**
+    {document_knowledge if document_knowledge else 'No document sources provided.'}
+
+    **⚠️ IMPORTANT - How to Use Knowledge:**
+    1. Get ideas for topics to cover
+    2. Find interesting facts or statistics to reference
+    3. Understand the subject matter deeply
+    4. Add credibility with expert insights
+    5. **Transform everything into the tone/style specified above**
+    6. **DO NOT copy content verbatim - make it your own**"""
+            
+            # ============================================
+            # PART 3: CALCULATE TARGET WORD COUNT
+            # ============================================
+            
+            if target_minutes:
+                wpm = 145  # Average speaking pace
+                target_words = int(target_minutes * wpm)
+                duration_instruction = f"""**⏱️ TARGET DURATION:**
+    Approximately {target_words} words ({target_minutes} minutes at 145 WPM)
+    - This is a guideline, not a hard limit
+    - Prioritize quality and completeness over exact word count"""
+            else:
+                duration_instruction = "**⏱️ DURATION:** Create a comprehensive script (no specific length requirement)."
+            
+            # ============================================
+            # PART 4: BUILD FINAL GENERATION PROMPT
+            # ============================================
+            
+            generation_prompt = f"""You are an expert YouTube script writer creating a high-quality video script.
+
+    ═══════════════════════════════════════════════════════════════════
+
+    {tone_instructions}
+
+    ═══════════════════════════════════════════════════════════════════
+
+    {knowledge_context}
+
+    ═══════════════════════════════════════════════════════════════════
+
+    **📋 USER REQUEST:**
+    {prompt}
+
+    {duration_instruction}
+
+    ═══════════════════════════════════════════════════════════════════
+
+    **🎬 SCRIPT STRUCTURE (Follow this flow):**
+
+    1. **HOOK/OPENING** (First 10-15 seconds)
+    → Grab attention immediately with a bold statement, question, or promise
+    → Match the opening style specified in tone profile
+
+    2. **INTRODUCTION** (30-45 seconds)
+    → Set context and preview what's coming
+    → Build credibility and rapport
+
+    3. **MAIN CONTENT** (Bulk of video)
+    → Organized into clear sections
+    → Smooth transitions between topics
+    → Include examples, tips, actionable advice
+    → Use the explanation method from tone profile
+
+    4. **CONCLUSION** (30-60 seconds)
+    → Summarize key takeaways
+    → Reinforce main message
+
+    5. **CALL TO ACTION** (15-30 seconds)
+    → Encourage engagement (like, subscribe, comment)
+    → Match CTA style from tone profile
+    → Make it specific and actionable
+
+    ═══════════════════════════════════════════════════════════════════
+
+    **✍️ CRITICAL FORMATTING RULES:**
+
+    ✅ **DO THIS:**
+    - Write in SHORT 1-2 sentence paragraphs
+    - Each paragraph = ONE complete thought
+    - Use line breaks between ALL paragraphs
+    - Keep sentences punchy and engaging
+    - Make it easy to read and deliver
+
+    ❌ **DON'T DO THIS:**
+    - Long dense paragraphs (never more than 2 sentences)
+    - Cramming multiple ideas together
+    - Wall of text without breaks
+    - Overly complex sentence structures
+
+    **📐 FORMATTING EXAMPLE (CORRECT):**
+
+    This is the opening hook. It grabs attention immediately.
+
+    Here's the first key point. Notice the line break between ideas.
+
+    This is another important concept. Each thought stands alone for maximum impact.
+
+    Now we transition smoothly to the next section. See how readable this is?
+
+    **❌ INCORRECT FORMATTING (DON'T DO THIS):**
+
+    This is a long paragraph that goes on and on without breaks and contains multiple ideas crammed together which makes it hard to read and deliver naturally and this is exactly what we want to avoid in our scripts because it reduces readability and viewer engagement.
+
+    ═══════════════════════════════════════════════════════════════════
+
+    **🎯 YOUR TASK:**
+
+    Write the complete YouTube video script following ALL instructions above:
+    - Match the tone/style EXACTLY as specified
+    - Use knowledge base for inspiration and facts
+    - Follow the structure outlined
+    - Apply correct formatting (1-2 sentence paragraphs)
+    - Make it engaging, valuable, and actionable
+
+    Begin writing the script now:"""
+
+            # ============================================
+            # PART 5: GENERATE SCRIPT
+            # ============================================
+            
+            print(f"\n{'='*80}")
+            print(f"GENERATING SCRIPT WITH GEMINI 2.0 FLASH EXP")
+            print(f"{'='*80}")
+            print(f"Tone: {'✓ Custom (' + tone_analyzer.get('channel_name', 'Unknown') + ')' if tone_analyzer else '✗ Default Professional'}")
+            print(f"Target: {target_minutes or 'No specific'} minutes")
+            print(f"Knowledge: {'✓ Provided' if (inspiration_knowledge or document_knowledge) else '✗ None'}")
+            print(f"{'='*80}\n")
+            
+            response = self.client.models.generate_content(
+                model='gemini-2.0-flash',
+                contents=generation_prompt,
+                config={
+                    'temperature': 0.8,
+                    'top_p': 0.95,
+                    'top_k': 40,
+                    'max_output_tokens': 8000,
+                }
+            )
+            
+            script = response.text.strip()
+            
+            # ============================================
+            # PART 6: POST-PROCESS FOR FORMATTING
+            # ============================================
+            
+            # Ensure proper line breaks between sentences
+            script = self._format_script_readability(script)
+            
+            print(f"\n{'='*80}")
+            print(f"✅ SCRIPT GENERATED SUCCESSFULLY")
+            print(f"{'='*80}")
+            print(f"Length: {len(script):,} characters")
+            print(f"Word count: ~{len(script.split()):,} words")
+            if target_minutes:
+                estimated_minutes = len(script.split()) / 145
+                print(f"Estimated duration: ~{estimated_minutes:.1f} minutes")
+                print(f"Target was: {target_minutes} minutes")
+            print(f"{'='*80}\n")
+            
+            return script
+            
+        except Exception as e:
+            print(f"❌ Error in generate_script_with_tone: {str(e)}")
+            import traceback
+            print(traceback.format_exc())
+            return f"Error generating script: {str(e)}"
+
+    def _format_script_readability(self, script):
+        """
+        Post-process script to ensure proper formatting with short paragraphs.
+        Enforces 1-2 sentence paragraphs with line breaks.
+        """
+        lines = script.split('\n')
+        formatted_lines = []
+        current_paragraph = []
+        
+        for line in lines:
+            line = line.strip()
+            
+            # Skip empty lines
+            if not line:
+                if current_paragraph:
+                    formatted_lines.append(' '.join(current_paragraph))
+                    formatted_lines.append('')  # Add blank line
+                    current_paragraph = []
+                continue
+            
+            # Keep special formatting (headers, timestamps, etc.)
+            if (line.startswith(('#', '[', '**', '##', '###')) or 
+                line.endswith(':') or 
+                line.startswith('- ') or
+                line.startswith('• ')):
+                
+                # Flush current paragraph first
+                if current_paragraph:
+                    formatted_lines.append(' '.join(current_paragraph))
+                    formatted_lines.append('')
+                    current_paragraph = []
+                
+                formatted_lines.append(line)
+                formatted_lines.append('')
+                continue
+            
+            # Split into sentences (rough split)
+            sentences = []
+            temp = line
+            for delimiter in ['. ', '! ', '? ']:
+                parts = temp.split(delimiter)
+                for i, part in enumerate(parts[:-1]):
+                    sentences.append(part + delimiter.strip())
+                temp = parts[-1]
+            if temp:
+                sentences.append(temp)
+            
+            # Add sentences to paragraph, breaking after 2 sentences
+            for sentence in sentences:
+                sentence = sentence.strip()
+                if not sentence:
+                    continue
+                
+                current_paragraph.append(sentence)
+                
+                # Break paragraph after 2 sentences
+                if len(current_paragraph) >= 2:
+                    formatted_lines.append(' '.join(current_paragraph))
+                    formatted_lines.append('')  # Blank line between paragraphs
+                    current_paragraph = []
+        
+        # Flush remaining paragraph
+        if current_paragraph:
+            formatted_lines.append(' '.join(current_paragraph))
+            formatted_lines.append('')
+        
+        return '\n'.join(formatted_lines)
+
+    def modify_script_chat(self, current_script, tone_analyzer, knowledge_base, user_message):
+        """
+        Modify script via chat while maintaining tone and using knowledge base.
         
         Args:
             current_script: The current script content
-            style_profile: Creator's style guide
-            topic_insights: Topic knowledge (kept for compatibility)
-            document_insights: Document knowledge (kept for compatibility)
+            tone_analyzer: Optional tone profile dict
+            knowledge_base: Dict with inspiration and document knowledge
             user_message: User's modification request
-        
-        Returns:
-            Modified script
         """
-        print("\n" + "="*80)
-        print("MODIFYING SCRIPT VIA CHAT")
-        print("="*80)
-        print(f"User request: {user_message[:150]}...")
-        
-        # Build modification prompt
-        prompt = self._get_modification_prompt().format(
-            current_script=current_script,
-            style_profile=style_profile,
-            user_message=user_message
-        )
-        
-        # Generate modified script
-        modified_script = self._call_claude(
-            prompt=prompt,
-            max_tokens=len(current_script.split()) + 3000,  # Current + buffer
-            temperature=0.6  # Slightly less creative for modifications
-        )
-        
-        modified_script = modified_script.strip()
-        
-        print("="*80)
-        print("SCRIPT MODIFICATION COMPLETE")
-        print("="*80)
-        print(f"Original words: {len(current_script.split()):,}")
-        print(f"Modified words: {len(modified_script.split()):,}")
-        print(f"Change: {len(modified_script.split()) - len(current_script.split()):+,} words")
-        print("="*80 + "\n")
-        
-        return modified_script
+        try:
+            # Build tone context
+            if tone_analyzer:
+                tone_context = f"""**MAINTAIN THIS TONE:**
+    Channel: {tone_analyzer.get('channel_name')}
+    Style: {tone_analyzer.get('tone_profile', {}).get('primary_tone')}
+    Instructions: {tone_analyzer.get('ai_replication_instructions', '')}"""
+            else:
+                tone_context = "**MAINTAIN professional, engaging YouTube tone**"
+            
+            # Build knowledge context
+            knowledge_context = f"""**AVAILABLE KNOWLEDGE (reference if needed):**
+    {knowledge_base.get('inspiration_knowledge', '')}
+    {knowledge_base.get('document_knowledge', '')}"""
+            
+            modification_prompt = f"""{tone_context}
+
+    {knowledge_context}
+
+    **CURRENT SCRIPT:**
+    {current_script}
+
+    **USER REQUEST:**
+    {user_message}
+
+    **TASK:** Modify the script according to the user's request while:
+    1. MAINTAINING the exact tone and style specified above
+    2. Keeping the 1-2 sentence paragraph format
+    3. Using knowledge base for reference if needed
+    4. Ensuring smooth flow and transitions
+
+    Provide the modification or response:"""
+
+            model = self.genai.GenerativeModel('gemini-2.0-flash')
+            response = model.generate_content(modification_prompt)
+            
+            return response.text.strip()
+            
+        except Exception as e:
+            return f"Error modifying script: {str(e)}"
     
     # =========================================================================
     # HELPER METHODS

@@ -2940,6 +2940,7 @@ Instructions: {tone_analyzer.get('ai_replication_instructions', 'Maintain profes
 1. Modify the script according to their request
 2. Answer questions about the script
 3. Provide suggestions or improvements
+4. Make sure to give whole script in same format not only changes.
 
 **IMPORTANT:**
 - If modifying the script, maintain the exact tone and style specified above

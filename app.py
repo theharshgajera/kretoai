@@ -3818,7 +3818,7 @@ def transcribe_youtube_with_gemini(youtube_url):
         ],
         config=types.GenerateContentConfig(
             temperature=0.2,
-            max_output_tokens=4000,
+            max_output_tokens=8000,
         )
     )
 

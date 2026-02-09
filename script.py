@@ -2922,8 +2922,8 @@ Instructions: {tone_analyzer.get('ai_replication_instructions', 'Maintain profes
 {document_knowledge if document_knowledge else 'None provided'}"""
         
             # Truncate script if too long (max 15000 chars to fit in prompt)
-            truncated_script = current_script[:15000]
-            if len(current_script) > 15000:
+            truncated_script = current_script[:150000]
+            if len(current_script) > 150000:
                 truncated_script += "\n\n[... script truncated for length ...]"
         
             modification_prompt = f"""{tone_context}

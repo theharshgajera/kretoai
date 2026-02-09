@@ -3735,8 +3735,7 @@ Instructions: {tone_analyzer.get('ai_replication_instructions', '')}"""
 {knowledge_context}
 
 **CURRENT SCRIPT:**
-{current_script[:15000]}  {# Truncate if too long #}
-
+{current_script[:150000]} 
 **USER REQUEST:**
 {user_message}
 

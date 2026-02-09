@@ -2941,6 +2941,7 @@ Instructions: {tone_analyzer.get('ai_replication_instructions', 'Maintain profes
 2. Answer questions about the script
 3. Provide suggestions or improvements
 4. Make sure to give whole script in same format not only changes.
+5. Do NOT include any introductory phrases, prefaces, explanations, or meta text. Start your response directly with the requested content.
 
 **IMPORTANT:**
 - If modifying the script, maintain the exact tone and style specified above

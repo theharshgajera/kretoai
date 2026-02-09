@@ -3698,92 +3698,61 @@ Provide a structured knowledge summary (400-600 words) focusing on factual conte
         return jsonify({'error': f'Script generation failed: {str(e)}'}), 500
 
 @app.route('/api/chat-modify-script', methods=['POST'])
-def modify_script_chat(self, current_script, tone_analyzer, knowledge_base, user_message):
-    """
-    Modify script via chat while maintaining tone and using knowledge base.
+def chat_modify_script():
+    """Enhanced chat modification with tone analyzer and knowledge base"""
+    user_id = request.remote_addr
+    data = request.json
+    user_message = data.get('message', '').strip()
+    chat_session_id = data.get('chat_session_id')
     
-    Args:
-        current_script: The current script content
-        tone_analyzer: Optional tone profile dict
-        knowledge_base: Dict with inspiration and document knowledge
-        user_message: User's modification request
-    """
+    if not user_message:
+        return jsonify({'error': 'Please provide a modification request'}), 400
+    
+    current_script_data = user_data[user_id].get('current_script')
+    if not current_script_data:
+        return jsonify({'error': 'No active script to modify'}), 400
+    
     try:
-        # Build tone context
-        if tone_analyzer:
-            tone_context = f"""**MAINTAIN THIS TONE:**
-Channel: {tone_analyzer.get('channel_name')}
-Style: {tone_analyzer.get('tone_profile', {}).get('primary_tone')}
-Instructions: {tone_analyzer.get('ai_replication_instructions', '')}"""
-        else:
-            tone_context = "**MAINTAIN professional, engaging YouTube tone**"
+        current_script = current_script_data['content']
         
-        # Build knowledge context
-        inspiration_knowledge = knowledge_base.get('inspiration', '')
-        document_knowledge = knowledge_base.get('documents', '')
+        # Get tone_analyzer and knowledge_base from stored data
+        tone_analyzer = current_script_data.get('tone_analyzer')  # Can be None
+        knowledge_base = current_script_data.get('knowledge_base', {
+            'inspiration': '',
+            'documents': ''
+        })
         
-        knowledge_context = f"""**AVAILABLE KNOWLEDGE (reference if needed):**
-
-**Inspiration Sources:**
-{inspiration_knowledge if inspiration_knowledge else 'None provided'}
-
-**Document Sources:**
-{document_knowledge if document_knowledge else 'None provided'}"""
-        
-        modification_prompt = f"""{tone_context}
-
-{knowledge_context}
-
-**CURRENT SCRIPT:**
-{current_script[:150000]} 
-**USER REQUEST:**
-{user_message}
-
-**TASK:** Respond to the user's request. You can:
-1. Modify the script according to their request
-2. Answer questions about the script
-3. Provide suggestions or improvements
-
-**IMPORTANT:**
-- If modifying the script, maintain the exact tone and style specified above
-- Keep the 1-2 sentence paragraph format
-- Use knowledge base for reference if needed
-- Ensure smooth flow and transitions
-- If the user asks a question, answer it clearly
-- If they want changes, provide the modified version or specific suggestions
-
-Provide your response:"""
-
-        # ✅ FIX: Use Claude API (self.anthropic_client) instead of self.genai
-        print(f"\n{'='*60}")
-        print(f"MODIFYING SCRIPT VIA CHAT")
-        print(f"{'='*60}")
-        print(f"User request: {user_message[:100]}...")
-        print(f"Tone: {'✓ Custom' if tone_analyzer else '✗ Default'}")
-        print(f"{'='*60}\n")
-        
-        response = self._call_claude(
-            prompt=modification_prompt,
-            max_tokens=8000,
-            temperature=0.7
+        # ✅ FIX: Call as METHOD on script_generator instance
+        modification_response = script_generator.modify_script_chat(
+            current_script=current_script,
+            tone_analyzer=tone_analyzer,
+            knowledge_base=knowledge_base,
+            user_message=user_message
         )
         
-        result = response.strip()
+        # Update chat session
+        if chat_session_id and chat_session_id in user_data[user_id]['chat_sessions']:
+            chat_session = user_data[user_id]['chat_sessions'][chat_session_id]
+            chat_session['messages'].append({
+                'user_message': user_message,
+                'ai_response': modification_response,
+                'timestamp': datetime.now().isoformat()
+            })
         
-        print(f"\n{'='*60}")
-        print(f"✓ MODIFICATION COMPLETE")
-        print(f"{'='*60}")
-        print(f"Response length: {len(result):,} characters")
-        print(f"{'='*60}\n")
-        
-        return result
+        return jsonify({
+            'success': True,
+            'response': modification_response,
+            'user_message': user_message,
+            'chat_session_id': chat_session_id,
+            'timestamp': datetime.now().isoformat()
+        })
         
     except Exception as e:
         import traceback
-        print(f"❌ Error in modify_script_chat: {str(e)}")
+        print(f"❌ Error in chat-modify-script: {str(e)}")
         print(traceback.format_exc())
-        return f"Error modifying script: {str(e)}"
-
+        app.logger.error(f"Chat modification error: {str(e)}")
+        return jsonify({'error': f'Error modifying script: {str(e)}'}), 500
 @app.route('/api/update-script', methods=['POST'])
 def update_script():
     """Update the current working script"""

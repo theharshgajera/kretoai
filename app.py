@@ -3698,7 +3698,7 @@ Provide a structured knowledge summary (400-600 words) focusing on factual conte
         return jsonify({'error': f'Script generation failed: {str(e)}'}), 500
 @app.route('/api/chat-modify-script', methods=['POST'])
 def chat_modify_script():
-    """Enhanced chat modification with document context"""
+    """Enhanced chat modification with tone analyzer and knowledge base"""
     user_id = request.remote_addr
     data = request.json
     user_message = data.get('message', '').strip()
@@ -3713,16 +3713,20 @@ def chat_modify_script():
     
     try:
         current_script = current_script_data['content']
-        style_profile = current_script_data['style_profile']
-        topic_insights = current_script_data['topic_insights']
-        document_insights = current_script_data.get('document_insights', '')
         
+        # ✅ FIX: Get tone_analyzer and knowledge_base from stored data
+        tone_analyzer = current_script_data.get('tone_analyzer')  # Can be None
+        knowledge_base = current_script_data.get('knowledge_base', {
+            'inspiration': '',
+            'documents': ''
+        })
+        
+        # ✅ FIX: Call with correct parameters
         modification_response = script_generator.modify_script_chat(
-            current_script,
-            style_profile,
-            topic_insights,
-            document_insights,
-            user_message
+            current_script=current_script,
+            tone_analyzer=tone_analyzer,           # Pass tone_analyzer
+            knowledge_base=knowledge_base,         # Pass knowledge_base dict
+            user_message=user_message
         )
         
         if chat_session_id and chat_session_id in user_data[user_id]['chat_sessions']:
@@ -3741,6 +3745,9 @@ def chat_modify_script():
             'timestamp': datetime.now().isoformat()
         })
     except Exception as e:
+        import traceback
+        print(f"❌ Error in chat-modify-script: {str(e)}")
+        print(traceback.format_exc())
         return jsonify({'error': f'Error modifying script: {str(e)}'}), 500
 
 

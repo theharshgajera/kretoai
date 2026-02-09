@@ -3801,58 +3801,56 @@ def update_script():
         return jsonify({'error': f'Error updating script: {str(e)}'}), 500
 
 def transcribe_youtube_with_gemini(youtube_url):
-    prompt = (
-        "Generate a **full timestamped transcript** for this YouTube video.\n\n"
-        "Transcript Rules:\n"
-        "- Use Markdown formatting\n"
-        "- Every timestamp must start with a newline\n"
-        "- Format timestamps as **[00:00:00]**\n"
-        "- Keep long and detailed\n"
-    )
-
-    response = client.models.generate_content(
-        model="gemini-2.0-flash",
-        contents=[
-            types.Part.from_uri(file_uri=youtube_url, mime_type="video/mp4"),
-            prompt
-        ],
-        config=types.GenerateContentConfig(
-            temperature=0.2,
-            max_output_tokens=8000,
-        )
-    )
-
-    return response.text.strip()
-
-
-# ---------------------------
-# UTIL: Gemini Local File Processing
-# ---------------------------
-def transcribe_local_with_gemini(video_path, filename):
-    uploaded = genai.upload_file(path=video_path, display_name=filename)
-
-    while uploaded.state.name == "PROCESSING":
-        time.sleep(2)
-        uploaded = genai.get_file(uploaded.name)
-
-    if uploaded.state.name != "ACTIVE":
-        raise Exception("Gemini failed to process uploaded video")
-
-    response = client.models.generate_content(
-        model="gemini-2.0-flash",
-        contents=[
-            uploaded,
-            "Generate a **timestamped transcript** in markdown with [00:00] timestamps. Keep it detailed."
-        ]
-    )
-
-    # cleanup
+    """
+    Generate transcript for YouTube video using Gemini API
+    """
     try:
-        genai.delete_file(uploaded.name)
-    except:
-        pass
+        # Validate URL
+        if not youtube_url or not youtube_url.strip():
+            raise ValueError("YouTube URL cannot be empty")
+        
+        youtube_url = youtube_url.strip()
+        
+        prompt = (
+            "Generate a **full timestamped transcript** for this YouTube video.\n\n"
+            "Transcript Rules:\n"
+            "- Use Markdown formatting\n"
+            "- Every timestamp must start with a newline\n"
+            "- Format timestamps as **[00:00:00]**\n"
+            "- Keep long and detailed\n"
+        )
 
-    return response.text.strip()
+        print(f"Transcribing YouTube video: {youtube_url}")
+        
+        response = client.models.generate_content(
+            model="gemini-2.0-flash",
+            contents=[
+                types.Part.from_uri(file_uri=youtube_url, mime_type="video/mp4"),
+                prompt
+            ],
+            config=types.GenerateContentConfig(
+                temperature=0.2,
+                max_output_tokens=4000,
+            )
+        )
+        
+        # ✅ FIX: Handle None response
+        if not response or not response.text:
+            raise ValueError("Gemini returned empty response")
+        
+        transcript = response.text.strip()
+        
+        if not transcript or len(transcript) < 20:
+            raise ValueError("Transcript too short or empty")
+        
+        print(f"✓ Transcript generated: {len(transcript)} chars")
+        return transcript
+        
+    except Exception as e:
+        print(f"❌ Error in transcribe_youtube_with_gemini: {str(e)}")
+        import traceback
+        print(traceback.format_exc())
+        raise Exception(f"YouTube transcription failed: {str(e)}")
 
 
 # ---------------------------
@@ -3883,11 +3881,17 @@ def summarize_with_gemini(transcript, length):
 def process_video():
     try:
         start_time = time.time()
-        data = request.get_json()
+        data = request.get_json(silent=True)
+        
+        if not data:
+            return jsonify({"error": "Invalid JSON body"}), 400
 
-        source_type = data.get("source_type")
-        source_url = data.get("source_url")
+        source_type = data.get("source_type", "").strip() if data.get("source_type") else None
+        source_url = data.get("source_url", "").strip() if data.get("source_url") else None
         summary_length = data.get("summary_length", "medium")
+
+        if not source_type:
+            return jsonify({"error": "source_type is required"}), 400
 
         # ----------------------------------------
         # YOUTUBE — NO DOWNLOAD, USE GEMINI URI
@@ -3896,7 +3900,10 @@ def process_video():
             if not source_url:
                 return jsonify({"error": "source_url required"}), 400
 
-            transcript = transcribe_youtube_with_gemini(source_url)
+            try:
+                transcript = transcribe_youtube_with_gemini(source_url)
+            except Exception as e:
+                return jsonify({"error": f"YouTube transcription failed: {str(e)}"}), 500
 
         # ----------------------------------------
         # LOCAL FILE UPLOAD
@@ -3911,17 +3918,25 @@ def process_video():
             video_path = os.path.join(UPLOAD_FOLDER, filename)
             file.save(video_path)
 
-            transcript = transcribe_local_with_gemini(video_path, filename)
-
-            os.remove(video_path)
+            try:
+                transcript = transcribe_local_with_gemini(video_path, filename)
+            except Exception as e:
+                return jsonify({"error": f"Local video transcription failed: {str(e)}"}), 500
+            finally:
+                # Cleanup
+                if os.path.exists(video_path):
+                    os.remove(video_path)
 
         else:
-            return jsonify({"error": "Invalid source_type"}), 400
+            return jsonify({"error": "Invalid source_type. Use 'youtube' or 'local'"}), 400
 
         # ----------------------------------------
         # SUMMARY
         # ----------------------------------------
-        summary = summarize_with_gemini(transcript, summary_length)
+        try:
+            summary = summarize_with_gemini(transcript, summary_length)
+        except Exception as e:
+            return jsonify({"error": f"Summary generation failed: {str(e)}"}), 500
 
         # ----------------------------------------
         # FINAL MERGED MARKDOWN
@@ -3972,6 +3987,10 @@ def process_video():
         })
 
     except Exception as e:
+        import traceback
+        error_trace = traceback.format_exc()
+        print(f"❌ Error in process_video: {str(e)}")
+        print(error_trace)
         return jsonify({"error": str(e)}), 500
 
 

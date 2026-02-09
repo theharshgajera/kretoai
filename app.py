@@ -3815,12 +3815,12 @@ def transcribe_and_summarize():
         data = request.json if 'application/json' in content_type else {}
         
         # Extract parameters
-        source_type = data.get('source_type', '').strip().lower()  # youtube, video_file, audio_file, instagram, facebook, tiktok
+        source_type = data.get('source_type', '').strip().lower()
         source_url = data.get('source_url', '').strip()
-        video_file_data = data.get('video_file_data')  # base64 encoded
-        audio_file_data = data.get('audio_file_data')  # base64 encoded
+        video_file_data = data.get('video_file_data')
+        audio_file_data = data.get('audio_file_data')
         filename = data.get('filename', 'media_file')
-        summary_length = data.get('summary_length', 'medium')  # short, medium, long
+        summary_length = data.get('summary_length', 'medium')
         
         # Validation
         if not source_type:
@@ -3836,7 +3836,7 @@ def transcribe_and_summarize():
             return jsonify({'error': 'audio_file_data (base64) is required for audio_file type'}), 400
         
         # Initialize result
-        transcript = None
+        raw_transcript = None
         stats = None
         error_msg = None
         
@@ -3855,7 +3855,7 @@ def transcribe_and_summarize():
             if result['error']:
                 error_msg = result['error']
             else:
-                transcript = result['transcript']
+                raw_transcript = result['transcript']
                 stats = result['stats']
         
         elif source_type == 'instagram':
@@ -3869,7 +3869,7 @@ def transcribe_and_summarize():
             if result['error']:
                 error_msg = result['error']
             else:
-                transcript = result['transcript']
+                raw_transcript = result['transcript']
                 stats = result['stats']
         
         elif source_type == 'facebook':
@@ -3883,22 +3883,8 @@ def transcribe_and_summarize():
             if result['error']:
                 error_msg = result['error']
             else:
-                transcript = result['transcript']
+                raw_transcript = result['transcript']
                 stats = result['stats']
-        
-        # elif source_type == 'tiktok':
-        #     print(f"Processing TikTok: {source_url}")
-        #     
-        #     if not tiktok_processor.validate_tiktok_url(source_url):
-        #         return jsonify({'error': 'Invalid TikTok URL'}), 400
-        #     
-        #     result = tiktok_processor.process_tiktok_url(source_url)
-        #     
-        #     if result['error']:
-        #         error_msg = result['error']
-        #     else:
-        #         transcript = result['transcript']
-        #         stats = result['stats']
         
         elif source_type == 'video_file':
             print(f"Processing video file: {filename}")
@@ -3906,7 +3892,6 @@ def transcribe_and_summarize():
             if not video_processor.is_supported_video_format(filename):
                 return jsonify({'error': f'Unsupported video format: {filename}'}), 400
             
-            # Save base64 to temp file
             safe_user_id = user_id.replace('.', '_').replace(':', '_')
             video_path = os.path.join(
                 UPLOAD_FOLDER,
@@ -3922,7 +3907,6 @@ def transcribe_and_summarize():
                 
                 result = video_processor.process_video_content(video_path, 'local')
                 
-                # Cleanup
                 try:
                     os.remove(video_path)
                 except:
@@ -3931,7 +3915,7 @@ def transcribe_and_summarize():
                 if result['error']:
                     error_msg = result['error']
                 else:
-                    transcript = result['transcript']
+                    raw_transcript = result['transcript']
                     stats = result['stats']
             
             except Exception as e:
@@ -3948,7 +3932,6 @@ def transcribe_and_summarize():
             if not audio_processor.is_supported_audio_format(filename):
                 return jsonify({'error': f'Unsupported audio format: {filename}'}), 400
             
-            # Save base64 to temp file
             safe_user_id = user_id.replace('.', '_').replace(':', '_')
             audio_path = os.path.join(
                 UPLOAD_FOLDER,
@@ -3964,7 +3947,6 @@ def transcribe_and_summarize():
                 
                 result = audio_processor.process_audio_file(audio_path, filename)
                 
-                # Cleanup
                 try:
                     os.remove(audio_path)
                 except:
@@ -3973,7 +3955,7 @@ def transcribe_and_summarize():
                 if result['error']:
                     error_msg = result['error']
                 else:
-                    transcript = result['transcript']
+                    raw_transcript = result['transcript']
                     stats = result['stats']
             
             except Exception as e:
@@ -3997,14 +3979,83 @@ def transcribe_and_summarize():
                 'error': error_msg
             }), 500
         
-        if not transcript:
+        if not raw_transcript:
             return jsonify({
                 'success': False,
                 'error': 'No transcript extracted'
             }), 500
         
         # ================================================================
-        # GENERATE AI SUMMARY
+        # CLEAN AND FORMAT TRANSCRIPT
+        # ================================================================
+        
+        def extract_clean_transcript(raw_text):
+            """Extract only the transcript portion and format with \\n\\n"""
+            import re
+            
+            # Remove common prefixes that Gemini adds
+            text = raw_text
+            
+            # Remove "Here is a detailed transcript..." type intros
+            intro_patterns = [
+                r'^Here is a detailed transcript.*?\n\n',
+                r'^Here is the detailed transcript.*?\n\n',
+                r'^Here\'s a detailed transcript.*?\n\n',
+                r'^\*\*Summary\*\*.*?(?=\*\*Detailed Transcript\*\*|\*\*Transcript\*\*)',
+                r'^\*\*Detailed Transcript\*\*\n+',
+                r'^\*\*Transcript\*\*\n+',
+            ]
+            
+            for pattern in intro_patterns:
+                text = re.sub(pattern, '', text, flags=re.DOTALL | re.IGNORECASE)
+            
+            # If there's a "**Summary**" section at the start, remove it
+            if text.strip().startswith('**Summary**'):
+                # Find where transcript actually starts
+                markers = ['**Detailed Transcript**', '**Transcript**', '[00:00:']
+                for marker in markers:
+                    if marker in text:
+                        text = text.split(marker, 1)[1]
+                        break
+            
+            # Clean up the text
+            text = text.strip()
+            
+            # Add proper paragraph breaks (\\n\\n) for readability
+            # Split by timestamps or natural paragraph breaks
+            lines = text.split('\n')
+            formatted_lines = []
+            
+            for line in lines:
+                line = line.strip()
+                if not line:
+                    continue
+                
+                # If line starts with timestamp [00:00:00], it's a new paragraph
+                if re.match(r'^\[\d{2}:\d{2}:\d{2}\]', line):
+                    formatted_lines.append('\n\n' + line)
+                else:
+                    formatted_lines.append(line)
+            
+            clean_text = ' '.join(formatted_lines).strip()
+            
+            # Ensure proper spacing after timestamps
+            clean_text = re.sub(r'\[(\d{2}:\d{2}:\d{2})\]\s*', r'\n\n[\1] ', clean_text)
+            
+            # Remove any triple+ newlines
+            clean_text = re.sub(r'\n{3,}', '\n\n', clean_text)
+            
+            return clean_text.strip()
+        
+        # Clean the transcript
+        clean_transcript = extract_clean_transcript(raw_transcript)
+        
+        print(f"\n✓ Transcript cleaned and formatted")
+        print(f"  Original: {len(raw_transcript):,} chars")
+        print(f"  Cleaned: {len(clean_transcript):,} chars")
+        
+        # ================================================================
+        # GENERATE AI SUMMARY (with \\n\\n formatting)
         # ================================================================
         
         print(f"\nGenerating AI summary (length: {summary_length})...")
@@ -4017,6 +4068,9 @@ def transcribe_and_summarize():
         }
         target_words = summary_word_counts.get(summary_length, 300)
         
+        # Use clean transcript for summary (limit to first 15000 chars to avoid token limits)
+        transcript_for_summary = clean_transcript[:15000]
+        
         summary_prompt = f"""Analyze this transcript and create a comprehensive summary.
 
 **TARGET LENGTH**: Approximately {target_words} words
@@ -4027,17 +4081,20 @@ def transcribe_and_summarize():
 3. **Key Insights**: Notable insights, opinions, or conclusions
 4. **Actionable Takeaways**: What should viewers remember or do?
 
-**FORMATTING**:
-- Clear, concise paragraphs
+**FORMATTING RULES**:
+- Use \\n\\n between paragraphs for readability
+- Clear, concise paragraphs (2-4 sentences each)
 - Professional tone
 - No fluff or unnecessary words
 - Focus on substance
+- NO markdown formatting (no **, no ##, no bullets)
+- Just plain text with \\n\\n paragraph breaks
 
-**TRANSCRIPT** ({stats.get('word_count', 0):,} words):
+**TRANSCRIPT**:
 
-{transcript[:20000]}
+{transcript_for_summary}
 
-Provide the summary now:"""
+Provide ONLY the summary text with \\n\\n paragraph breaks. No preamble, no "Here is the summary", just the summary content:"""
 
         try:
             client = genai.GenerativeModel('gemini-2.0-flash')
@@ -4051,13 +4108,30 @@ Provide the summary now:"""
                 }
             )
             
-            summary = response.text.strip()
+            raw_summary = response.text.strip()
+            
+            # Clean summary - remove markdown formatting
+            summary = raw_summary
+            summary = re.sub(r'\*\*([^*]+)\*\*', r'\1', summary)  # Remove bold
+            summary = re.sub(r'#{1,6}\s+', '', summary)  # Remove headers
+            summary = re.sub(r'^\s*[\-\*]\s+', '', summary, flags=re.MULTILINE)  # Remove bullets
+            
+            # Ensure proper paragraph spacing
+            summary = re.sub(r'\n{3,}', '\n\n', summary)
+            summary = summary.strip()
             
             print(f"✓ Summary generated: {len(summary):,} characters")
         
         except Exception as e:
             print(f"❌ Summary generation failed: {str(e)}")
             summary = "Summary generation failed. Please try again."
+        
+        # ================================================================
+        # CALCULATE ACCURATE STATS
+        # ================================================================
+        
+        transcript_word_count = len(clean_transcript.split())
+        summary_word_count = len(summary.split())
         
         # ================================================================
         # PREPARE RESPONSE
@@ -4067,24 +4141,24 @@ Provide the summary now:"""
         print(f"✓ TRANSCRIPTION & SUMMARY COMPLETE")
         print(f"{'='*80}")
         print(f"Source: {source_type}")
-        print(f"Transcript: {len(transcript):,} chars, {stats.get('word_count', 0):,} words")
-        print(f"Summary: {len(summary):,} chars")
+        print(f"Transcript: {len(clean_transcript):,} chars, {transcript_word_count:,} words")
+        print(f"Summary: {len(summary):,} chars, {summary_word_count:,} words")
         print(f"{'='*80}\n")
         
         return jsonify({
             'success': True,
             'source_type': source_type,
             'source': source_url or filename,
-            'transcript': transcript,
+            'transcript': clean_transcript,
             'summary': summary,
             'stats': {
-                'transcript_char_count': len(transcript),
-                'transcript_word_count': stats.get('word_count', 0),
+                'transcript_char_count': len(clean_transcript),
+                'transcript_word_count': transcript_word_count,
                 'summary_char_count': len(summary),
-                'summary_word_count': len(summary.split()),
-                'estimated_read_time': stats.get('estimated_read_time', 0),
-                'processing_time': stats.get('processing_time'),
-                'source_type': stats.get('source_type')
+                'summary_word_count': summary_word_count,
+                'estimated_read_time': max(1, transcript_word_count // 200),
+                'processing_time': stats.get('processing_time') if stats else None,
+                'source_type': stats.get('source_type') if stats else source_type
             },
             'metadata': {
                 'filename': filename if source_type in ['video_file', 'audio_file'] else None,

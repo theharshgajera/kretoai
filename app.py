@@ -3697,79 +3697,105 @@ Provide a structured knowledge summary (400-600 words) focusing on factual conte
         print(f"{'='*60}\n")
         return jsonify({'error': f'Script generation failed: {str(e)}'}), 500
 
-@app.route('/api/chat-modify-script', methods=['POST'])
-def chat_modify_script():
-    """Enhanced chat modification - accepts script directly in payload"""
-    user_id = request.remote_addr
-    data = request.json
-    user_message = data.get('message', '').strip()
-    current_script = data.get('script', '').strip()  # ✅ NEW: Get script from payload
+def modify_script_chat(self, current_script, tone_analyzer, knowledge_base, user_message):
+    """
+    Modify script via chat while maintaining tone and using knowledge base.
     
-    # Optional parameters
-    tone_analyzer = data.get('tone_analyzer')  # ✅ NEW: Optional tone profile
-    knowledge_base = data.get('knowledge_base', {  # ✅ NEW: Optional knowledge base
-        'inspiration': '',
-        'documents': ''
-    })
-    chat_session_id = data.get('chat_session_id')  # Optional for tracking
+    Args:
+        current_script: The current script content
+        tone_analyzer: Optional tone profile dict
+        knowledge_base: Dict with inspiration and document knowledge
+        user_message: User's modification request
     
-    # Validation
-    if not user_message:
-        return jsonify({'error': 'Please provide a modification request'}), 400
-    
-    if not current_script:
-        return jsonify({'error': 'Please provide the script to modify'}), 400
-    
+    Returns:
+        Modified script or response text
+    """
     try:
-        print(f"\n{'='*80}")
-        print(f"CHAT MODIFICATION REQUEST")
-        print(f"{'='*80}")
-        print(f"User: {user_id}")
-        print(f"Message: {user_message[:100]}...")
-        print(f"Script length: {len(current_script):,} characters")
-        print(f"Tone analyzer: {'✓ Provided' if tone_analyzer else '✗ Not provided'}")
-        print(f"Knowledge base: {'✓ Provided' if (knowledge_base.get('inspiration') or knowledge_base.get('documents')) else '✗ Not provided'}")
-        print(f"{'='*80}\n")
+        # Build tone context
+        if tone_analyzer:
+            tone_context = f"""**MAINTAIN THIS TONE:**
+Channel: {tone_analyzer.get('channel_name', 'Unknown')}
+Style: {tone_analyzer.get('tone_profile', {}).get('primary_tone', 'professional')}
+Instructions: {tone_analyzer.get('ai_replication_instructions', 'Maintain professional tone')}"""
+        else:
+            tone_context = "**MAINTAIN professional, engaging YouTube tone**"
         
-        # Call the modification method
-        modification_response = script_generator.modify_script_chat(
-            current_script=current_script,
-            tone_analyzer=tone_analyzer,
-            knowledge_base=knowledge_base,
-            user_message=user_message
+        # Build knowledge context
+        inspiration_knowledge = knowledge_base.get('inspiration', '')
+        document_knowledge = knowledge_base.get('documents', '')
+        
+        knowledge_context = f"""**AVAILABLE KNOWLEDGE (reference if needed):**
+
+**Inspiration Sources:**
+{inspiration_knowledge if inspiration_knowledge else 'None provided'}
+
+**Document Sources:**
+{document_knowledge if document_knowledge else 'None provided'}"""
+        
+        # Truncate script if too long (max 15000 chars to fit in prompt)
+        truncated_script = current_script[:15000]
+        if len(current_script) > 15000:
+            truncated_script += "\n\n[... script truncated for length ...]"
+        
+        modification_prompt = f"""{tone_context}
+
+{knowledge_context}
+
+**CURRENT SCRIPT:**
+{truncated_script}
+
+**USER REQUEST:**
+{user_message}
+
+**TASK:** Respond to the user's request. You can:
+1. Modify the script according to their request
+2. Answer questions about the script
+3. Provide suggestions or improvements
+
+**IMPORTANT:**
+- If modifying the script, maintain the exact tone and style specified above
+- Keep the 1-2 sentence paragraph format
+- Use knowledge base for reference if needed
+- Ensure smooth flow and transitions
+- If the user asks a question, answer it clearly
+- If they want changes, provide the modified version or specific suggestions
+
+Provide your response:"""
+
+        # ✅ FIX: Use Claude API (_call_claude method) - NOT self.genai
+        print(f"\n{'='*60}")
+        print(f"MODIFYING SCRIPT VIA CHAT")
+        print(f"{'='*60}")
+        print(f"User request: {user_message[:100]}...")
+        print(f"Script length: {len(current_script):,} chars")
+        print(f"Tone: {'✓ Custom (' + tone_analyzer.get('channel_name', 'Unknown') + ')' if tone_analyzer else '✗ Default'}")
+        print(f"{'='*60}\n")
+        
+        # Call Claude API using the existing _call_claude helper method
+        response = self._call_claude(
+            prompt=modification_prompt,
+            max_tokens=8000,
+            temperature=0.7
         )
         
-        # Optional: Update session tracking if chat_session_id provided
-        if chat_session_id:
-            if chat_session_id not in user_data[user_id]['chat_sessions']:
-                user_data[user_id]['chat_sessions'][chat_session_id] = {
-                    'messages': [],
-                    'script_versions': [],
-                    'created_at': datetime.now().isoformat()
-                }
-            
-            chat_session = user_data[user_id]['chat_sessions'][chat_session_id]
-            chat_session['messages'].append({
-                'user_message': user_message,
-                'ai_response': modification_response,
-                'timestamp': datetime.now().isoformat()
-            })
-            chat_session['script_versions'].append(modification_response)
+        result = response.strip()
         
-        return jsonify({
-            'success': True,
-            'response': modification_response,
-            'user_message': user_message,
-            'chat_session_id': chat_session_id,
-            'timestamp': datetime.now().isoformat()
-        })
+        print(f"\n{'='*60}")
+        print(f"✓ MODIFICATION COMPLETE")
+        print(f"{'='*60}")
+        print(f"Response length: {len(result):,} characters")
+        print(f"Words: ~{len(result.split()):,}")
+        print(f"{'='*60}\n")
+        
+        return result
         
     except Exception as e:
         import traceback
-        print(f"❌ Error in chat-modify-script: {str(e)}")
-        print(traceback.format_exc())
-        app.logger.error(f"Chat modification error: {str(e)}")
-        return jsonify({'error': f'Error modifying script: {str(e)}'}), 500
+        error_trace = traceback.format_exc()
+        print(f"❌ Error in modify_script_chat: {str(e)}")
+        print(error_trace)
+        logger.error(f"Script modification error: {str(e)}\n{error_trace}")
+        return f"Error modifying script: {str(e)}"
 @app.route('/api/update-script', methods=['POST'])
 def update_script():
     """Update the current working script"""

@@ -3696,6 +3696,8 @@ Provide a structured knowledge summary (400-600 words) focusing on factual conte
         print(f"Traceback:\n{traceback.format_exc()}")
         print(f"{'='*60}\n")
         return jsonify({'error': f'Script generation failed: {str(e)}'}), 500
+
+@app.route('/api/chat-modify-script', methods=['POST'])
 def modify_script_chat(self, current_script, tone_analyzer, knowledge_base, user_message):
     """
     Modify script via chat while maintaining tone and using knowledge base.

@@ -3696,6 +3696,53 @@ Provide a structured knowledge summary (400-600 words) focusing on factual conte
         print(f"Traceback:\n{traceback.format_exc()}")
         print(f"{'='*60}\n")
         return jsonify({'error': f'Script generation failed: {str(e)}'}), 500
+@app.route('/api/chat-modify-script', methods=['POST'])
+def chat_modify_script():
+    """Enhanced chat modification with document context"""
+    user_id = request.remote_addr
+    data = request.json
+    user_message = data.get('message', '').strip()
+    chat_session_id = data.get('chat_session_id')
+    
+    if not user_message:
+        return jsonify({'error': 'Please provide a modification request'}), 400
+    
+    current_script_data = user_data[user_id].get('current_script')
+    if not current_script_data:
+        return jsonify({'error': 'No active script to modify'}), 400
+    
+    try:
+        current_script = current_script_data['content']
+        style_profile = current_script_data['style_profile']
+        topic_insights = current_script_data['topic_insights']
+        document_insights = current_script_data.get('document_insights', '')
+        
+        modification_response = script_generator.modify_script_chat(
+            current_script,
+            style_profile,
+            topic_insights,
+            document_insights,
+            user_message
+        )
+        
+        if chat_session_id and chat_session_id in user_data[user_id]['chat_sessions']:
+            chat_session = user_data[user_id]['chat_sessions'][chat_session_id]
+            chat_session['messages'].append({
+                'user_message': user_message,
+                'ai_response': modification_response,
+                'timestamp': datetime.now().isoformat()
+            })
+        
+        return jsonify({
+            'success': True,
+            'response': modification_response,
+            'user_message': user_message,
+            'chat_session_id': chat_session_id,
+            'timestamp': datetime.now().isoformat()
+        })
+    except Exception as e:
+        return jsonify({'error': f'Error modifying script: {str(e)}'}), 500
+
 
 @app.route('/api/update-script', methods=['POST'])
 def update_script():

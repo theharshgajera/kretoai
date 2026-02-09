@@ -3699,30 +3699,39 @@ Provide a structured knowledge summary (400-600 words) focusing on factual conte
 
 @app.route('/api/chat-modify-script', methods=['POST'])
 def chat_modify_script():
-    """Enhanced chat modification with tone analyzer and knowledge base"""
+    """Enhanced chat modification - accepts script directly in payload"""
     user_id = request.remote_addr
     data = request.json
     user_message = data.get('message', '').strip()
-    chat_session_id = data.get('chat_session_id')
+    current_script = data.get('script', '').strip()  # ✅ NEW: Get script from payload
     
+    # Optional parameters
+    tone_analyzer = data.get('tone_analyzer')  # ✅ NEW: Optional tone profile
+    knowledge_base = data.get('knowledge_base', {  # ✅ NEW: Optional knowledge base
+        'inspiration': '',
+        'documents': ''
+    })
+    chat_session_id = data.get('chat_session_id')  # Optional for tracking
+    
+    # Validation
     if not user_message:
         return jsonify({'error': 'Please provide a modification request'}), 400
     
-    current_script_data = user_data[user_id].get('current_script')
-    if not current_script_data:
-        return jsonify({'error': 'No active script to modify'}), 400
+    if not current_script:
+        return jsonify({'error': 'Please provide the script to modify'}), 400
     
     try:
-        current_script = current_script_data['content']
+        print(f"\n{'='*80}")
+        print(f"CHAT MODIFICATION REQUEST")
+        print(f"{'='*80}")
+        print(f"User: {user_id}")
+        print(f"Message: {user_message[:100]}...")
+        print(f"Script length: {len(current_script):,} characters")
+        print(f"Tone analyzer: {'✓ Provided' if tone_analyzer else '✗ Not provided'}")
+        print(f"Knowledge base: {'✓ Provided' if (knowledge_base.get('inspiration') or knowledge_base.get('documents')) else '✗ Not provided'}")
+        print(f"{'='*80}\n")
         
-        # Get tone_analyzer and knowledge_base from stored data
-        tone_analyzer = current_script_data.get('tone_analyzer')  # Can be None
-        knowledge_base = current_script_data.get('knowledge_base', {
-            'inspiration': '',
-            'documents': ''
-        })
-        
-        # ✅ FIX: Call as METHOD on script_generator instance
+        # Call the modification method
         modification_response = script_generator.modify_script_chat(
             current_script=current_script,
             tone_analyzer=tone_analyzer,
@@ -3730,14 +3739,22 @@ def chat_modify_script():
             user_message=user_message
         )
         
-        # Update chat session
-        if chat_session_id and chat_session_id in user_data[user_id]['chat_sessions']:
+        # Optional: Update session tracking if chat_session_id provided
+        if chat_session_id:
+            if chat_session_id not in user_data[user_id]['chat_sessions']:
+                user_data[user_id]['chat_sessions'][chat_session_id] = {
+                    'messages': [],
+                    'script_versions': [],
+                    'created_at': datetime.now().isoformat()
+                }
+            
             chat_session = user_data[user_id]['chat_sessions'][chat_session_id]
             chat_session['messages'].append({
                 'user_message': user_message,
                 'ai_response': modification_response,
                 'timestamp': datetime.now().isoformat()
             })
+            chat_session['script_versions'].append(modification_response)
         
         return jsonify({
             'success': True,

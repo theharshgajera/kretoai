@@ -3796,7 +3796,317 @@ def update_script():
     except Exception as e:
         return jsonify({'error': f'Error updating script: {str(e)}'}), 500
 
+@app.route('/api/transcribe-and-summarize', methods=['POST'])
+def transcribe_and_summarize():
+    """
+    Transcribe and summarize video content from various sources.
+    Supports: YouTube URLs, local video files, audio files, Instagram, Facebook, TikTok.
+    Returns: Full transcript + AI-generated summary
+    """
+    user_id = request.remote_addr
+    
+    try:
+        print(f"\n{'='*80}")
+        print(f"TRANSCRIPTION & SUMMARY REQUEST: {user_id}")
+        print(f"{'='*80}\n")
+        
+        # Parse request
+        content_type = request.content_type or ''
+        data = request.json if 'application/json' in content_type else {}
+        
+        # Extract parameters
+        source_type = data.get('source_type', '').strip().lower()  # youtube, video_file, audio_file, instagram, facebook, tiktok
+        source_url = data.get('source_url', '').strip()
+        video_file_data = data.get('video_file_data')  # base64 encoded
+        audio_file_data = data.get('audio_file_data')  # base64 encoded
+        filename = data.get('filename', 'media_file')
+        summary_length = data.get('summary_length', 'medium')  # short, medium, long
+        
+        # Validation
+        if not source_type:
+            return jsonify({'error': 'source_type is required (youtube, video_file, audio_file, instagram, facebook, tiktok)'}), 400
+        
+        if source_type in ['youtube', 'instagram', 'facebook', 'tiktok'] and not source_url:
+            return jsonify({'error': f'source_url is required for {source_type}'}), 400
+        
+        if source_type == 'video_file' and not video_file_data:
+            return jsonify({'error': 'video_file_data (base64) is required for video_file type'}), 400
+        
+        if source_type == 'audio_file' and not audio_file_data:
+            return jsonify({'error': 'audio_file_data (base64) is required for audio_file type'}), 400
+        
+        # Initialize result
+        transcript = None
+        stats = None
+        error_msg = None
+        
+        # ================================================================
+        # PROCESS BASED ON SOURCE TYPE
+        # ================================================================
+        
+        if source_type == 'youtube':
+            print(f"Processing YouTube: {source_url}")
+            
+            if not video_processor.validate_youtube_url(source_url):
+                return jsonify({'error': 'Invalid YouTube URL'}), 400
+            
+            result = video_processor.process_video_content(source_url, 'youtube')
+            
+            if result['error']:
+                error_msg = result['error']
+            else:
+                transcript = result['transcript']
+                stats = result['stats']
+        
+        elif source_type == 'instagram':
+            print(f"Processing Instagram: {source_url}")
+            
+            if not instagram_processor.validate_instagram_url(source_url):
+                return jsonify({'error': 'Invalid Instagram URL'}), 400
+            
+            result = instagram_processor.process_instagram_url(source_url)
+            
+            if result['error']:
+                error_msg = result['error']
+            else:
+                transcript = result['transcript']
+                stats = result['stats']
+        
+        elif source_type == 'facebook':
+            print(f"Processing Facebook: {source_url}")
+            
+            if not facebook_processor.validate_facebook_url(source_url):
+                return jsonify({'error': 'Invalid Facebook URL'}), 400
+            
+            result = facebook_processor.process_facebook_url(source_url)
+            
+            if result['error']:
+                error_msg = result['error']
+            else:
+                transcript = result['transcript']
+                stats = result['stats']
+        
+        # elif source_type == 'tiktok':
+        #     print(f"Processing TikTok: {source_url}")
+        #     
+        #     if not tiktok_processor.validate_tiktok_url(source_url):
+        #         return jsonify({'error': 'Invalid TikTok URL'}), 400
+        #     
+        #     result = tiktok_processor.process_tiktok_url(source_url)
+        #     
+        #     if result['error']:
+        #         error_msg = result['error']
+        #     else:
+        #         transcript = result['transcript']
+        #         stats = result['stats']
+        
+        elif source_type == 'video_file':
+            print(f"Processing video file: {filename}")
+            
+            if not video_processor.is_supported_video_format(filename):
+                return jsonify({'error': f'Unsupported video format: {filename}'}), 400
+            
+            # Save base64 to temp file
+            safe_user_id = user_id.replace('.', '_').replace(':', '_')
+            video_path = os.path.join(
+                UPLOAD_FOLDER,
+                f"temp_{safe_user_id}_{int(time.time())}_{secure_filename(filename)}"
+            )
+            
+            try:
+                video_bytes = base64.b64decode(video_file_data)
+                with open(video_path, 'wb') as f:
+                    f.write(video_bytes)
+                
+                print(f"  Saved: {len(video_bytes):,} bytes")
+                
+                result = video_processor.process_video_content(video_path, 'local')
+                
+                # Cleanup
+                try:
+                    os.remove(video_path)
+                except:
+                    pass
+                
+                if result['error']:
+                    error_msg = result['error']
+                else:
+                    transcript = result['transcript']
+                    stats = result['stats']
+            
+            except Exception as e:
+                if os.path.exists(video_path):
+                    try:
+                        os.remove(video_path)
+                    except:
+                        pass
+                error_msg = f"Video processing error: {str(e)}"
+        
+        elif source_type == 'audio_file':
+            print(f"Processing audio file: {filename}")
+            
+            if not audio_processor.is_supported_audio_format(filename):
+                return jsonify({'error': f'Unsupported audio format: {filename}'}), 400
+            
+            # Save base64 to temp file
+            safe_user_id = user_id.replace('.', '_').replace(':', '_')
+            audio_path = os.path.join(
+                UPLOAD_FOLDER,
+                f"temp_{safe_user_id}_{int(time.time())}_{secure_filename(filename)}"
+            )
+            
+            try:
+                audio_bytes = base64.b64decode(audio_file_data)
+                with open(audio_path, 'wb') as f:
+                    f.write(audio_bytes)
+                
+                print(f"  Saved: {len(audio_bytes):,} bytes")
+                
+                result = audio_processor.process_audio_file(audio_path, filename)
+                
+                # Cleanup
+                try:
+                    os.remove(audio_path)
+                except:
+                    pass
+                
+                if result['error']:
+                    error_msg = result['error']
+                else:
+                    transcript = result['transcript']
+                    stats = result['stats']
+            
+            except Exception as e:
+                if os.path.exists(audio_path):
+                    try:
+                        os.remove(audio_path)
+                    except:
+                        pass
+                error_msg = f"Audio processing error: {str(e)}"
+        
+        else:
+            return jsonify({'error': f'Unsupported source_type: {source_type}'}), 400
+        
+        # ================================================================
+        # CHECK FOR ERRORS
+        # ================================================================
+        
+        if error_msg:
+            return jsonify({
+                'success': False,
+                'error': error_msg
+            }), 500
+        
+        if not transcript:
+            return jsonify({
+                'success': False,
+                'error': 'No transcript extracted'
+            }), 500
+        
+        # ================================================================
+        # GENERATE AI SUMMARY
+        # ================================================================
+        
+        print(f"\nGenerating AI summary (length: {summary_length})...")
+        
+        # Determine word count based on summary length
+        summary_word_counts = {
+            'short': 150,
+            'medium': 300,
+            'long': 500
+        }
+        target_words = summary_word_counts.get(summary_length, 300)
+        
+        summary_prompt = f"""Analyze this transcript and create a comprehensive summary.
 
+**TARGET LENGTH**: Approximately {target_words} words
+
+**SUMMARY REQUIREMENTS**:
+1. **Main Topic**: What is this content about?
+2. **Key Points**: 3-5 most important points discussed
+3. **Key Insights**: Notable insights, opinions, or conclusions
+4. **Actionable Takeaways**: What should viewers remember or do?
+
+**FORMATTING**:
+- Clear, concise paragraphs
+- Professional tone
+- No fluff or unnecessary words
+- Focus on substance
+
+**TRANSCRIPT** ({stats.get('word_count', 0):,} words):
+
+{transcript[:20000]}
+
+Provide the summary now:"""
+
+        try:
+            client = genai.GenerativeModel('gemini-2.0-flash')
+            response = client.generate_content(
+                summary_prompt,
+                generation_config={
+                    'temperature': 0.3,
+                    'top_p': 0.9,
+                    'top_k': 40,
+                    'max_output_tokens': target_words * 2
+                }
+            )
+            
+            summary = response.text.strip()
+            
+            print(f"✓ Summary generated: {len(summary):,} characters")
+        
+        except Exception as e:
+            print(f"❌ Summary generation failed: {str(e)}")
+            summary = "Summary generation failed. Please try again."
+        
+        # ================================================================
+        # PREPARE RESPONSE
+        # ================================================================
+        
+        print(f"\n{'='*80}")
+        print(f"✓ TRANSCRIPTION & SUMMARY COMPLETE")
+        print(f"{'='*80}")
+        print(f"Source: {source_type}")
+        print(f"Transcript: {len(transcript):,} chars, {stats.get('word_count', 0):,} words")
+        print(f"Summary: {len(summary):,} chars")
+        print(f"{'='*80}\n")
+        
+        return jsonify({
+            'success': True,
+            'source_type': source_type,
+            'source': source_url or filename,
+            'transcript': transcript,
+            'summary': summary,
+            'stats': {
+                'transcript_char_count': len(transcript),
+                'transcript_word_count': stats.get('word_count', 0),
+                'summary_char_count': len(summary),
+                'summary_word_count': len(summary.split()),
+                'estimated_read_time': stats.get('estimated_read_time', 0),
+                'processing_time': stats.get('processing_time'),
+                'source_type': stats.get('source_type')
+            },
+            'metadata': {
+                'filename': filename if source_type in ['video_file', 'audio_file'] else None,
+                'url': source_url if source_type in ['youtube', 'instagram', 'facebook', 'tiktok'] else None,
+                'summary_length': summary_length,
+                'timestamp': datetime.now().isoformat()
+            }
+        })
+    
+    except Exception as e:
+        print(f"\n{'='*80}")
+        print(f"CRITICAL ERROR IN TRANSCRIPTION")
+        print(f"{'='*80}")
+        print(f"Error: {str(e)}")
+        import traceback
+        print(f"Traceback:\n{traceback.format_exc()}")
+        print(f"{'='*80}\n")
+        
+        return jsonify({
+            'success': False,
+            'error': f'Transcription failed: {str(e)}'
+        }), 500
 
 
 # @app.route('/api/script_generation', methods=['POST'])

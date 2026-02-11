@@ -123,6 +123,8 @@ genai.configure(
     transport='rest'  # REST for better performance
 )
 
+TRANSCRIPT_API_KEY = os.getenv('TRANSCRIPT_API_KEY')  # Add this to your .env file
+TRANSCRIPT_API_BASE_URL = "https://transcriptapi.com/api/v2/youtube/transcript"
 
 def parse_duration(duration):
     """Parse ISO 8601 duration to seconds."""
@@ -3877,8 +3879,8 @@ def summarize_with_gemini(transcript, length):
 # ==========================================================
 #              MAIN API ROUTE (FINAL VERSION)
 # ==========================================================
-@app.route("/api/transcribe-and-summarize", methods=["POST"])
-def process_video():
+@app.route("/api/transcribe-and-summarize2", methods=["POST"])
+def process_video2():
     try:
         start_time = time.time()
         data = request.get_json(silent=True)
@@ -5815,7 +5817,284 @@ def search_channel_by_handle_or_username(youtube, identifier, identifier_type):
         return None
     except:
         return None
+def transcribe_youtube_with_transcript_api(youtube_url):
+    """
+    Get transcript for YouTube video using TranscriptAPI.com
+    """
+    try:
+        # Validate URL
+        if not youtube_url or not youtube_url.strip():
+            raise ValueError("YouTube URL cannot be empty")
+        
+        youtube_url = youtube_url.strip()
+        
+        print(f"Fetching transcript via TranscriptAPI: {youtube_url}")
+        
+        # Call TranscriptAPI
+        headers = {
+            "Authorization": f"Bearer {TRANSCRIPT_API_KEY}"
+        }
+        
+        params = {
+            "video_url": youtube_url,
+            "format": "text",  # Get plain text format
+            "include_timestamp": True,  # Include timestamps
+            "send_metadata": True  # Get video metadata
+        }
+        
+        response = requests.get(
+            TRANSCRIPT_API_BASE_URL,
+            headers=headers,
+            params=params,
+            timeout=30
+        )
+        
+        # Handle different status codes
+        if response.status_code == 200:
+            data = response.json()
+            transcript = data.get('transcript', '')
+            
+            if not transcript or len(transcript) < 20:
+                raise ValueError("Transcript too short or empty")
+            
+            print(f"✓ Transcript fetched: {len(transcript)} chars")
+            return transcript
+            
+        elif response.status_code == 401:
+            raise ValueError("Invalid TranscriptAPI key. Please check your TRANSCRIPT_API_KEY in .env")
+        
+        elif response.status_code == 402:
+            raise ValueError("TranscriptAPI credits exhausted. Please top up at https://transcriptapi.com/top-up")
+        
+        elif response.status_code == 404:
+            raise ValueError("No transcript available for this video")
+        
+        elif response.status_code == 408:
+            raise ValueError("TranscriptAPI timeout. Please retry after a few seconds")
+        
+        elif response.status_code == 422:
+            raise ValueError("Invalid YouTube URL format")
+        
+        elif response.status_code == 429:
+            retry_after = response.headers.get('Retry-After', '60')
+            raise ValueError(f"Rate limit exceeded. Retry after {retry_after} seconds")
+        
+        elif response.status_code == 503:
+            raise ValueError("TranscriptAPI service temporarily unavailable. Please retry")
+        
+        else:
+            raise ValueError(f"TranscriptAPI error: HTTP {response.status_code}")
+        
+    except requests.exceptions.Timeout:
+        raise Exception("TranscriptAPI request timeout")
+    
+    except requests.exceptions.RequestException as e:
+        raise Exception(f"TranscriptAPI network error: {str(e)}")
+    
+    except Exception as e:
+        print(f"❌ Error in transcribe_youtube_with_transcript_api: {str(e)}")
+        import traceback
+        print(traceback.format_exc())
+        raise Exception(f"YouTube transcription failed: {str(e)}")
 
+
+# Keep the summarize_with_gemini function as is (no changes needed)
+def summarize_with_gemini(transcript, length):
+    prompt = (
+        f"Create a **{length} length summary** for the transcript.\n\n"
+        "Rules:\n"
+        "- Summary must be 1–2 sentence paragraphs\n"
+        "- Each paragraph separated by two newlines\n"
+        "- Keep it clean and structured\n\n"
+        f"Transcript:\n{transcript}"
+    )
+
+    response = client.models.generate_content(
+        model="gemini-2.0-flash",
+        contents=prompt
+    )
+
+    return response.text.strip()
+
+
+# Replace the process_video route with this updated version:
+@app.route("/api/transcribe-and-summarize", methods=["POST"])
+def process_video():
+    try:
+        start_time = time.time()
+        data = request.get_json(silent=True)
+        
+        if not data:
+            return jsonify({"error": "Invalid JSON body"}), 400
+
+        source_type = data.get("source_type", "").strip() if data.get("source_type") else None
+        source_url = data.get("source_url", "").strip() if data.get("source_url") else None
+        summary_length = data.get("summary_length", "medium")
+
+        if not source_type:
+            return jsonify({"error": "source_type is required"}), 400
+
+        # ----------------------------------------
+        # YOUTUBE — USE TRANSCRIPT API
+        # ----------------------------------------
+        if source_type == "youtube":
+            if not source_url:
+                return jsonify({"error": "source_url required"}), 400
+
+            try:
+                # Use TranscriptAPI instead of Gemini
+                transcript = transcribe_youtube_with_transcript_api(source_url)
+            except Exception as e:
+                error_message = str(e)
+                # Return user-friendly error messages
+                return jsonify({"error": f"YouTube transcription failed: {error_message}"}), 500
+
+        # ----------------------------------------
+        # LOCAL FILE UPLOAD (UNCHANGED)
+        # ----------------------------------------
+        elif source_type == "local":
+            if "file" not in request.files:
+                return jsonify({"error": "file is required"}), 400
+
+            file = request.files["file"]
+            unique_id = str(uuid.uuid4())
+            filename = f"{unique_id}.mp4"
+            video_path = os.path.join(UPLOAD_FOLDER, filename)
+            file.save(video_path)
+
+            try:
+                # Use Gemini for local files (unchanged)
+                transcript = transcribe_local_with_gemini(video_path, filename)
+            except Exception as e:
+                return jsonify({"error": f"Local video transcription failed: {str(e)}"}), 500
+            finally:
+                # Cleanup
+                if os.path.exists(video_path):
+                    os.remove(video_path)
+
+        else:
+            return jsonify({"error": "Invalid source_type. Use 'youtube' or 'local'"}), 400
+
+        # ----------------------------------------
+        # SUMMARY (UNCHANGED - Now using Claude)
+        # ----------------------------------------
+        try:
+            # Use Claude for summarization instead of Gemini
+            summary = summarize_with_claude(transcript, summary_length)
+        except Exception as e:
+            return jsonify({"error": f"Summary generation failed: {str(e)}"}), 500
+
+        # ----------------------------------------
+        # FINAL MERGED MARKDOWN (UNCHANGED)
+        # ----------------------------------------
+        final_markdown_output = (
+            "**📝 Summary**\n\n"
+            + summary
+            + "\n\n\n\n"
+            + "**🎙 Full Transcript**\n\n"
+            + transcript
+        )
+
+        # ----------------------------------------
+        # STATS (UNCHANGED)
+        # ----------------------------------------
+        transcript_chars = len(transcript)
+        summary_chars = len(summary)
+        transcript_words = len(transcript.split())
+        summary_words = len(summary.split())
+        read_time_minutes = max(1, int(transcript_words / 200))
+
+        processing_time = round(time.time() - start_time, 2)
+
+        # ----------------------------------------
+        # FINAL JSON RESPONSE (UNCHANGED)
+        # ----------------------------------------
+        return jsonify({
+            "success": True,
+            "source_type": source_type,
+            "source": source_url if source_type == "youtube" else "local_file",
+            "transcript": final_markdown_output,
+
+            "stats": {
+                "transcript_char_count": transcript_chars,
+                "transcript_word_count": transcript_words,
+                "summary_char_count": summary_chars,
+                "summary_word_count": summary_words,
+                "estimated_read_time": read_time_minutes,
+                "processing_time": processing_time,
+                "source_type": source_type
+            },
+
+            "metadata": {
+                "url": source_url if source_type == "youtube" else None,
+                "summary_length": summary_length,
+                "timestamp": datetime.utcnow().isoformat()
+            }
+        })
+
+    except Exception as e:
+        import traceback
+        error_trace = traceback.format_exc()
+        print(f"❌ Error in process_video: {str(e)}")
+        print(error_trace)
+        return jsonify({"error": str(e)}), 500
+
+
+# Add this new function to use Claude for summarization
+def summarize_with_claude(transcript, length):
+    """
+    Create summary using Claude API instead of Gemini
+    """
+    try:
+        from anthropic import Anthropic
+        import os
+
+        # ✅ DEFINE CLIENT HERE
+        anthropic_client = Anthropic(
+            api_key=os.getenv("ANTHROPIC_API_KEY")
+        )
+
+        # Map length to approximate word count
+        length_map = {
+            "short": "50-100 words",
+            "medium": "150-250 words",
+            "long": "300-500 words"
+        }
+
+        target_length = length_map.get(length, "150-250 words")
+
+        prompt = f"""Create a {target_length} summary of the following transcript.
+
+Rules:
+- Write in clear, concise 1-2 sentence paragraphs
+- Separate each paragraph with two newlines
+- Keep it well-structured and easy to read
+- Focus on the main points and key insights
+- Use natural, flowing language
+
+Transcript:
+{transcript}
+
+Provide only the summary, no preamble or meta-commentary."""
+
+        message = anthropic_client.messages.create(
+            model="claude-sonnet-4-20250514",
+            max_tokens=2000,
+            temperature=0.3,
+            messages=[{"role": "user", "content": prompt}]
+        )
+
+        summary = message.content[0].text.strip()
+
+        print(f"✓ Claude summary generated: {len(summary)} chars")
+
+        return summary
+
+    except Exception as e:
+        print(f"❌ Claude summarization error: {str(e)}")
+        raise Exception(f"Claude summarization failed: {str(e)}")
+
+    
 @app.route('/api/review-thumbnail', methods=['POST'])
 def review_thumbnail_endpoint():
     """API endpoint to review a thumbnail image."""

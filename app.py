@@ -5837,9 +5837,9 @@ def transcribe_youtube_with_transcript_api(youtube_url):
         
         params = {
             "video_url": youtube_url,
-            "format": "text",  # Get plain text format
-            "include_timestamp": True,  # Include timestamps
-            "send_metadata": True  # Get video metadata
+            "format": "text",              # Get plain text format
+            "include_timestamp": True,     # Include timestamps
+            "send_metadata": True          # Get video metadata
         }
         
         response = requests.get(
@@ -5856,6 +5856,9 @@ def transcribe_youtube_with_transcript_api(youtube_url):
             
             if not transcript or len(transcript) < 20:
                 raise ValueError("Transcript too short or empty")
+            
+            # Replace single newline with double newline
+            transcript = transcript.replace("\n", "\n\n")
             
             print(f"✓ Transcript fetched: {len(transcript)} chars")
             return transcript
@@ -5896,6 +5899,7 @@ def transcribe_youtube_with_transcript_api(youtube_url):
         import traceback
         print(traceback.format_exc())
         raise Exception(f"YouTube transcription failed: {str(e)}")
+
 
 
 # Keep the summarize_with_gemini function as is (no changes needed)

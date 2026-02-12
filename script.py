@@ -3022,6 +3022,735 @@ Provide your response:"""
 - Maintains energy throughout without rushing
 -- Ends with clear takeaways"""
 
+
+class UniversalContentExtractor:
+    """
+    Dedicated content extractors for Q&A endpoint.
+    These extract FULL content without summarization (unlike script processors).
+    """
+    
+    def __init__(self):
+        self.youtube_api_key = os.getenv("YOUTUBE_API_KEY")
+        self.gemini_api_key = os.getenv("GEMINI_API_KEY")
+        self.anthropic_api_key = os.getenv("ANTHROPIC_API_KEY")
+        self.transcript_api_key = os.getenv("TRANSCRIPT_API_KEY")
+        
+        # Configure Gemini
+        self.client = genai.Client(api_key=self.gemini_api_key, http_options={'api_version': 'v1alpha'})
+        
+        # Anthropic client
+        self.anthropic_client = anthropic.Anthropic(api_key=self.anthropic_api_key)
+        
+        self.temp_folder = UPLOAD_FOLDER
+    
+    # ========================================
+    # YOUTUBE - Full Transcript Extraction
+    # ========================================
+    def download_file_from_url(url, destination_path, timeout=120):
+        """
+        Download file from URL to local path
+        
+        Args:
+            url: Source URL
+            destination_path: Local file path to save to
+            timeout: Download timeout in seconds
+        
+        Returns:
+            (success: bool, error: str or None)
+        """
+        try:
+            import requests
+            
+            print(f"Downloading from URL: {url[:100]}...")
+            
+            response = requests.get(url, timeout=timeout, stream=True)
+            
+            if response.status_code != 200:
+                return False, f"HTTP {response.status_code}"
+            
+            # Download with progress tracking
+            total_size = int(response.headers.get('content-length', 0))
+            downloaded = 0
+            
+            with open(destination_path, 'wb') as f:
+                for chunk in response.iter_content(chunk_size=8192):
+                    if chunk:
+                        f.write(chunk)
+                        downloaded += len(chunk)
+                        
+                        # Progress every 10MB
+                        if downloaded % (10 * 1024 * 1024) == 0:
+                            mb = downloaded / (1024 * 1024)
+                            print(f"  Downloaded: {mb:.1f} MB")
+            
+            file_size = os.path.getsize(destination_path)
+            print(f"✓ Download complete: {file_size:,} bytes ({file_size/(1024*1024):.2f} MB)")
+            
+            return True, None
+            
+        except requests.exceptions.Timeout:
+            return False, "Download timeout"
+        except requests.exceptions.RequestException as e:
+            return False, f"Download error: {str(e)}"
+        except Exception as e:
+            return False, f"Error: {str(e)}"
+    def extract_youtube_transcript(self, youtube_url):
+        """
+        Extract FULL transcript from YouTube video.
+        Priority: TranscriptAPI > YouTube Transcript API > Gemini
+        
+        Returns: (transcript, method, error)
+        """
+        print(f"\n{'='*60}")
+        print(f"YOUTUBE EXTRACTION: {youtube_url}")
+        print(f"{'='*60}\n")
+        
+        try:
+            # Method 1: TranscriptAPI (most reliable, has timestamps)
+            if self.transcript_api_key:
+                try:
+                    print("Trying TranscriptAPI...")
+                    transcript = self._extract_with_transcript_api(youtube_url)
+                    print(f"✓ TranscriptAPI: {len(transcript):,} chars")
+                    return transcript, "transcript_api", None
+                except Exception as e:
+                    print(f"✗ TranscriptAPI failed: {e}")
+            
+            # Method 2: YouTube Transcript API (free, good quality)
+            try:
+                print("Trying YouTube Transcript API...")
+                transcript = self._extract_with_youtube_transcript_api(youtube_url)
+                print(f"✓ YouTube Transcript API: {len(transcript):,} chars")
+                return transcript, "youtube_transcript_api", None
+            except Exception as e:
+                print(f"✗ YouTube Transcript API failed: {e}")
+            
+            # Method 3: Gemini (fallback, analyzes video directly)
+            try:
+                print("Trying Gemini native analysis...")
+                transcript = self._extract_with_gemini_youtube(youtube_url)
+                print(f"✓ Gemini: {len(transcript):,} chars")
+                return transcript, "gemini_native", None
+            except Exception as e:
+                print(f"✗ Gemini failed: {e}")
+                return None, None, f"All YouTube extraction methods failed. Last error: {str(e)}"
+        
+        except Exception as e:
+            return None, None, f"YouTube extraction error: {str(e)}"
+    
+    def _extract_with_transcript_api(self, youtube_url):
+        """Extract using TranscriptAPI.com"""
+        headers = {"Authorization": f"Bearer {self.transcript_api_key}"}
+        params = {
+            "video_url": youtube_url,
+            "format": "text",
+            "include_timestamp": True,
+            "send_metadata": True
+        }
+        
+        response = requests.get(
+            "https://transcriptapi.com/api/v2/youtube/transcript",
+            headers=headers,
+            params=params,
+            timeout=30
+        )
+        
+        if response.status_code != 200:
+            raise Exception(f"TranscriptAPI HTTP {response.status_code}")
+        
+        data = response.json()
+        transcript = data.get('transcript', '')
+        
+        if not transcript or len(transcript) < 50:
+            raise Exception("Empty transcript")
+        
+        # Format with proper line breaks
+        transcript = transcript.replace("\n", "\n\n")
+        return transcript
+    
+    def _extract_with_youtube_transcript_api(self, youtube_url):
+        """Extract using youtube-transcript-api library"""
+        from youtube_transcript_api import YouTubeTranscriptApi
+        import re
+        
+        # Extract video ID
+        video_id_match = re.search(r'(?:v=|\/)([0-9A-Za-z_-]{11}).*', youtube_url)
+        if not video_id_match:
+            raise Exception("Invalid YouTube URL")
+        
+        video_id = video_id_match.group(1)
+        
+        # Get transcript
+        transcript_list = YouTubeTranscriptApi.get_transcript(video_id)
+        
+        # Format with timestamps
+        formatted_parts = []
+        for entry in transcript_list:
+            timestamp = self._format_timestamp(entry['start'])
+            text = entry['text']
+            formatted_parts.append(f"[{timestamp}] {text}")
+        
+        return "\n\n".join(formatted_parts)
+    
+    def _extract_with_gemini_youtube(self, youtube_url):
+        """Extract using Gemini's native video analysis"""
+        prompt = """Provide a COMPLETE, DETAILED transcription of this YouTube video.
+
+**REQUIREMENTS:**
+- Transcribe EVERYTHING spoken in the video
+- Include timestamps in [MM:SS] format
+- Maintain speaker context if multiple speakers
+- Keep the exact wording (don't summarize or paraphrase)
+- Format with clear paragraphs
+
+**OUTPUT FORMAT:**
+[00:00] Transcription text here...
+[00:15] Next segment...
+
+Provide the full, unedited transcript."""
+
+        response = self.client.models.generate_content(  # ✅ FIXED: self.client
+            model="gemini-2.0-flash",
+            contents=[
+                types.Part.from_uri(file_uri=youtube_url, mime_type="video/mp4"),
+                prompt
+            ],
+            config=types.GenerateContentConfig(
+                temperature=0.1,
+                max_output_tokens=8000,
+            )
+        )
+        
+        return response.text.strip()
+    
+    def _format_timestamp(self, seconds):
+        """Convert seconds to MM:SS format"""
+        mins = int(seconds // 60)
+        secs = int(seconds % 60)
+        return f"{mins:02d}:{secs:02d}"
+    
+    # ========================================
+    # INSTAGRAM - Full Content Extraction
+    # ========================================
+    
+    def extract_instagram_content(self, instagram_url):
+        """
+        Extract full content from Instagram post/reel.
+        Downloads video, uploads to Gemini, extracts full transcript.
+        
+        Returns: (content, method, error)
+        """
+        print(f"\n{'='*60}")
+        print(f"INSTAGRAM EXTRACTION: {instagram_url}")
+        print(f"{'='*60}\n")
+        
+        video_path = None
+        try:
+            # Download Instagram video
+            video_path, download_error = self._download_instagram_video(instagram_url)
+            if download_error:
+                return None, None, download_error
+            
+            # Upload to Gemini and extract
+            content = self._analyze_video_with_gemini(video_path, "instagram")
+            
+            # Cleanup
+            try:
+                os.remove(video_path)
+            except:
+                pass
+            
+            print(f"✓ Instagram content: {len(content):,} chars")
+            return content, "gemini_instagram", None
+        
+        except Exception as e:
+            if video_path and os.path.exists(video_path):
+                try:
+                    os.remove(video_path)
+                except:
+                    pass
+            return None, None, f"Instagram extraction failed: {str(e)}"
+    
+    def _download_instagram_video(self, instagram_url):
+        """Download Instagram video using instaloader"""
+        try:
+            import instaloader
+            
+            loader = instaloader.Instaloader(download_videos=True, download_pictures=False)
+            
+            # Load session if available
+            session_file = r"/home/harsh/kretoai/session-aashitapatel17"
+            if os.path.exists(session_file):
+                loader.load_session_from_file(username=None, filename=session_file)
+            
+            # Extract shortcode
+            shortcode = instagram_url.rstrip("/").split("/")[-1]
+            post = instaloader.Post.from_shortcode(loader.context, shortcode)
+            
+            if not post.is_video:
+                return None, "This Instagram post does not contain a video"
+            
+            # Download video
+            video_url = post.video_url
+            video_path = os.path.join(
+                self.temp_folder,
+                f"instagram_{shortcode}_{int(time.time()*1000)}.mp4"
+            )
+            
+            response = requests.get(video_url, stream=True, headers={"User-Agent": "Mozilla/5.0"})
+            with open(video_path, "wb") as f:
+                for chunk in response.iter_content(chunk_size=8192):
+                    if chunk:
+                        f.write(chunk)
+            
+            print(f"✓ Downloaded: {os.path.getsize(video_path)/(1024*1024):.2f} MB")
+            return video_path, None
+        
+        except Exception as e:
+            return None, f"Instagram download failed: {str(e)}"
+    
+    # ========================================
+    # FACEBOOK - Full Content Extraction
+    # ========================================
+    
+    def extract_facebook_content(self, facebook_url):
+        """
+        Extract full content from Facebook video.
+        
+        Returns: (content, method, error)
+        """
+        print(f"\n{'='*60}")
+        print(f"FACEBOOK EXTRACTION: {facebook_url}")
+        print(f"{'='*60}\n")
+        
+        video_path = None
+        try:
+            # Download Facebook video
+            video_path, download_error = self._download_facebook_video(facebook_url)
+            if download_error:
+                return None, None, download_error
+            
+            # Upload to Gemini and extract
+            content = self._analyze_video_with_gemini(video_path, "facebook")
+            
+            # Cleanup
+            try:
+                os.remove(video_path)
+            except:
+                pass
+            
+            print(f"✓ Facebook content: {len(content):,} chars")
+            return content, "gemini_facebook", None
+        
+        except Exception as e:
+            if video_path and os.path.exists(video_path):
+                try:
+                    os.remove(video_path)
+                except:
+                    pass
+            return None, None, f"Facebook extraction failed: {str(e)}"
+    
+    def _download_facebook_video(self, facebook_url):
+        """Download Facebook video using yt-dlp"""
+        try:
+            video_path = os.path.join(
+                self.temp_folder,
+                f"facebook_{int(time.time()*1000)}.mp4"
+            )
+            
+            cmd = [
+                'yt-dlp',
+                '-f', 'best',
+                '--no-playlist',
+                '--no-warnings',
+                '-o', video_path,
+                facebook_url
+            ]
+            
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
+            
+            if result.returncode != 0:
+                return None, f"Facebook download failed: {result.stderr[:200]}"
+            
+            if not os.path.exists(video_path) or os.path.getsize(video_path) == 0:
+                return None, "Downloaded file is empty or unavailable"
+            
+            print(f"✓ Downloaded: {os.path.getsize(video_path)/(1024*1024):.2f} MB")
+            return video_path, None
+        
+        except Exception as e:
+            return None, f"Facebook download error: {str(e)}"
+    
+    # ========================================
+    # LOCAL VIDEO - Full Transcript Extraction
+    # ========================================
+    
+    def extract_local_video_content(self, video_path):
+        """
+        Extract full content from local video file.
+        
+        Returns: (content, method, error)
+        """
+        print(f"\n{'='*60}")
+        print(f"LOCAL VIDEO EXTRACTION: {video_path}")
+        print(f"{'='*60}\n")
+        
+        try:
+            content = self._analyze_video_with_gemini(video_path, "local")
+            print(f"✓ Local video content: {len(content):,} chars")
+            return content, "gemini_local", None
+        except Exception as e:
+            return None, None, f"Local video extraction failed: {str(e)}"
+    
+    def _analyze_video_with_gemini(self, video_path, source_type):
+        """Upload video to Gemini and extract full content"""
+        print(f"Uploading {source_type} video to Gemini...")
+        
+        # ✅ FIX: Use standard genai module for file operations
+        import google.generativeai as genai_std
+        genai_std.configure(api_key=self.gemini_api_key)
+        
+        # Upload video
+        video_file = genai_std.upload_file(path=video_path, display_name=f"{source_type}_video.mp4")
+        
+        # Wait for processing with progress updates
+        max_wait = 120
+        wait_time = 0
+        while video_file.state.name == "PROCESSING" and wait_time < max_wait:
+            time.sleep(2)
+            wait_time += 2
+            video_file = genai_std.get_file(video_file.name)
+            if wait_time % 10 == 0:
+                print(f"  Processing... {wait_time}s")
+        
+        if video_file.state.name != "ACTIVE":
+            raise Exception(f"Video processing failed: {video_file.state.name}")
+        
+        # Extract content with comprehensive prompt
+        prompt = """Provide a COMPLETE, DETAILED transcription and description of this video.
+
+    **REQUIREMENTS:**
+    - Transcribe ALL spoken content word-for-word
+    - Describe important visual elements
+    - Include context and setting
+    - Note any on-screen text or graphics
+    - Maintain chronological order
+    - Be thorough and comprehensive
+
+    Provide the full content without summarization."""
+
+        model = genai_std.GenerativeModel("gemini-2.0-flash")
+        response = model.generate_content([video_file, prompt])
+        
+        # Cleanup
+        try:
+            genai_std.delete_file(video_file.name)
+        except:
+            pass
+        
+        return response.text.strip()
+    
+    # ========================================
+    # AUDIO - Full Transcript Extraction
+    # ========================================
+    
+    def extract_audio_transcript(self, audio_path):
+        """
+        Extract full transcript from audio file using Gemini.
+        
+        Returns: (transcript, method, error)
+        """
+        print(f"\n{'='*60}")
+        print(f"AUDIO EXTRACTION: {audio_path}")
+        print(f"{'='*60}\n")
+        
+        try:
+            # Determine MIME type
+            extension = Path(audio_path).suffix.lower()
+            mime_type_map = {
+                '.mp3': 'audio/mpeg',
+                '.wav': 'audio/wav',
+                '.m4a': 'audio/mp4',
+                '.flac': 'audio/flac',
+                '.ogg': 'audio/ogg',
+                '.opus': 'audio/opus',
+                '.webm': 'audio/webm',
+                '.wma': 'audio/x-ms-wma',
+                '.aac': 'audio/aac'
+            }
+            mime_type = mime_type_map.get(extension, 'audio/mpeg')
+            
+            print(f"Uploading audio to Gemini...")
+            
+            # Upload audio file
+            with open(audio_path, 'rb') as f:
+                audio_file = self.client.files.upload(  # ✅ FIXED: self.client
+                    file=f,
+                    config={'mime_type': mime_type}
+                )
+            
+            # Wait for processing
+            max_wait = 180
+            wait_time = 0
+            while audio_file.state.name == "PROCESSING" and wait_time < max_wait:
+                time.sleep(2)
+                wait_time += 2
+                audio_file = self.client.files.get(name=audio_file.name)  # ✅ FIXED: self.client
+            
+            if audio_file.state.name == "FAILED":
+                raise Exception("Audio upload failed")
+            
+            # Extract transcript
+            prompt = """Transcribe this audio file COMPLETELY and accurately.
+
+**REQUIREMENTS:**
+- Transcribe EVERY word spoken
+- Maintain speaker context if multiple speakers
+- Include notable pauses or emphasis if relevant
+- Keep the exact wording (no summarization)
+- Organize into clear paragraphs
+
+Output ONLY the full transcription with no preamble."""
+
+            response = self.client.models.generate_content(  # ✅ FIXED: self.client
+                model="gemini-2.0-flash",
+                contents=[
+                    types.Part.from_uri(
+                        file_uri=audio_file.uri,
+                        mime_type=mime_type,
+                    ),
+                    prompt,
+                ],
+                config=types.GenerateContentConfig(
+                    temperature=0.1,
+                    max_output_tokens=8000,
+                )
+            )
+            
+            transcript = response.text.strip()
+            
+            # Cleanup
+            try:
+                self.client.files.delete(name=audio_file.name)  # ✅ FIXED: self.client
+            except:
+                pass
+            
+            print(f"✓ Audio transcript: {len(transcript):,} chars")
+            return transcript, "gemini_audio", None
+        
+        except Exception as e:
+            return None, None, f"Audio extraction failed: {str(e)}"
+    
+    # ========================================
+    # DOCUMENT - Full Text Extraction
+    # ========================================
+    
+    def extract_document_text(self, document_url):
+        """
+        Extract full text from document (PDF, DOCX, TXT).
+        
+        Returns: (text, method, error)
+        """
+        print(f"\n{'='*60}")
+        print(f"DOCUMENT EXTRACTION: {document_url}")
+        print(f"{'='*60}\n")
+        
+        try:
+            # Download document
+            response = requests.get(document_url, timeout=60, allow_redirects=True)
+            
+            if response.status_code != 200:
+                return None, None, f"Document download failed: HTTP {response.status_code}"
+            
+            print(f"✓ Downloaded: {len(response.content):,} bytes")
+            
+            # Save to temp file
+            file_extension = os.path.splitext(document_url.split('?')[0])[1] or '.pdf'
+            temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=file_extension)
+            temp_file.write(response.content)
+            temp_file.close()
+            
+            # Extract text based on type
+            if file_extension == '.pdf':
+                text = self._extract_pdf_text(temp_file.name)
+            elif file_extension in ['.docx', '.doc']:
+                text = self._extract_docx_text(temp_file.name)
+            elif file_extension == '.txt':
+                text = self._extract_txt_text(temp_file.name)
+            else:
+                os.remove(temp_file.name)
+                return None, None, f"Unsupported file type: {file_extension}"
+            
+            # Cleanup
+            os.remove(temp_file.name)
+            
+            if not text or len(text) < 50:
+                return None, None, "Could not extract text from document"
+            
+            print(f"✓ Document text: {len(text):,} chars")
+            return text, f"direct_extraction_{file_extension[1:]}", None
+        
+        except Exception as e:
+            return None, None, f"Document extraction failed: {str(e)}"
+    
+    def _extract_pdf_text(self, pdf_path):
+        """Extract text from PDF"""
+        import fitz
+        doc = fitz.open(pdf_path)
+        text_parts = []
+        
+        for page_num in range(len(doc)):
+            page = doc[page_num]
+            text = page.get_text()
+            if text.strip():
+                text_parts.append(text)
+        
+        doc.close()
+        return "\n\n".join(text_parts)
+    
+    def _extract_docx_text(self, docx_path):
+        """Extract text from DOCX"""
+        import docx
+        doc = docx.Document(docx_path)
+        text_parts = [para.text for para in doc.paragraphs if para.text.strip()]
+        return "\n\n".join(text_parts)
+    
+    def _extract_txt_text(self, txt_path):
+        """Extract text from TXT"""
+        with open(txt_path, 'r', encoding='utf-8', errors='ignore') as f:
+            return f.read()
+    
+    # ========================================
+    # IMAGE - Full Description Extraction
+    # ========================================
+    
+    def extract_image_content(self, image_url):
+        """
+        Extract detailed description from image using Gemini Vision.
+        
+        Returns: (description, method, error)
+        """
+        print(f"\n{'='*60}")
+        print(f"IMAGE EXTRACTION: {image_url}")
+        print(f"{'='*60}\n")
+        
+        try:
+            # Download image
+            response = requests.get(image_url, timeout=30, allow_redirects=True)
+            
+            if response.status_code != 200:
+                return None, None, f"Image download failed: HTTP {response.status_code}"
+            
+            print(f"✓ Downloaded: {len(response.content):,} bytes")
+            
+            # Save to temp file
+            file_extension = os.path.splitext(image_url.split('?')[0])[1] or '.jpg'
+            temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=file_extension)
+            temp_file.write(response.content)
+            temp_file.close()
+            
+            # Upload to Gemini
+            mime_type_map = {
+                '.jpg': 'image/jpeg',
+                '.jpeg': 'image/jpeg',
+                '.png': 'image/png',
+                '.gif': 'image/gif',
+                '.webp': 'image/webp',
+                '.bmp': 'image/bmp'
+            }
+            mime_type = mime_type_map.get(file_extension, 'image/jpeg')
+            
+            with open(temp_file.name, 'rb') as f:
+                image_file = self.client.files.upload(  # ✅ FIXED: self.client
+                    file=f,
+                    config={'mime_type': mime_type}
+                )
+            
+            # Wait for processing
+            max_wait = 60
+            wait_time = 0
+            while image_file.state.name == "PROCESSING" and wait_time < max_wait:
+                time.sleep(2)
+                wait_time += 2
+                image_file = self.client.files.get(name=image_file.name)  # ✅ FIXED: self.client
+            
+            if image_file.state.name == "FAILED":
+                os.remove(temp_file.name)
+                return None, None, "Image upload failed"
+            
+            # Extract description
+            prompt = """Provide a COMPREHENSIVE description of this image.
+
+**INCLUDE:**
+- What is shown in the image (objects, people, scene)
+- All visible text (transcribe exactly)
+- Colors, layout, composition
+- Any data, charts, graphs, or diagrams
+- Context and setting
+- Important details that stand out
+- Any text overlays or captions
+
+Be thorough and detailed. Extract ALL information visible in the image."""
+
+            response = self.client.models.generate_content(  # ✅ FIXED: self.client
+                model="gemini-2.0-flash",
+                contents=[
+                    types.Part.from_uri(
+                        file_uri=image_file.uri,
+                        mime_type=mime_type
+                    ),
+                    prompt
+                ],
+                config=types.GenerateContentConfig(
+                    temperature=0.2,
+                    max_output_tokens=2000
+                )
+            )
+            
+            description = response.text.strip()
+            
+            # Cleanup
+            os.remove(temp_file.name)
+            try:
+                self.client.files.delete(name=image_file.name)  # ✅ FIXED: self.client
+            except:
+                pass
+            
+            print(f"✓ Image description: {len(description):,} chars")
+            return description, "gemini_vision", None
+        
+        except Exception as e:
+            return None, None, f"Image extraction failed: {str(e)}"
+    
+    # ========================================
+    # TEXT - Direct Input
+    # ========================================
+    
+    def extract_text_content(self, text_content):
+        """
+        Process direct text input (no extraction needed).
+        
+        Returns: (text, method, error)
+        """
+        print(f"\n{'='*60}")
+        print(f"TEXT INPUT: {len(text_content)} chars")
+        print(f"{'='*60}\n")
+        
+        if not text_content or len(text_content.strip()) < 10:
+            return None, None, "Text too short (minimum 10 characters)"
+        
+        text_content = text_content.strip()
+        
+        # Limit text length
+        max_length = 100000
+        if len(text_content) > max_length:
+            print(f"⚠️  Text truncated from {len(text_content):,} to {max_length:,} chars")
+            text_content = text_content[:max_length]
+        
+        print(f"✓ Text content: {len(text_content):,} chars")
+        return text_content, "direct_input", None
+
+
 # Initialize processors for export
 # Initialize processors for export
 document_processor = DocumentProcessor()
@@ -3035,10 +3764,12 @@ audio_processor = AudioProcessor()  # ADD THIS LINE
 # tiktok_processor = TikTokProcessor()
 image_processor = ImageProcessor()
 text_processor = TextProcessor()
+universal_extractor = UniversalContentExtractor()
 # Update __all__ to export new processors
 __all__ = [
     'DocumentProcessor',
     'VideoProcessor', 
+    'UniversalContentExtractor',
     'InstagramProcessor',
     'FacebookProcessor',
     'TikTokProcessor',  # NEW

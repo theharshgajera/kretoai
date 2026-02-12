@@ -105,7 +105,8 @@ from script import (
     instagram_processor,
     text_processor,
     # tiktok_processor,
-    user_data
+    user_data,
+    universal_extractor
 )
 
 # Initialize processors
@@ -5922,8 +5923,8 @@ def summarize_with_gemini(transcript, length):
 
 
 # Replace the process_video route with this updated version:
-@app.route("/api/transcribe-and-summarize", methods=["POST"])
-def process_video():
+@app.route("/api/transcribe-and-summarize4", methods=["POST"])
+def process_video4():
     try:
         start_time = time.time()
         data = request.get_json(silent=True)
@@ -6097,7 +6098,432 @@ Provide only the summary, no preamble or meta-commentary."""
     except Exception as e:
         print(f"❌ Claude summarization error: {str(e)}")
         raise Exception(f"Claude summarization failed: {str(e)}")
+def download_file_from_url(url, destination_path, timeout=120):
+    """
+    Download file from URL to local path
+    
+    Args:
+        url: Source URL
+        destination_path: Local file path to save to
+        timeout: Download timeout in seconds
+    
+    Returns:
+        (success: bool, error: str or None)
+    """
+    try:
+        import requests
+        
+        print(f"Downloading from URL: {url[:100]}...")
+        
+        response = requests.get(url, timeout=timeout, stream=True)
+        
+        if response.status_code != 200:
+            return False, f"HTTP {response.status_code}"
+        
+        # Download with progress tracking
+        total_size = int(response.headers.get('content-length', 0))
+        downloaded = 0
+        
+        with open(destination_path, 'wb') as f:
+            for chunk in response.iter_content(chunk_size=8192):
+                if chunk:
+                    f.write(chunk)
+                    downloaded += len(chunk)
+                    
+                    # Progress every 10MB
+                    if downloaded % (10 * 1024 * 1024) == 0:
+                        mb = downloaded / (1024 * 1024)
+                        print(f"  Downloaded: {mb:.1f} MB")
+        
+        file_size = os.path.getsize(destination_path)
+        print(f"✓ Download complete: {file_size:,} bytes ({file_size/(1024*1024):.2f} MB)")
+        
+        return True, None
+        
+    except requests.exceptions.Timeout:
+        return False, "Download timeout"
+    except requests.exceptions.RequestException as e:
+        return False, f"Download error: {str(e)}"
+    except Exception as e:
+        return False, f"Error: {str(e)}"
+@app.route("/api/transcribe-and-summarize", methods=["POST"])
+def process_video():
+    """
+    UNIVERSAL MEDIA PROCESSOR: Process ANY media type and answer questions
+    Uses dedicated extractors for FULL content (not summaries)
+    """
+    try:
+        start_time = time.time()
+        user_id = request.remote_addr
+        
+        # Parse request
+        content_type = request.content_type or ''
+        
+        if 'application/json' in content_type:
+            data = request.json or {}
+            prompt = data.get('prompt', '').strip()
+            source_type = data.get('source_type', '').strip()
+            source_url = data.get('source_url', '').strip()
+            source_data = data.get('source_data')
+            source_filename = data.get('source_filename', 'file')
+            text_content = data.get('text_content', '').strip()
+            
+        elif 'multipart/form-data' in content_type:
+            prompt = request.form.get('prompt', '').strip()
+            source_type = request.form.get('source_type', '').strip()
+            source_url = request.form.get('source_url', '').strip()
+            text_content = request.form.get('text_content', '').strip()
+            
+            uploaded_file = request.files.get('file')
+            source_data = None
+            source_filename = 'file'
+            
+            if uploaded_file and uploaded_file.filename:
+                source_filename = secure_filename(uploaded_file.filename)
+                import base64
+                file_bytes = uploaded_file.read()
+                source_data = base64.b64encode(file_bytes).decode('utf-8')
+        else:
+            return jsonify({"error": "Unsupported content type"}), 415
+        
+        # Validate inputs
+        if not prompt:
+            return jsonify({"error": "prompt is required"}), 400
+        
+        if not source_type:
+            return jsonify({"error": "source_type is required"}), 400
+        
+        print(f"\n{'='*80}")
+        print(f"UNIVERSAL MEDIA PROCESSING: {source_type}")
+        print(f"{'='*80}")
+        print(f"Prompt: {prompt[:100]}...")
+        print(f"{'='*80}\n")
+        
+        # ========================================
+        # EXTRACT CONTENT USING DEDICATED EXTRACTORS
+        # ========================================
+        
+        content = None
+        method = None
+        error = None
+        source_info = None
+        
+        # YOUTUBE
+        if source_type == 'youtube':
+            if not source_url:
+                return jsonify({"error": "source_url required for YouTube"}), 400
+            
+            content, method, error = universal_extractor.extract_youtube_transcript(source_url)
+            source_info = source_url
+        
+        # INSTAGRAM
+        elif source_type == 'instagram':
+            if not source_url:
+                return jsonify({"error": "source_url required for Instagram"}), 400
+            
+            content, method, error = universal_extractor.extract_instagram_content(source_url)
+            source_info = source_url
+        
+        # FACEBOOK
+        elif source_type == 'facebook':
+            if not source_url:
+                return jsonify({"error": "source_url required for Facebook"}), 400
+            
+            content, method, error = universal_extractor.extract_facebook_content(source_url)
+            source_info = source_url
+        
+        # LOCAL VIDEO
+        elif source_type == 'local_video':
+            safe_user_id = user_id.replace('.', '_').replace(':', '_')
+            temp_video_path = None
+            
+            try:
+                # Download from URL if provided
+                if source_url:
+                    temp_video_path = os.path.join(
+                        UPLOAD_FOLDER,
+                        f"temp_{safe_user_id}_{int(time.time())}_downloaded.mp4"
+                    )
+                    
+                    success, dl_error = download_file_from_url(source_url, temp_video_path)
+                    if not success:
+                        return jsonify({"error": f"Video download failed: {dl_error}"}), 500
+                    
+                    source_info = os.path.basename(source_url.split('?')[0])
+                
+                # Use base64 data if provided
+                elif source_data:
+                    temp_video_path = os.path.join(
+                        UPLOAD_FOLDER,
+                        f"temp_{safe_user_id}_{int(time.time())}_{source_filename}"
+                    )
+                    
+                    import base64
+                    video_bytes = base64.b64decode(source_data)
+                    with open(temp_video_path, 'wb') as f:
+                        f.write(video_bytes)
+                    
+                    source_info = source_filename
+                else:
+                    return jsonify({"error": "Either source_url or source_data required for local video"}), 400
+                
+                # Process video
+                content, method, error = universal_extractor.extract_local_video_content(temp_video_path)
+                
+            finally:
+                # Always cleanup temp file
+                if temp_video_path and os.path.exists(temp_video_path):
+                    try:
+                        os.remove(temp_video_path)
+                    except:
+                        pass
 
+        # AUDIO
+        elif source_type == 'audio':
+            safe_user_id = user_id.replace('.', '_').replace(':', '_')
+            temp_audio_path = None
+            
+            try:
+                # Download from URL if provided
+                if source_url:
+                    temp_audio_path = os.path.join(
+                        UPLOAD_FOLDER,
+                        f"temp_{safe_user_id}_{int(time.time())}_downloaded.mp3"
+                    )
+                    
+                    success, dl_error = download_file_from_url(source_url, temp_audio_path)
+                    if not success:
+                        return jsonify({"error": f"Audio download failed: {dl_error}"}), 500
+                    
+                    source_info = os.path.basename(source_url.split('?')[0])
+                
+                # Use base64 data if provided
+                elif source_data:
+                    temp_audio_path = os.path.join(
+                        UPLOAD_FOLDER,
+                        f"temp_{safe_user_id}_{int(time.time())}_{source_filename}"
+                    )
+                    
+                    import base64
+                    audio_bytes = base64.b64decode(source_data)
+                    with open(temp_audio_path, 'wb') as f:
+                        f.write(audio_bytes)
+                    
+                    source_info = source_filename
+                else:
+                    return jsonify({"error": "Either source_url or source_data required for audio"}), 400
+                
+                # Process audio
+                content, method, error = universal_extractor.extract_audio_transcript(temp_audio_path)
+                
+            finally:
+                # Always cleanup temp file
+                if temp_audio_path and os.path.exists(temp_audio_path):
+                    try:
+                        os.remove(temp_audio_path)
+                    except:
+                        pass
+        # DOCUMENT
+        elif source_type == 'document':
+            if not source_url:
+                return jsonify({"error": "source_url required for document"}), 400
+            
+            content, method, error = universal_extractor.extract_document_text(source_url)
+            source_info = os.path.basename(source_url.split('?')[0])
+        
+        # IMAGE
+        elif source_type == 'image':
+            if not source_url:
+                return jsonify({"error": "source_url required for image"}), 400
+            
+            content, method, error = universal_extractor.extract_image_content(source_url)
+            source_info = os.path.basename(source_url.split('?')[0])
+        
+        # TEXT
+        elif source_type == 'text':
+            if not text_content:
+                return jsonify({"error": "text_content required for text input"}), 400
+            
+            content, method, error = universal_extractor.extract_text_content(text_content)
+            source_info = 'text_input'
+        
+        # UNKNOWN
+        else:
+            return jsonify({
+                "error": f"Unsupported source_type: {source_type}",
+                "supported_types": ["youtube", "instagram", "facebook", "local_video", "audio", "document", "image", "text"]
+            }), 400
+        
+        # Check for extraction errors
+        if error:
+            return jsonify({"error": error}), 500
+        
+        if not content:
+            return jsonify({"error": "Failed to extract content from source"}), 500
+        
+        print(f"\n{'='*60}")
+        print(f"✓ CONTENT EXTRACTED")
+        print(f"{'='*60}")
+        print(f"Length: {len(content):,} chars")
+        print(f"Method: {method}")
+        print(f"{'='*60}\n")
+        
+        # ========================================
+        # GENERATE ANSWER
+        # ========================================
+        
+        try:
+            answer = generate_answer_from_transcript(content, prompt, source_info)
+        except Exception as e:
+            return jsonify({"error": f"Answer generation failed: {str(e)}"}), 500
+        
+        # ========================================
+        # RETURN RESPONSE
+        # ========================================
+        
+        processing_time = round(time.time() - start_time, 2)
+        
+        return jsonify({
+            "success": True,
+            "source_type": source_type,
+            "source": source_info,
+            "prompt": prompt,
+            "answer": answer,
+            "stats": {
+                "source_type": source_type,
+                "extraction_method": method,
+                "content_char_count": len(content),
+                "content_word_count": len(content.split()),
+                "answer_char_count": len(answer),
+                "answer_word_count": len(answer.split()),
+                "processing_time": processing_time
+            },
+            "metadata": {
+                "timestamp": datetime.utcnow().isoformat(),
+                "extraction_method": method
+            }
+        })
+        
+    except Exception as e:
+        import traceback
+        print(f"❌ Error: {str(e)}")
+        print(traceback.format_exc())
+        return jsonify({"error": str(e)}), 500
+
+# Add this function to app.py (after the transcribe_youtube_with_transcript_api function)
+
+def generate_answer_from_transcript(transcript, user_prompt, source):
+    """
+    Generate contextual answer using Claude based on content and user prompt
+    
+    Args:
+        transcript: Extracted content (transcript, document text, image description, etc.)
+        user_prompt: User's question or request
+        source: Source identifier (URL, filename, etc.)
+    
+    Returns:
+        Formatted answer as string
+    """
+    try:
+        from anthropic import Anthropic
+        import os
+
+        anthropic_client = Anthropic(
+            api_key=os.getenv("ANTHROPIC_API_KEY")
+        )
+
+        print(f"\n{'='*60}")
+        print(f"GENERATING ANSWER WITH CLAUDE")
+        print(f"{'='*60}")
+        print(f"Source: {source}")
+        print(f"Prompt: {user_prompt[:100]}...")
+        print(f"Content length: {len(transcript):,} chars")
+        print(f"{'='*60}\n")
+
+        # Truncate content if too long (Claude has token limits)
+        max_content_chars = 100000
+        if len(transcript) > max_content_chars:
+            # Keep beginning and end
+            chunk_size = max_content_chars // 2
+            transcript = (
+                f"{transcript[:chunk_size]}\n\n"
+                f"[...MIDDLE CONTENT OMITTED FOR LENGTH...]\n\n"
+                f"{transcript[-chunk_size:]}"
+            )
+            print(f"⚠️  Content truncated to {max_content_chars:,} chars")
+
+        system_prompt = """You are an expert content analyst with access to extracted content from various media sources (videos, audio, documents, images, or text).
+
+**YOUR ROLE:**
+Answer user questions accurately and comprehensively based on the provided content.
+
+**CRITICAL RULES:**
+1. Answer ONLY based on information present in the provided content
+2. If the content doesn't contain information to answer the question, clearly state: "The provided content doesn't contain information about [topic]."
+3. Be specific and reference relevant parts of the content
+4. Provide direct quotes when helpful (use > blockquotes)
+5. Be thorough but concise
+6. Use clear, well-structured markdown formatting
+
+**FORMATTING GUIDELINES:**
+- Use **bold** for key terms and important points
+- Use bullet points (•) for lists
+- Use numbered lists (1., 2., 3.) for sequential steps or rankings
+- Use > blockquotes for direct quotes from the source
+- Use headers (##, ###) to organize longer responses
+- Use double line breaks between paragraphs for readability
+- Keep paragraphs short (2-3 sentences max)
+
+**OUTPUT QUALITY:**
+- Prioritize accuracy over completeness
+- If uncertain, acknowledge it
+- Provide context when needed
+- Make responses actionable when possible
+- Adapt tone to match the user's question (casual vs formal)"""
+
+        user_message = f"""**SOURCE:** {source}
+
+**USER'S QUESTION/REQUEST:**
+{user_prompt}
+
+**EXTRACTED CONTENT:**
+{transcript}
+
+---
+
+Please provide a comprehensive answer based on the content above. Structure your response clearly with proper formatting."""
+
+        print(f"Calling Claude API...")
+        
+        message = anthropic_client.messages.create(
+            model="claude-sonnet-4-20250514",
+            max_tokens=4000,
+            temperature=0.3,  # Lower temperature for accuracy
+            system=system_prompt,
+            messages=[{"role": "user", "content": user_message}]
+        )
+
+        answer = message.content[0].text.strip()
+
+        print(f"\n{'='*60}")
+        print(f"✓ ANSWER GENERATED")
+        print(f"{'='*60}")
+        print(f"Length: {len(answer):,} chars")
+        print(f"Words: {len(answer.split()):,}")
+        print(f"\nPREVIEW (first 500 chars):")
+        print(f"{'-'*60}")
+        print(answer[:500])
+        if len(answer) > 500:
+            print(f"... ({len(answer) - 500:,} more characters)")
+        print(f"{'='*60}\n")
+
+        return answer
+
+    except Exception as e:
+        print(f"❌ Answer generation error: {str(e)}")
+        import traceback
+        print(traceback.format_exc())
+        raise Exception(f"Answer generation failed: {str(e)}")
     
 @app.route('/api/review-thumbnail', methods=['POST'])
 def review_thumbnail_endpoint():

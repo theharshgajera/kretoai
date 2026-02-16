@@ -28,6 +28,16 @@ from googleapiclient.errors import HttpError
 import google.generativeai as genai
 import re
 import socket
+import anthropic
+
+# Initialize Anthropic client for tone analysis
+ANTHROPIC_API_KEY = os.getenv('ANTHROPIC_API_KEY')
+if ANTHROPIC_API_KEY:
+    anthropic_client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+    print("✓ Anthropic client initialized for tone analysis")
+else:
+    anthropic_client = None
+    print("⚠ ANTHROPIC_API_KEY not found - tone analysis will fail")
 from datetime import datetime, timedelta
 import requests
 from PIL import Image
@@ -2776,21 +2786,24 @@ def whole_script():
         folders = []
         prompt = ""
         target_minutes = None
-        tone_analyzer = None  # NEW: Optional tone analyzer from input
+        tone_analyzer = None  # Optional tone analysis (string text or legacy dict)
         
         if 'application/json' in content_type:
             data = request.json or {}
             prompt = data.get('prompt', '').strip()
             target_minutes = data.get('minutes')
-            tone_analyzer = data.get('tone_analyzer')  # NEW: Optional tone_analyzer JSON
+            # Support both new text format (tone_analysis) and legacy dict (tone_analyzer)
+            tone_analyzer = data.get('tone_analysis') or data.get('tone_analyzer')
             
-            # Log if tone analyzer provided
+            # Log if tone provided
             if tone_analyzer:
-                channel_name = tone_analyzer.get('channel_name', 'Unknown')
-                print(f"✓ Tone analyzer provided: {channel_name}")
-                print(f"  Style: {tone_analyzer.get('tone_profile', {}).get('primary_tone', 'N/A')}")
+                if isinstance(tone_analyzer, str):
+                    print(f"✓ Tone analysis text provided ({len(tone_analyzer):,} chars)")
+                else:
+                    channel_name = tone_analyzer.get('channel_name', 'Unknown')
+                    print(f"✓ Tone analyzer dict provided: {channel_name}")
             else:
-                print(f"⚠ No tone analyzer provided - using general professional tone")
+                print(f"⚠ No tone analysis provided - using general professional tone")
             
             # =================================================================
             # SUPPORT "FOLDERS" MODE
@@ -2987,14 +3000,21 @@ def whole_script():
             prompt = request.form.get('prompt', '').strip()
             target_minutes = request.form.get('minutes', type=int)
             
-            # Try to parse tone_analyzer from form data
-            tone_analyzer_json = request.form.get('tone_analyzer')
-            if tone_analyzer_json:
-                try:
-                    tone_analyzer = json.loads(tone_analyzer_json)
-                    print(f"✓ Tone analyzer provided via form")
-                except:
-                    print(f"⚠ Failed to parse tone_analyzer from form")
+            # Try to parse tone_analysis/tone_analyzer from form data
+            tone_text_form = request.form.get('tone_analysis') or request.form.get('tone_analyzer')
+            if tone_text_form:
+                # If it looks like JSON, try to parse it (legacy support)
+                if tone_text_form.strip().startswith('{'):
+                    try:
+                        tone_analyzer = json.loads(tone_text_form)
+                        print(f"✓ Tone analyzer dict provided via form")
+                    except:
+                        # Not valid JSON, treat as text
+                        tone_analyzer = tone_text_form
+                        print(f"✓ Tone analysis text provided via form")
+                else:
+                    tone_analyzer = tone_text_form
+                    print(f"✓ Tone analysis text provided via form")
             
             # [Keep existing multipart processing code for files...]
             # ... (unchanged file upload handling)
@@ -3011,7 +3031,7 @@ def whole_script():
         print(f"Folders: {len(folders)}")
         print(f"Prompt: {prompt[:100]}...")
         print(f"Target Duration: {target_minutes or 'Not specified'} minutes")
-        print(f"Tone Analyzer: {'✓ Provided' if tone_analyzer else '✗ Not provided (using general tone)'}")
+        print(f"Tone: {'✓ Provided' if tone_analyzer else '✗ Not provided (using general tone)'}")
         print(f"{'='*60}\n")
         
         # Results storage
@@ -3524,9 +3544,6 @@ Extract and organize:
 Sources:
 {chr(10).join(sources_info)}
 
-TRANSCRIPTS:
-{chr(10).join([f"--- SOURCE {i+1} ---{chr(10)}{t[:4000]}" for i, t in enumerate(transcripts)])}
-
 Provide a structured knowledge summary (400-600 words) that can inspire content ideas without copying style or delivery."""
 
                 client = genai.GenerativeModel('gemini-2.0-flash')
@@ -3615,7 +3632,7 @@ Provide a structured knowledge summary (400-600 words) focusing on factual conte
         print(f"FINAL SCRIPT GENERATED")
         print(f"{'='*80}")
         print(f"Length: {len(script):,} characters")
-        print(f"Tone Applied: {'Yes - ' + tone_analyzer.get('channel_name', 'Unknown') if tone_analyzer else 'No - General professional tone'}")
+        print(f"Tone Applied: {'Yes' if tone_analyzer else 'No - General professional tone'}")
         print(f"\nSCRIPT PREVIEW (first 1000 chars):")
         print(f"{'-'*80}")
         print(script[:1000])
@@ -3625,7 +3642,7 @@ Provide a structured knowledge summary (400-600 words) focusing on factual conte
         chat_session_id = str(uuid.uuid4())
         user_data[user_id]['current_script'] = {
             'content': script,
-            'tone_analyzer': tone_analyzer,
+            'tone_analysis': tone_analyzer,
             'knowledge_base': {
                 'inspiration': inspiration_knowledge,
                 'documents': document_knowledge
@@ -3649,7 +3666,7 @@ Provide a structured knowledge summary (400-600 words) focusing on factual conte
             'total_sources': len(processed_inspiration) + len(processed_documents),
             'errors_count': len(errors),
             'target_duration': target_minutes,
-            'tone_analyzer_used': tone_analyzer is not None
+            'tone_used': tone_analyzer is not None
         }
         
         print(f"\n{'='*60}")
@@ -3677,8 +3694,8 @@ Provide a structured knowledge summary (400-600 words) focusing on factual conte
             'errors': errors if errors else None,
             'tone_info': {
                 'applied': tone_analyzer is not None,
-                'channel_name': tone_analyzer.get('channel_name') if tone_analyzer else None,
-                'style': tone_analyzer.get('tone_profile', {}).get('primary_tone') if tone_analyzer else 'General professional tone'
+                'type': 'text' if isinstance(tone_analyzer, str) else ('dict' if tone_analyzer else None),
+                'preview': (tone_analyzer[:200] + '...' if isinstance(tone_analyzer, str) and len(tone_analyzer) > 200 else tone_analyzer) if isinstance(tone_analyzer, str) else (tone_analyzer.get('channel_name') if isinstance(tone_analyzer, dict) else None)
             },
             'folder_summary': [
                 {
@@ -3711,8 +3728,8 @@ def chat_modify_script():
     user_message = data.get('message', '').strip()
     current_script = data.get('script', '').strip()  # ✅ NEW: Get script from payload
     
-    # Optional parameters
-    tone_analyzer = data.get('tone_analyzer')  # ✅ NEW: Optional tone profile
+    # Optional parameters - support both new text format and legacy dict
+    tone_analyzer = data.get('tone_analysis') or data.get('tone_analyzer')
     knowledge_base = data.get('knowledge_base', {  # ✅ NEW: Optional knowledge base
         'inspiration': '',
         'documents': ''
@@ -5435,17 +5452,16 @@ def analyze_creator_tone():
         print(f"Total words analyzed: {sum(t['word_count'] for t in transcripts_data):,}")
         print(f"{'='*60}\n")
         
-        # Step 7: Generate tone analysis with ROBUST JSON parsing
-        print("Generating tone analysis with AI...\n")
+        # Step 7: Generate tone analysis as free-form text
+        print("Generating tone analysis text with AI...\n")
         
         client = genai.GenerativeModel('gemini-2.0-flash')
         
         try:
-            tone_data = generate_tone_analysis_with_retry(
+            tone_text = generate_tone_text_with_retry(
                 transcripts_data=transcripts_data,
                 channel_title=channel_title,
-                subscriber_count=subscriber_count,
-                genai_client=client
+                subscriber_count=subscriber_count
             )
             analysis_warning = None
             
@@ -5454,27 +5470,42 @@ def analyze_creator_tone():
             print(f"[ERROR] Failed to generate analysis: {e}")
             
             # Use fallback to ensure user gets SOMETHING
-            tone_data = create_fallback_tone_analysis(
+            tone_text = create_fallback_tone_text(
                 channel_title=channel_title,
                 subscriber_count=subscriber_count,
                 videos_analyzed=len(transcripts_data)
             )
-            analysis_warning = "AI analysis failed - using fallback data. Please try again for full analysis."
-            print(f"[FALLBACK] Using minimal tone analysis")
+            analysis_warning = "AI analysis failed - using fallback text. Please try again for full analysis."
+            print(f"[FALLBACK] Using minimal tone text")
         
         print(f"\n{'='*60}")
         print(f"TONE ANALYSIS COMPLETE")
         print(f"{'='*60}\n")
         
+        # Save tone analysis as .txt file
+        output_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'output')
+        os.makedirs(output_dir, exist_ok=True)
+        
+        safe_channel_name = re.sub(r'[^\w\-]', '_', channel_title)[:50]
+        tone_filename = f"{safe_channel_name}_tone.txt"
+        tone_filepath = os.path.join(output_dir, tone_filename)
+        
+        with open(tone_filepath, 'w', encoding='utf-8') as f:
+            f.write(tone_text)
+        
+        print(f"✓ Tone analysis saved to: {tone_filepath}")
+        print(f"  File size: {len(tone_text):,} characters")
+        
         # Store for session
         session_id = str(uuid.uuid4())
         user_data[user_id]['tone_analyzers'] = user_data[user_id].get('tone_analyzers', {})
         user_data[user_id]['tone_analyzers'][channel_id] = {
-            'analyzer': tone_data,
+            'tone_analysis': tone_text,
             'channel_title': channel_title,
             'videos_analyzed': len(transcripts_data),
             'created_at': datetime.now().isoformat(),
-            'session_id': session_id
+            'session_id': session_id,
+            'tone_file': tone_filepath
         }
         
         response_data = {
@@ -5484,12 +5515,12 @@ def analyze_creator_tone():
             'subscriber_count': subscriber_count,
             'videos_analyzed': len(transcripts_data),
             'video_titles': [t['title'] for t in transcripts_data],
-            'tone_analyzer': tone_data,
+            'tone_analysis': tone_text,
+            'tone_file': tone_filename,
             'session_id': session_id,
             'summary': {
-                'primary_tone': tone_data.get('tone_profile', {}).get('primary_tone'),
-                'formality': tone_data.get('tone_profile', {}).get('formality_level'),
-                'energy': tone_data.get('tone_profile', {}).get('energy_level')
+                'preview': tone_text[:500] + '...' if len(tone_text) > 500 else tone_text,
+                'total_characters': len(tone_text)
             },
             'metadata': {
                 'total_videos_checked': len(all_video_ids),
@@ -5561,193 +5592,277 @@ def clean_and_parse_json(text):
         raise ValueError(f"JSON parse failed: {e}")
 
 
-def generate_tone_analysis_with_retry(transcripts_data, channel_title, subscriber_count, genai_client):
-    """Generate tone analysis with retry logic and different temperatures"""
+def generate_tone_text_with_retry(transcripts_data, channel_title, subscriber_count):
+    """Generate tone analysis text using Claude Opus 4.5.
+    
+    Returns a plain text string describing the creator's tone, grammar, style,
+    common phrases, sentence structure, word choices, etc.
+    """
+    
+    # ✅ FIX: Get the global anthropic_client that was initialized at module level
+    global anthropic_client
+    
+    if not anthropic_client:
+        raise ValueError("Anthropic client not initialized. Set ANTHROPIC_API_KEY.")
     
     transcripts_text = "\n\n---VIDEO SEPARATOR---\n\n".join([
         f"VIDEO {i+1}: {t['title']}\nDURATION: {t['duration']//60}:{t['duration']%60:02d}\nWORD COUNT: {t['word_count']:,}\n\nTRANSCRIPT:\n{t['transcript']}"
         for i, t in enumerate(transcripts_data)
     ])
     
-    prompt = f"""You are an expert content analyst. Analyze these {len(transcripts_data)} video transcripts from "{channel_title}" ({subscriber_count:,} subscribers).
+    prompt = f"""You are an expert content analyst. Analyze these transcripts to create a COMPREHENSIVE style DNA for "{channel_title}".
 
-CRITICAL: Respond with ONLY valid JSON. No markdown, no code blocks, no text outside the JSON object.
+Your goal: Extract enough detail that an AI could REPLICATE this creator's exact voice, not just describe it.
 
-Analyze the creator's voice, style, language patterns, structure, and unique elements.
+## 1. SPEAKING PATTERNS
 
-Provide THIS EXACT JSON structure (all strings must be properly escaped, no trailing commas):
-{{
-  "channel_name": "{channel_title}",
-  "subscriber_count": {subscriber_count},
-  "videos_analyzed": {len(transcripts_data)},
-  "tone_profile": {{
-    "primary_tone": "describe dominant tone",
-    "secondary_tones": ["2-3 secondary tones"],
-    "formality_level": "very casual / casual / conversational / professional / very formal",
-    "energy_level": "low / moderate / high / very high / variable",
-    "humor_presence": "none / subtle / moderate / heavy",
-    "authenticity_feel": "highly polished / somewhat polished / genuine / very raw"
-  }},
-  "voice_characteristics": {{
-    "speaking_style": "how they speak",
-    "audience_address": "how they address viewers",
-    "signature_phrases": ["repeated phrases"],
-    "verbal_patterns": "speech patterns"
-  }},
-  "language_analysis": {{
-    "vocabulary_level": "simple / moderate / advanced / highly technical",
-    "sentence_complexity": "simple / mixed / complex",
-    "average_sentence_length": "short / medium / long / varied",
-    "technical_terminology": "none / minimal / moderate / heavy",
-    "slang_colloquialisms": "none / occasional / frequent",
-    "profanity_usage": "none / rare / occasional / frequent"
-  }},
-  "structural_patterns": {{
-    "typical_opening": "how they start",
-    "hook_strategy": "attention grabbing method",
-    "transition_style": "how they transition",
-    "explanation_method": "how they explain",
-    "closing_pattern": "how they close",
-    "cta_style": "call to action style"
-  }},
-  "emotional_engagement": {{
-    "rapport_building": "connection method",
-    "vulnerability_level": "closed / reserved / open / very vulnerable",
-    "storytelling_usage": "rare / occasional / frequent / primary method",
-    "personal_anecdotes": "none / minimal / moderate / heavy",
-    "empathy_expression": "low / moderate / high"
-  }},
-  "content_delivery": {{
-    "pacing": "slow methodical / steady / brisk / rapid / variable",
-    "information_density": "light / moderate / dense / very dense",
-    "entertainment_education_ratio": "percentage split",
-    "depth_vs_breadth": "broad overview / balanced / deep dive",
-    "example_usage": "rare / moderate / frequent / heavy"
-  }},
-  "distinctive_elements": {{
-    "unique_identifiers": ["3-5 unique elements"],
-    "signature_segments": ["recurring formats"],
-    "quirks_idiosyncrasies": ["notable quirks"],
-    "trademark_expressions": ["phrases they own"]
-  }},
-  "script_writing_guidelines": {{
-    "must_include": ["required elements"],
-    "avoid": ["things to avoid"],
-    "preferred_structures": ["patterns to use"],
-    "tone_maintenance_rules": ["consistency rules"]
-  }},
-  "example_snippets": {{
-    "typical_opening_example": "example from transcripts",
-    "typical_transition_example": "example from transcripts",
-    "typical_explanation_example": "example from transcripts",
-    "typical_closing_example": "example from transcripts"
-  }},
-  "ai_replication_instructions": "Detailed instructions for AI to replicate this style"
-}}
+**SPEAKING STYLE:**
+- Delivery mode: [One-on-one conversation / Teaching lecture / Presentation / Casual chat / Professional briefing]
+- Formality level: [1-10 scale]
+- Conversational vs Scripted: [Estimate %]
+- Speaking rhythm: [Fast-paced / Measured / Varies]
+- Sentence completion: [Always finishes / Often trails off / Mix]
 
-TRANSCRIPTS:
+**NATURAL SPEECH MARKERS:**
+- Filler word frequency: "like" ___, "you know" ___, "right?" ___, "so" ___
+- Self-corrections: "I mean..." "well actually..." [count]
+- Tangents/asides: How often? (rare/occasional/frequent)
+- Thought process visible: Does speaker show their thinking? (yes/no)
 
-{transcripts_text}
+**VERBAL ENERGY:**
+- Base energy: [Low/Medium/High]
+- Feels like: [Coffee chat / Excited friend / Professional mentor / etc]
+- Rapport building: [Formal distance / Friendly / Intimate one-on-one]
 
-Respond ONLY with the JSON object."""
+**Video Openings (extract 5-10 actual examples):**
+- Format: "Exact quote" (Video #)
+- Identify pattern: Bold claim? Question? Story? Controversy? Problem statement?
 
-    strategies = [
-        {'temperature': 0.2, 'top_p': 0.9, 'top_k': 20},
-        {'temperature': 0.3, 'top_p': 0.95, 'top_k': 40},
-        {'temperature': 0.1, 'top_p': 0.85, 'top_k': 10},
-    ]
+**Top 10 Most Repeated Phrases:**
+- Count exact frequency (e.g., "Here's the thing" - 15 times)
+- Include variations ("Here's what" vs "Here's the thing")
+- Note context when used (transitions? emphasis? rapport?)
+
+**Sentence Architecture:**
+- Average sentence length (short <10 words / medium 10-20 / long >20)
+- Fragment usage frequency and purpose
+- Run-on sentence patterns (when and why)
+- Paragraph structure (1-sentence? 2-3? longer blocks?)
+
+## 2. CONTENT FLOW & STRUCTURE
+
+**Teaching Methodology:**
+- Story-driven or tactical? (estimate %)
+- Discovery narrative or direct instruction?
+- Theoretical or practical focus?
+
+**Information Architecture:**
+- When do results appear? (first 30 sec / intro / throughout / end)
+- How are results presented? (dashboards? screenshots? verbal?)
+- Proof placement strategy
+
+**Narrative Techniques:**
+- Personal anecdotes frequency (give examples)
+- Client stories usage (success/failure ratio)
+- "Here's what happened" narrative style count
+
+**Analogies & Metaphors:**
+Extract 5-10 actual examples with categories:
+- Business/professional domain
+- Everyday life (food, sports, etc.)
+- Technical/specialized
+- Note if they're simple or elaborate
+
+## 3. PERSONALITY MARKERS
+
+**Tone Spectrum:**
+- Casual ←→ Professional (1-10 scale, explain)
+- Friendly ←→ Authoritative (1-10 scale, explain)
+- Humble ←→ Confident (1-10 scale, explain)
+
+**Language Choices:**
+- Profanity: None / Mild / Frequent (examples)
+- Slang: List all instances
+- Industry jargon: Technical level (beginner/intermediate/expert)
+- Vocabulary complexity (simple/mixed/advanced)
+
+**Self-Corrections & Hedging:**
+- "I mean..." - frequency and context
+- "Well, actually..." - frequency
+- "Kind of" / "Sort of" - frequency
+- "If you will" - frequency
+- How they handle uncertainty
+
+**Credibility Building Tactics:**
+- Specific numbers/revenue (how often, how specific?)
+- Years of experience mentions
+- Client results sharing (how often?)
+- Transparency moves ("I'll show you my actual...")
+- Name-dropping or social proof
+
+## 4. ENERGY & PACING
+
+**Energy Baseline:**
+- Low / Medium / High / Variable
+- Describe their "normal" energy level
+
+**Emphasis Patterns:**
+- What triggers slow-down? (stats? important points? warnings?)
+- What triggers speed-up? (stories? tangents? examples?)
+- Pause frequency and purpose
+
+**Intensity Spikes:**
+- When debunking myths
+- During calls-to-action
+- When sharing controversial takes
+- When building urgency
+- List 3-5 examples with context
+
+## 5. ENGAGEMENT STYLE
+
+**Viewer Address Patterns:**
+- "You/your" frequency (high/medium/low)
+- Second person vs first person ratio
+- Third person examples (talking about "people" vs "you")
+
+**Objection Handling:**
+- "You might think..." - count and examples
+- "Before you say..." - count and examples
+- "I know what you're thinking..." - variations
+- How they anticipate and address resistance
+
+**Video Conclusions:**
+- Hard CTA or soft suggestion?
+- Promise of future value?
+- Implementation challenge?
+- Extract 3-5 actual ending examples
+
+## 6. VERBAL FINGERPRINT (CRITICAL SECTION)
+
+**Transition Phrases (rank top 10 by frequency):**
+1. [Exact phrase] - [count] - [usage context]
+2. [Continue...]
+
+**Repetition Patterns:**
+- How many times do they restate key points?
+- Techniques: "Listen to that again" / rephrasing / emphasis words?
+- Examples of important concepts restated 2-3 times
+
+**Grammar Signature:**
+- Sentence starters: "So" (count), "And" (count), "But" (count)
+- Comma splices in speech (frequent/occasional/rare)
+- Question tags: "Right?" "Yeah?" "You know?"
+- Incomplete sentences frequency
+
+**Unique Verbal Signatures:**
+Extract 5-10 UNIQUE patterns that ONLY this creator uses:
+- Specific coined terms
+- Unusual phrase combinations  
+- Signature ways of framing concepts
+- Unique rhetorical devices
+
+## 7. CONTENT STRUCTURE FINGERPRINT
+
+**Formula/Framework:**
+- Identify their content structure pattern
+- Example: Problem → Story → Solution → Proof → Action
+- How consistent is this formula? (always/usually/varies)
+
+**Number Usage:**
+- Specific dollar amounts: frequency and precision
+- Statistics: how often and how specific?
+- Time metrics: frequency
+- Lists: "3 things", "5 steps" - pattern?
+
+**Contrast Techniques:**
+- Old way vs new way (frequency)
+- What people think vs reality (frequency)
+- Before vs after (frequency)
+- Us vs them (frequency)
+
+**Unique Content Moves:**
+- Coined terms or frameworks (list all)
+- Signature concepts (list all)
+- Recurring themes or warnings
+- Pattern interrupts
+
+## 8. FORMATTING PREFERENCES
+
+**Visual Structure:**
+- Paragraph length (1-2 sentences / 3-5 / longer)
+- Use of ALL CAPS (never/rare/frequent)
+- Bold/italic emphasis patterns
+- List/bullet point frequency
+- Section headers usage
+
+**Pacing Devices:**
+- Short sentences for punch?
+- Long sentences for explanation?
+- Fragments for emphasis?
+- One-word sentences? (Examples)
+
+---
+
+**CRITICAL OUTPUT REQUIREMENTS:**
+
+1. **Include actual quotes** - not just descriptions
+2. **Count everything** - give specific numbers
+3. **Show patterns** - not just one-off examples  
+4. **Explain context** - when and why they use each technique
+5. **Rate on scales** - give numeric assessments where possible
+6. **Extract uniqueness** - what makes THIS creator different from others
+
+Your analysis should be SO detailed that someone could:
+- Write in their voice without seeing the original
+- Make the same structural choices
+- Use the same verbal patterns
+- Match the same energy and pacing
+
+Transcripts:
+{transcripts_text}"""
     
-    for attempt, config in enumerate(strategies, 1):
-        print(f"[Gemini] Attempt {attempt}/{len(strategies)} (temp={config['temperature']})...")
+    max_attempts = 3
+    for attempt in range(1, max_attempts + 1):
+        print(f"[Claude Opus 4.5] Attempt {attempt}/{max_attempts}...")
         
         try:
-            response = genai_client.generate_content(prompt, generation_config=config)
-            raw_text = response.text.strip()
-            print(f"[Gemini] Response length: {len(raw_text)} chars")
+            # ✅ FIX: Use the global anthropic_client
+            message = anthropic_client.messages.create(
+                model="claude-sonnet-4-20250514",
+                max_tokens=8000,
+                temperature=0.3,
+                messages=[{"role": "user", "content": prompt}]
+            )
             
-            tone_data = clean_and_parse_json(raw_text)
-            print(f"[Gemini] ✓ Successfully parsed JSON!")
-            return tone_data
+            raw_text = message.content[0].text.strip()
+            print(f"[Claude Opus 4.5] Response length: {len(raw_text):,} chars")
+            
+            if len(raw_text) < 200:
+                raise ValueError(f"Response too short ({len(raw_text)} chars), retrying...")
+            
+            print(f"[Claude Opus 4.5] ✓ Successfully generated tone analysis!")
+            return raw_text
             
         except Exception as e:
-            print(f"[Gemini] Attempt {attempt} failed: {e}")
-            if attempt < len(strategies):
+            print(f"[Claude Opus 4.5] Attempt {attempt} failed: {e}")
+            if attempt < max_attempts:
                 import time
-                time.sleep(1)
+                time.sleep(2)
     
-    raise ValueError("Failed to generate valid tone analysis after all attempts")
+    raise ValueError("Failed to generate tone analysis after all attempts")
 
 
-def create_fallback_tone_analysis(channel_title, subscriber_count, videos_analyzed):
-    """Minimal fallback when AI fails"""
-    return {
-        "channel_name": channel_title,
-        "subscriber_count": subscriber_count,
-        "videos_analyzed": videos_analyzed,
-        "tone_profile": {
-            "primary_tone": "Analysis failed - please retry",
-            "secondary_tones": [],
-            "formality_level": "unknown",
-            "energy_level": "unknown",
-            "humor_presence": "unknown",
-            "authenticity_feel": "unknown"
-        },
-        "voice_characteristics": {
-            "speaking_style": "Unable to analyze",
-            "audience_address": "unknown",
-            "signature_phrases": [],
-            "verbal_patterns": "unknown"
-        },
-        "language_analysis": {
-            "vocabulary_level": "unknown",
-            "sentence_complexity": "unknown",
-            "average_sentence_length": "unknown",
-            "technical_terminology": "unknown",
-            "slang_colloquialisms": "unknown",
-            "profanity_usage": "unknown"
-        },
-        "structural_patterns": {
-            "typical_opening": "unknown",
-            "hook_strategy": "unknown",
-            "transition_style": "unknown",
-            "explanation_method": "unknown",
-            "closing_pattern": "unknown",
-            "cta_style": "unknown"
-        },
-        "emotional_engagement": {
-            "rapport_building": "unknown",
-            "vulnerability_level": "unknown",
-            "storytelling_usage": "unknown",
-            "personal_anecdotes": "unknown",
-            "empathy_expression": "unknown"
-        },
-        "content_delivery": {
-            "pacing": "unknown",
-            "information_density": "unknown",
-            "entertainment_education_ratio": "unknown",
-            "depth_vs_breadth": "unknown",
-            "example_usage": "unknown"
-        },
-        "distinctive_elements": {
-            "unique_identifiers": [],
-            "signature_segments": [],
-            "quirks_idiosyncrasies": [],
-            "trademark_expressions": []
-        },
-        "script_writing_guidelines": {
-            "must_include": [],
-            "avoid": [],
-            "preferred_structures": [],
-            "tone_maintenance_rules": []
-        },
-        "example_snippets": {
-            "typical_opening_example": "",
-            "typical_transition_example": "",
-            "typical_explanation_example": "",
-            "typical_closing_example": ""
-        },
-        "ai_replication_instructions": "Analysis generation failed. Please retry."
-    }
+def create_fallback_tone_text(channel_title, subscriber_count, videos_analyzed):
+    """Minimal fallback text when AI fails"""
+    return f"""TONE ANALYSIS FOR: {channel_title}
+Subscribers: {subscriber_count:,}
+Videos Analyzed: {videos_analyzed}
+
+Note: The AI-powered tone analysis failed to generate. This is a fallback placeholder.
+Please retry the analysis to get a detailed style guide for this creator.
+
+Default guidelines: Use a professional, engaging, and conversational YouTube tone.
+Be clear, direct, and accessible. Maintain moderate energy and enthusiasm."""
 
 
 def resolve_channel_identifier(youtube, identifier):

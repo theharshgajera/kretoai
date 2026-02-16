@@ -3089,18 +3089,21 @@ def whole_script():
                 if item_type == 'youtube_url':
                     url = item.get('url', '').strip()
                     if url and video_processor.validate_youtube_url(url):
-                        print(f"\n[{folder_name}] Processing YouTube: {url}")
-                        result = video_processor.process_video_content(url, 'youtube')
+                        print(f"\n[{folder_name}] Processing YouTube via TranscriptAPI: {url}")
+                        try:
+                            transcript = transcribe_youtube_with_transcript_api(url)
+                        except Exception as e:
+                            return ('error', f"[{folder_name}] YouTube {url}: {str(e)}")
 
-                        if result['error']:
-                            return ('error', f"[{folder_name}] YouTube {url}: {result['error']}")
+                        if not transcript or len(transcript) < 50:
+                            return ('error', f"[{folder_name}] YouTube {url}: Transcript too short or empty")
 
-                        transcript = result['transcript']
+                        word_count = len(transcript.split())
                         print(f"\n{'='*80}")
-                        print(f"YOUTUBE TRANSCRIPT EXTRACTED: {url}")
+                        print(f"YOUTUBE TRANSCRIPT EXTRACTED (TranscriptAPI): {url}")
                         print(f"{'='*80}")
                         print(f"Length: {len(transcript):,} characters")
-                        print(f"Words: {result['stats'].get('word_count', 0):,}")
+                        print(f"Words: {word_count:,}")
                         print(f"\nPREVIEW (first 500 chars):")
                         print(f"{'-'*80}")
                         print(transcript[:500])
@@ -3112,7 +3115,7 @@ def whole_script():
                             'folder_name': folder_name,
                             'url': url,
                             'transcript': transcript,
-                            'stats': result['stats'],
+                            'stats': {'char_count': len(transcript), 'word_count': word_count, 'source_type': 'transcript_api'},
                             'type': 'youtube'
                         })
                     return ('error', f"[{folder_name}] Invalid YouTube URL")
@@ -3544,11 +3547,18 @@ Extract and organize:
 Sources:
 {chr(10).join(sources_info)}
 
-Provide a structured knowledge summary (400-600 words) that can inspire content ideas without copying style or delivery."""
+TRANSCRIPTS:
+{chr(10).join([f'--- SOURCE {i+1} ---{chr(10)}{t}' for i, t in enumerate(transcripts)])}
 
-                client = genai.GenerativeModel('gemini-2.0-flash')
-                response = client.generate_content(knowledge_prompt)
-                result = response.text.strip()
+Provide a structured knowledge summary without copying style or delivery."""
+
+                message = anthropic_client.messages.create(
+                    model="claude-sonnet-4-20250514",
+                    max_tokens=4000,
+                    temperature=0.3,
+                    messages=[{"role": "user", "content": knowledge_prompt}]
+                )
+                result = message.content[0].text.strip()
                 
                 print(f"\n{'='*80}")
                 print(f"INSPIRATION KNOWLEDGE EXTRACTED")
@@ -3583,13 +3593,17 @@ Sources:
 {chr(10).join(sources_info)}
 
 DOCUMENTS:
-{chr(10).join([f"--- DOCUMENT {i+1} ---{chr(10)}{t[:3000]}" for i, t in enumerate(texts)])}
+{chr(10).join([f'--- DOCUMENT {i+1} ---{chr(10)}{t}' for i, t in enumerate(texts)])}
 
 Provide a structured knowledge summary (400-600 words) focusing on factual content only."""
 
-                client = genai.GenerativeModel('gemini-2.0-flash')
-                response = client.generate_content(doc_prompt)
-                result = response.text.strip()
+                message = anthropic_client.messages.create(
+                    model="claude-sonnet-4-20250514",
+                    max_tokens=4000,
+                    temperature=0.3,
+                    messages=[{"role": "user", "content": doc_prompt}]
+                )
+                result = message.content[0].text.strip()
                 
                 print(f"\n{'='*80}")
                 print(f"DOCUMENT KNOWLEDGE EXTRACTED")
@@ -5406,30 +5420,31 @@ def analyze_creator_tone():
         def extract_transcript(video_data):
             video_id = video_data['video_id']
             title = video_data['title']
+            youtube_url = f"https://www.youtube.com/watch?v={video_id}"
             
-            print(f"\n[Transcript] Extracting: {title[:50]}...")
+            print(f"\n[Transcript] Extracting via TranscriptAPI: {title[:50]}...")
             
-            result = video_processor.process_video_content(
-                f"https://www.youtube.com/watch?v={video_id}",
-                'youtube'
-            )
-            
-            if result['error']:
-                print(f"  ✗ Error: {result['error']}")
+            try:
+                transcript = transcribe_youtube_with_transcript_api(youtube_url)
+                
+                if not transcript or len(transcript) < 50:
+                    print(f"  ✗ Transcript too short or empty")
+                    return None
+                
+                word_count = len(transcript.split())
+                
+                print(f"  ✓ Extracted: {len(transcript):,} chars, {word_count:,} words")
+                
+                return {
+                    'video_id': video_id,
+                    'title': title,
+                    'transcript': transcript,
+                    'word_count': word_count,
+                    'duration': video_data['duration']
+                }
+            except Exception as e:
+                print(f"  ✗ TranscriptAPI Error: {e}")
                 return None
-            
-            transcript = result['transcript']
-            word_count = result['stats'].get('word_count', 0)
-            
-            print(f"  ✓ Extracted: {len(transcript):,} chars, {word_count:,} words")
-            
-            return {
-                'video_id': video_id,
-                'title': title,
-                'transcript': transcript,
-                'word_count': word_count,
-                'duration': video_data['duration']
-            }
         
         transcripts_data = []
         with ThreadPoolExecutor(max_workers=3) as executor:
@@ -5605,8 +5620,8 @@ def generate_tone_text_with_retry(transcripts_data, channel_title, subscriber_co
     if not anthropic_client:
         raise ValueError("Anthropic client not initialized. Set ANTHROPIC_API_KEY.")
     
-    transcripts_text = "\n\n---VIDEO SEPARATOR---\n\n".join([
-        f"VIDEO {i+1}: {t['title']}\nDURATION: {t['duration']//60}:{t['duration']%60:02d}\nWORD COUNT: {t['word_count']:,}\n\nTRANSCRIPT:\n{t['transcript']}"
+    transcripts_text = "\n\n".join([
+        f"<script{i+1}>\nVIDEO {i+1}: {t['title']}\nDURATION: {t['duration']//60}:{t['duration']%60:02d}\nWORD COUNT: {t['word_count']:,}\n\n{t['transcript']}\n</script{i+1}>"
         for i, t in enumerate(transcripts_data)
     ])
     
@@ -6665,3 +6680,5 @@ def internal_error(error):
 
 if __name__ == '__main__':
     app.run(debug=True, host='0.0.0.0', port=5000)
+
+

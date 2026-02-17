@@ -3744,14 +3744,15 @@ def chat_modify_script():
     user_id = request.remote_addr
     data = request.json
     user_message = data.get('message', '').strip()
-    current_script = data.get('script', '').strip()  # ✅ NEW: Get script from payload
+    current_script = data.get('script', '').strip()  # ✅ Get script from payload
     
     # Optional parameters - support both new text format and legacy dict
     tone_analyzer = data.get('tone_analysis') or data.get('tone_analyzer')
-    knowledge_base = data.get('knowledge_base', {  # ✅ NEW: Optional knowledge base
+    knowledge_base = data.get('knowledge_base', {  # ✅ Optional pre-summarized knowledge
         'inspiration': '',
         'documents': ''
     })
+    knowledge_base_raw = data.get('knowledge_base_raw')  # ✅ NEW: Raw URLs to process
     chat_session_id = data.get('chat_session_id')  # Optional for tracking
     
     # Validation
@@ -3770,7 +3771,292 @@ def chat_modify_script():
         print(f"Script length: {len(current_script):,} characters")
         print(f"Tone analyzer: {'✓ Provided' if tone_analyzer else '✗ Not provided'}")
         print(f"Knowledge base: {'✓ Provided' if (knowledge_base.get('inspiration') or knowledge_base.get('documents')) else '✗ Not provided'}")
+        print(f"Knowledge base raw: {'✓ Provided' if knowledge_base_raw else '✗ Not provided'}")
         print(f"{'='*80}\n")
+        
+        # ============================================
+        # Process knowledge_base_raw if provided
+        # Uses same flat structure as whole_script:
+        # youtube_urls, instagram_urls, facebook_urls,
+        # tiktok_urls, video_files, audio_files,
+        # documents, image_files, text_inputs
+        # ============================================
+        if knowledge_base_raw:
+            raw_transcripts = []  # For inspiration sources (videos/audio)
+            raw_doc_texts = []    # For document sources (docs/images/text)
+            safe_user_id = user_id.replace('.', '_').replace(':', '_')
+            
+            # --- YouTube URLs ---
+            kb_youtube = knowledge_base_raw.get('youtube_urls', [])
+            if kb_youtube and isinstance(kb_youtube, list):
+                print(f"\n[knowledge_base_raw] Processing {len(kb_youtube)} YouTube URLs...")
+                for i, url in enumerate(kb_youtube):
+                    if not (isinstance(url, str) and url.strip()):
+                        continue
+                    url = url.strip()
+                    try:
+                        print(f"  [{i+1}] YouTube: {url}")
+                        transcript = transcribe_youtube_with_transcript_api(url)
+                        if transcript and len(transcript) > 50:
+                            raw_transcripts.append(transcript)
+                            print(f"  ✓ Transcript: {len(transcript):,} chars")
+                        else:
+                            print(f"  ✗ Transcript too short or empty")
+                    except Exception as e:
+                        print(f"  ✗ Error: {str(e)}")
+            
+            # --- Instagram URLs ---
+            kb_instagram = knowledge_base_raw.get('instagram_urls', [])
+            if kb_instagram and isinstance(kb_instagram, list):
+                print(f"\n[knowledge_base_raw] Processing {len(kb_instagram)} Instagram URLs...")
+                for i, url in enumerate(kb_instagram):
+                    if not (isinstance(url, str) and url.strip()):
+                        continue
+                    url = url.strip()
+                    try:
+                        print(f"  [{i+1}] Instagram: {url}")
+                        result = instagram_processor.process_instagram_url(url)
+                        if result and not result.get('error') and result.get('transcript'):
+                            transcript = result['transcript']
+                            if len(transcript) > 50:
+                                raw_transcripts.append(transcript)
+                                print(f"  ✓ Transcript: {len(transcript):,} chars")
+                            else:
+                                print(f"  ✗ Transcript too short")
+                        else:
+                            print(f"  ✗ Error: {result.get('error', 'No transcript') if result else 'No result'}")
+                    except Exception as e:
+                        print(f"  ✗ Error: {str(e)}")
+            
+            # --- Facebook URLs ---
+            kb_facebook = knowledge_base_raw.get('facebook_urls', [])
+            if kb_facebook and isinstance(kb_facebook, list):
+                print(f"\n[knowledge_base_raw] Processing {len(kb_facebook)} Facebook URLs...")
+                for i, url in enumerate(kb_facebook):
+                    if not (isinstance(url, str) and url.strip()):
+                        continue
+                    url = url.strip()
+                    try:
+                        print(f"  [{i+1}] Facebook: {url}")
+                        result = facebook_processor.process_facebook_url(url)
+                        if result and not result.get('error') and result.get('transcript'):
+                            transcript = result['transcript']
+                            if len(transcript) > 50:
+                                raw_transcripts.append(transcript)
+                                print(f"  ✓ Transcript: {len(transcript):,} chars")
+                            else:
+                                print(f"  ✗ Transcript too short")
+                        else:
+                            print(f"  ✗ Error: {result.get('error', 'No transcript') if result else 'No result'}")
+                    except Exception as e:
+                        print(f"  ✗ Error: {str(e)}")
+            
+            # --- TikTok URLs (not yet supported) ---
+            kb_tiktok = knowledge_base_raw.get('tiktok_urls', [])
+            if kb_tiktok and isinstance(kb_tiktok, list) and len(kb_tiktok) > 0:
+                print(f"\n[knowledge_base_raw] TikTok: {len(kb_tiktok)} URLs skipped (not yet supported)")
+            
+            # --- Video Files (download URL → transcribe via Gemini) ---
+            kb_videos = knowledge_base_raw.get('video_files', [])
+            if kb_videos and isinstance(kb_videos, list):
+                print(f"\n[knowledge_base_raw] Processing {len(kb_videos)} video files...")
+                for i, video_url in enumerate(kb_videos):
+                    if not (isinstance(video_url, str) and video_url.strip()):
+                        continue
+                    video_url = video_url.strip()
+                    try:
+                        print(f"  [{i+1}] Video: {video_url[:80]}...")
+                        # Download the video
+                        response = requests.get(video_url, timeout=120)
+                        if response.status_code != 200:
+                            print(f"  ✗ Download failed: HTTP {response.status_code}")
+                            continue
+                        
+                        filename = video_url.split('/')[-1].split('?')[0] or f'video_{i+1}.mp4'
+                        temp_path = os.path.join(
+                            UPLOAD_FOLDER,
+                            f"temp_kb_{safe_user_id}_{int(time.time())}_{i}_{secure_filename(filename)}"
+                        )
+                        try:
+                            with open(temp_path, 'wb') as f:
+                                f.write(response.content)
+                            print(f"    Downloaded: {len(response.content):,} bytes")
+                            
+                            result = video_processor.process_local_video_via_api(temp_path, filename)
+                            if result and not result.get('error') and result.get('transcript'):
+                                transcript = result['transcript']
+                                if len(transcript) > 50:
+                                    raw_transcripts.append(transcript)
+                                    print(f"  ✓ Transcript: {len(transcript):,} chars")
+                                else:
+                                    print(f"  ✗ Transcript too short")
+                            else:
+                                print(f"  ✗ Error: {result.get('error', 'No transcript') if result else 'No result'}")
+                        finally:
+                            if os.path.exists(temp_path):
+                                try: os.remove(temp_path)
+                                except: pass
+                    except Exception as e:
+                        print(f"  ✗ Error: {str(e)}")
+            
+            # --- Audio Files (download URL → transcribe via Gemini) ---
+            kb_audio = knowledge_base_raw.get('audio_files', [])
+            if kb_audio and isinstance(kb_audio, list):
+                print(f"\n[knowledge_base_raw] Processing {len(kb_audio)} audio files...")
+                for i, audio_url in enumerate(kb_audio):
+                    if not (isinstance(audio_url, str) and audio_url.strip()):
+                        continue
+                    audio_url = audio_url.strip()
+                    try:
+                        print(f"  [{i+1}] Audio: {audio_url[:80]}...")
+                        response = requests.get(audio_url, timeout=120)
+                        if response.status_code != 200:
+                            print(f"  ✗ Download failed: HTTP {response.status_code}")
+                            continue
+                        
+                        filename = audio_url.split('/')[-1].split('?')[0] or f'audio_{i+1}.mp3'
+                        temp_path = os.path.join(
+                            UPLOAD_FOLDER,
+                            f"temp_kb_{safe_user_id}_{int(time.time())}_{i}_{secure_filename(filename)}"
+                        )
+                        try:
+                            with open(temp_path, 'wb') as f:
+                                f.write(response.content)
+                            print(f"    Downloaded: {len(response.content):,} bytes")
+                            
+                            result = audio_processor.process_audio_file(temp_path, filename)
+                            if result and not result.get('error') and result.get('transcript'):
+                                transcript = result['transcript']
+                                if len(transcript) > 50:
+                                    raw_transcripts.append(transcript)
+                                    print(f"  ✓ Transcript: {len(transcript):,} chars")
+                                else:
+                                    print(f"  ✗ Transcript too short")
+                            else:
+                                print(f"  ✗ Error: {result.get('error', 'No transcript') if result else 'No result'}")
+                        finally:
+                            if os.path.exists(temp_path):
+                                try: os.remove(temp_path)
+                                except: pass
+                    except Exception as e:
+                        print(f"  ✗ Error: {str(e)}")
+            
+            # --- Documents (download URL → extract text) ---
+            kb_docs = knowledge_base_raw.get('documents', [])
+            if kb_docs and isinstance(kb_docs, list):
+                print(f"\n[knowledge_base_raw] Processing {len(kb_docs)} documents...")
+                for i, doc_url in enumerate(kb_docs):
+                    if not (isinstance(doc_url, str) and doc_url.strip()):
+                        continue
+                    doc_url = doc_url.strip()
+                    try:
+                        print(f"  [{i+1}] Document: {doc_url[:80]}...")
+                        result = document_processor.process_document(doc_url)
+                        if result and result.get('text') and len(result['text']) > 20:
+                            raw_doc_texts.append(result['text'])
+                            print(f"  ✓ Extracted: {len(result['text']):,} chars")
+                        else:
+                            print(f"  ✗ No text extracted")
+                    except Exception as e:
+                        print(f"  ✗ Error: {str(e)}")
+            
+            # --- Image Files (URL → extract text via vision) ---
+            kb_images = knowledge_base_raw.get('image_files', [])
+            if kb_images and isinstance(kb_images, list):
+                print(f"\n[knowledge_base_raw] Processing {len(kb_images)} image files...")
+                for i, image_url in enumerate(kb_images):
+                    if not (isinstance(image_url, str) and image_url.strip()):
+                        continue
+                    image_url = image_url.strip()
+                    try:
+                        print(f"  [{i+1}] Image: {image_url[:80]}...")
+                        filename = image_url.split('/')[-1].split('?')[0] or f'image_{i+1}.jpg'
+                        result = image_processor.process_image_url(image_url, filename)
+                        if result and result.get('text') and len(result['text']) > 20:
+                            raw_doc_texts.append(result['text'])
+                            print(f"  ✓ Extracted: {len(result['text']):,} chars")
+                        else:
+                            print(f"  ✗ No text extracted")
+                    except Exception as e:
+                        print(f"  ✗ Error: {str(e)}")
+            
+            # --- Text Inputs (raw text) ---
+            kb_text = knowledge_base_raw.get('text_inputs', [])
+            if kb_text and isinstance(kb_text, list):
+                print(f"\n[knowledge_base_raw] Processing {len(kb_text)} text inputs...")
+                for i, text in enumerate(kb_text):
+                    if isinstance(text, str) and text.strip():
+                        raw_doc_texts.append(text.strip())
+                        print(f"  [{i+1}] Text: {len(text):,} chars")
+            
+            # === Extract knowledge from inspiration transcripts ===
+            if raw_transcripts:
+                print(f"\n[knowledge_base_raw] Extracting knowledge from {len(raw_transcripts)} inspiration sources...")
+                knowledge_prompt = f"""You are analyzing {len(raw_transcripts)} inspiration sources to extract KNOWLEDGE POINTS that can be used as reference material.
+
+**IMPORTANT: DO NOT analyze tone, style, or delivery. ONLY extract factual knowledge, insights, and information.**
+
+Extract and organize:
+1. **Key Topics & Themes**: Main subjects discussed
+2. **Facts & Statistics**: Concrete data points, numbers, trends
+3. **Insights & Perspectives**: Unique viewpoints or expert opinions
+4. **Examples & Case Studies**: Real-world illustrations mentioned
+5. **Actionable Tips**: Practical advice or strategies
+6. **Important Concepts**: Frameworks or methodologies explained
+
+TRANSCRIPTS:
+{chr(10).join([f'--- SOURCE {i+1} ---{chr(10)}{t}' for i, t in enumerate(raw_transcripts)])}
+
+Provide a structured knowledge summary without copying style or delivery."""
+
+                message = anthropic_client.messages.create(
+                    model="claude-sonnet-4-20250514",
+                    max_tokens=4000,
+                    temperature=0.3,
+                    messages=[{"role": "user", "content": knowledge_prompt}]
+                )
+                raw_inspiration_knowledge = message.content[0].text.strip()
+                print(f"  ✓ Inspiration knowledge extracted: {len(raw_inspiration_knowledge):,} chars")
+                
+                existing = knowledge_base.get('inspiration', '')
+                if existing:
+                    knowledge_base['inspiration'] = existing + "\n\n--- ADDITIONAL KNOWLEDGE ---\n\n" + raw_inspiration_knowledge
+                else:
+                    knowledge_base['inspiration'] = raw_inspiration_knowledge
+            
+            # === Extract knowledge from document texts ===
+            if raw_doc_texts:
+                print(f"\n[knowledge_base_raw] Extracting knowledge from {len(raw_doc_texts)} document sources...")
+                doc_prompt = f"""You are analyzing {len(raw_doc_texts)} documents/text inputs to extract FACTUAL KNOWLEDGE that can be used as reference material.
+
+**IMPORTANT: Extract only facts, data, and information - NOT writing style.**
+
+Focus on:
+1. **Core Facts & Data**: Key information and statistics
+2. **Technical Details**: Specific methodologies or processes
+3. **Expert Insights**: Authoritative perspectives
+4. **Important Concepts**: Key ideas and frameworks
+5. **Reference Material**: Information worth citing
+
+DOCUMENTS:
+{chr(10).join([f'--- DOCUMENT {i+1} ---{chr(10)}{t}' for i, t in enumerate(raw_doc_texts)])}
+
+Provide a structured knowledge summary focusing on factual content only."""
+
+                message = anthropic_client.messages.create(
+                    model="claude-sonnet-4-20250514",
+                    max_tokens=4000,
+                    temperature=0.3,
+                    messages=[{"role": "user", "content": doc_prompt}]
+                )
+                raw_doc_knowledge = message.content[0].text.strip()
+                print(f"  ✓ Document knowledge extracted: {len(raw_doc_knowledge):,} chars")
+                
+                existing = knowledge_base.get('documents', '')
+                if existing:
+                    knowledge_base['documents'] = existing + "\n\n--- ADDITIONAL KNOWLEDGE ---\n\n" + raw_doc_knowledge
+                else:
+                    knowledge_base['documents'] = raw_doc_knowledge
         
         # Call the modification method
         modification_response = script_generator.modify_script_chat(
@@ -3802,6 +4088,7 @@ def chat_modify_script():
             'response': modification_response,
             'user_message': user_message,
             'chat_session_id': chat_session_id,
+            'knowledge_base': knowledge_base,
             'timestamp': datetime.now().isoformat()
         })
         

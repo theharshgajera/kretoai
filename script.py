@@ -2662,10 +2662,13 @@ Write in 1-2 sentence paragraphs for maximum readability. Each paragraph = one c
             # PART 3: BUILD SIMPLE GENERATION PROMPT
             # ============================================
             
-            # Duration instruction
+            # Duration instruction with word count target
             if target_minutes:
-                duration_instruction = f"Target duration: {target_minutes} minutes."
+                target_words = int(float(target_minutes) * 140)  # ~140 words per minute
+                min_words = int(target_words * 0.9)  # 90% minimum
+                duration_instruction = f"Target duration: {target_minutes} minutes.\nRequired word count: {target_words} words (MINIMUM {min_words} words). At ~140 words per minute, a {target_minutes}-minute script needs at least {target_words} words. DO NOT write less than {min_words} words."
             else:
+                target_words = None
                 duration_instruction = ""
             
             # Build content section from knowledge
@@ -2758,8 +2761,20 @@ CRITICAL RULES:
 4. MAINTAIN AUTHENTICITY: Every transition, every example, every turn of phrase should feel natural to their voice.
 </content_requirements>
 
+<length_requirement>
+{f'CRITICAL LENGTH REQUIREMENT: This script MUST be at least {min_words} words (targeting {target_words} words for {target_minutes} minutes at ~140 words/minute). A short script is a FAILED script. Count your words - if you are under {min_words} words, you MUST expand with more detail, more examples, more depth.' if target_words else 'Write a comprehensive, in-depth script. Do not cut corners on length.'}
+</length_requirement>
+
 <output_format>
-Write the complete script now. 
+Write the complete script now with descriptive section headings.
+
+SECTION HEADINGS:
+- Add section headings using ## markdown format (e.g. ## Opening Hook) to label each major section of the script
+- Always add a blank line BEFORE and AFTER each heading so sections are visually separated
+- The headings should reflect the creator's NATURAL content structure from the tone analysis — NOT a fixed template
+- Use short, descriptive labels like ## Opening Hook, ## The Real Problem, ## Step 1: ..., ## Why This Matters, ## Quick CTA, etc.
+- Place headings wherever the creator naturally shifts topics or sections — some creators put CTAs in the middle, some use stories throughout, some jump straight to value
+- These headings are for the script user's reference to navigate the script — they are NOT spoken aloud
 
 Start with their typical opening pattern.
 Use their natural paragraph structure (refer to tone analysis).
@@ -3795,4 +3810,3 @@ __all__ = [
     'script_generator',
     'load_whisper_model'
 ]
-

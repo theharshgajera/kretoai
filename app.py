@@ -3693,6 +3693,10 @@ Provide a structured knowledge summary (400-600 words) focusing on factual conte
             'success': True,
             'script': script,
             'chat_session_id': chat_session_id,
+            'knowledge_base': {
+                'inspiration': inspiration_knowledge,
+                'documents': document_knowledge
+            },
             'stats': stats,
             'processed_content': {
                 'inspiration_sources': len(processed_inspiration),

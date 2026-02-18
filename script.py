@@ -2664,9 +2664,9 @@ Write in 1-2 sentence paragraphs for maximum readability. Each paragraph = one c
             
             # Duration instruction with word count target
             if target_minutes:
-                target_words = int(float(target_minutes) * 140)  # ~140 words per minute
+                target_words = int(float(target_minutes) * 180)  # ~180 words per minute
                 min_words = int(target_words * 0.9)  # 90% minimum
-                duration_instruction = f"Target duration: {target_minutes} minutes.\nRequired word count: {target_words} words (MINIMUM {min_words} words). At ~140 words per minute, a {target_minutes}-minute script needs at least {target_words} words. DO NOT write less than {min_words} words."
+                duration_instruction = f"Target duration: {target_minutes} minutes.\nRequired word count: {target_words} words (MINIMUM {min_words} words). At ~180 words per minute, a {target_minutes}-minute script needs at least {target_words} words. DO NOT write less than {min_words} words."
             else:
                 target_words = None
                 duration_instruction = ""
@@ -2762,7 +2762,7 @@ CRITICAL RULES:
 </content_requirements>
 
 <length_requirement>
-{f'CRITICAL LENGTH REQUIREMENT: This script MUST be at least {min_words} words (targeting {target_words} words for {target_minutes} minutes at ~140 words/minute). A short script is a FAILED script. Count your words - if you are under {min_words} words, you MUST expand with more detail, more examples, more depth.' if target_words else 'Write a comprehensive, in-depth script. Do not cut corners on length.'}
+{f'CRITICAL LENGTH REQUIREMENT: This script MUST be at least {min_words} words (targeting {target_words} words for {target_minutes} minutes at ~180 words/minute). A short script is a FAILED script. Count your words - if you are under {min_words} words, you MUST expand with more detail, more examples, more depth.' if target_words else 'Write a comprehensive, in-depth script. Do not cut corners on length.'}
 </length_requirement>
 
 <output_format>

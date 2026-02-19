@@ -5851,6 +5851,289 @@ def analyze_creator_tone():
         return jsonify({'error': f'An error occurred: {str(e)}'}), 500
 
 
+@app.route('/api/analyze_creator_tone_short', methods=['POST'])
+def analyze_creator_tone_short():
+    """
+    Analyze creator's tone and style from their SHORT-FORM channel videos.
+    Returns a detailed tone_analysis_short profile for short-form script generation.
+    
+    Same logic as analyze_creator_tone but:
+    - Filters for videos <= 3 minutes (short-form content)
+    - Uses a short-form-specific prompt
+    - Returns tone_analysis_short
+    """
+    user_id = request.remote_addr
+    
+    try:
+        data = request.get_json()
+        channel_input = data.get('channel_id', '').strip()
+        
+        if not channel_input:
+            return jsonify({'error': 'Channel ID, handle, or URL is required'}), 400
+        
+        print(f"\n{'='*60}")
+        print(f"SHORT-FORM TONE ANALYSIS START: Input '{channel_input}'")
+        print(f"{'='*60}\n")
+        
+        # Step 1: Resolve channel input to actual channel ID
+        youtube = build('youtube', 'v3', developerKey=YOUTUBE_API_KEY)
+        channel_id = resolve_channel_identifier(youtube, channel_input)
+        
+        if not channel_id:
+            return jsonify({
+                'error': 'Channel not found. Please check the channel ID, handle (@username), or URL and try again.'
+            }), 404
+        
+        print(f"Resolved to Channel ID: {channel_id}\n")
+        
+        # Step 2: Fetch channel details
+        channel_resp = youtube.channels().list(
+            part='snippet,statistics,contentDetails',
+            id=channel_id
+        ).execute()
+        
+        if not channel_resp.get('items'):
+            return jsonify({'error': 'Channel not found'}), 404
+        
+        channel_info = channel_resp['items'][0]
+        channel_title = channel_info['snippet']['title']
+        uploads_playlist = channel_info['contentDetails']['relatedPlaylists']['uploads']
+        subscriber_count = int(channel_info['statistics'].get('subscriberCount', 0))
+        total_videos = int(channel_info['statistics'].get('videoCount', 0))
+        
+        print(f"Channel: {channel_title}")
+        print(f"Subscribers: {format_number(subscriber_count)}")
+        print(f"Total Videos: {format_number(total_videos)}\n")
+        
+        # Step 3: Fetch up to 50 recent videos
+        all_video_ids = []
+        next_page_token = None
+        videos_to_fetch = min(50, total_videos)
+        
+        print(f"Fetching up to {videos_to_fetch} recent videos...\n")
+        
+        while len(all_video_ids) < videos_to_fetch:
+            playlist_resp = youtube.playlistItems().list(
+                part='contentDetails',
+                playlistId=uploads_playlist,
+                maxResults=min(50, videos_to_fetch - len(all_video_ids)),
+                pageToken=next_page_token
+            ).execute()
+            
+            batch_ids = [item['contentDetails']['videoId'] for item in playlist_resp.get('items', [])]
+            all_video_ids.extend(batch_ids)
+            
+            next_page_token = playlist_resp.get('nextPageToken')
+            if not next_page_token:
+                break
+        
+        if not all_video_ids:
+            return jsonify({'error': 'No videos found on this channel'}), 404
+        
+        print(f"Found {len(all_video_ids)} videos to analyze\n")
+        
+        # Step 4: Get video details (in batches of 50)
+        all_videos_data = []
+        for i in range(0, len(all_video_ids), 50):
+            batch_ids = all_video_ids[i:i+50]
+            videos_resp = youtube.videos().list(
+                part='snippet,statistics,contentDetails',
+                id=','.join(batch_ids)
+            ).execute()
+            all_videos_data.extend(videos_resp.get('items', []))
+        
+        # Step 5: Filter for SHORT-FORM videos (<= 3 minutes)
+        # Try descending max-duration thresholds to find enough shorts
+        duration_thresholds = [
+            (180, "≤3 minutes"),
+            (120, "≤2 minutes"),
+            (60, "≤1 minute"),
+        ]
+        
+        candidate_videos = None
+        used_threshold = None
+        
+        for max_duration, threshold_label in duration_thresholds:
+            candidate_videos = []
+            
+            for video in all_videos_data:
+                duration = parse_duration(video['contentDetails']['duration'])
+                views = int(video['statistics'].get('viewCount', 0))
+                
+                if duration <= max_duration and duration > 0:
+                    candidate_videos.append({
+                        'video_id': video['id'],
+                        'title': video['snippet']['title'],
+                        'views': views,
+                        'duration': duration
+                    })
+            
+            if len(candidate_videos) >= 3:
+                used_threshold = threshold_label
+                print(f"✓ Found {len(candidate_videos)} short-form videos with duration {threshold_label}")
+                break
+        
+        if not candidate_videos or len(candidate_videos) < 3:
+            return jsonify({
+                'error': f'Not enough short-form videos found. Need at least 3 videos under 3 minutes, found {len(candidate_videos) if candidate_videos else 0}.',
+                'videos_found': len(all_video_ids),
+                'suitable_videos': len(candidate_videos) if candidate_videos else 0
+            }), 404
+        
+        # Sort by views and take top 5
+        candidate_videos.sort(key=lambda x: x['views'], reverse=True)
+        top_videos = candidate_videos[:min(5, len(candidate_videos))]
+        
+        print(f"\nSelected {len(top_videos)} short-form videos for analysis ({used_threshold}):\n")
+        for i, video in enumerate(top_videos, 1):
+            minutes = video['duration'] // 60
+            seconds = video['duration'] % 60
+            print(f"{i}. {video['title'][:60]}...")
+            print(f"   Duration: {minutes}:{seconds:02d} | Views: {format_number(video['views'])}")
+        
+        # Step 6: Extract transcripts in parallel
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        
+        def extract_transcript(video_data):
+            video_id = video_data['video_id']
+            title = video_data['title']
+            youtube_url = f"https://www.youtube.com/watch?v={video_id}"
+            
+            print(f"\n[Transcript] Extracting via TranscriptAPI: {title[:50]}...")
+            
+            try:
+                transcript = transcribe_youtube_with_transcript_api(youtube_url)
+                
+                if not transcript or len(transcript) < 50:
+                    print(f"  ✗ Transcript too short or empty")
+                    return None
+                
+                word_count = len(transcript.split())
+                
+                print(f"  ✓ Extracted: {len(transcript):,} chars, {word_count:,} words")
+                
+                return {
+                    'video_id': video_id,
+                    'title': title,
+                    'transcript': transcript,
+                    'word_count': word_count,
+                    'duration': video_data['duration']
+                }
+            except Exception as e:
+                print(f"  ✗ TranscriptAPI Error: {e}")
+                return None
+        
+        transcripts_data = []
+        with ThreadPoolExecutor(max_workers=3) as executor:
+            futures = {executor.submit(extract_transcript, video): video for video in top_videos}
+            
+            for future in as_completed(futures):
+                result = future.result()
+                if result:
+                    transcripts_data.append(result)
+        
+        if len(transcripts_data) < 2:
+            return jsonify({
+                'error': f'Failed to extract enough transcripts. Got {len(transcripts_data)} out of {len(top_videos)}.',
+                'videos_attempted': len(top_videos),
+                'transcripts_extracted': len(transcripts_data)
+            }), 500
+        
+        print(f"\n{'='*60}")
+        print(f"Successfully extracted {len(transcripts_data)} short-form transcripts")
+        print(f"Total words analyzed: {sum(t['word_count'] for t in transcripts_data):,}")
+        print(f"{'='*60}\n")
+        
+        # Step 7: Generate short-form tone analysis as free-form text
+        print("Generating short-form tone analysis text with AI...\n")
+        
+        try:
+            tone_text = generate_tone_text_short_with_retry(
+                transcripts_data=transcripts_data,
+                channel_title=channel_title,
+                subscriber_count=subscriber_count
+            )
+            analysis_warning = None
+            
+        except Exception as e:
+            app.logger.error(f"Short-form tone analysis generation failed: {str(e)}")
+            print(f"[ERROR] Failed to generate short-form analysis: {e}")
+            
+            tone_text = create_fallback_tone_text_short(
+                channel_title=channel_title,
+                subscriber_count=subscriber_count,
+                videos_analyzed=len(transcripts_data)
+            )
+            analysis_warning = "AI analysis failed - using fallback text. Please try again for full analysis."
+            print(f"[FALLBACK] Using minimal short-form tone text")
+        
+        print(f"\n{'='*60}")
+        print(f"SHORT-FORM TONE ANALYSIS COMPLETE")
+        print(f"{'='*60}\n")
+        
+        # Save tone analysis as .txt file
+        output_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'output')
+        os.makedirs(output_dir, exist_ok=True)
+        
+        safe_channel_name = re.sub(r'[^\w\-]', '_', channel_title)[:50]
+        tone_filename = f"{safe_channel_name}_tone_short.txt"
+        tone_filepath = os.path.join(output_dir, tone_filename)
+        
+        with open(tone_filepath, 'w', encoding='utf-8') as f:
+            f.write(tone_text)
+        
+        print(f"✓ Short-form tone analysis saved to: {tone_filepath}")
+        print(f"  File size: {len(tone_text):,} characters")
+        
+        # Store for session
+        session_id = str(uuid.uuid4())
+        user_data[user_id]['tone_analyzers_short'] = user_data[user_id].get('tone_analyzers_short', {})
+        user_data[user_id]['tone_analyzers_short'][channel_id] = {
+            'tone_analysis_short': tone_text,
+            'channel_title': channel_title,
+            'videos_analyzed': len(transcripts_data),
+            'created_at': datetime.now().isoformat(),
+            'session_id': session_id,
+            'tone_file': tone_filepath
+        }
+        
+        response_data = {
+            'success': True,
+            'channel_id': channel_id,
+            'channel_title': channel_title,
+            'subscriber_count': subscriber_count,
+            'videos_analyzed': len(transcripts_data),
+            'video_titles': [t['title'] for t in transcripts_data],
+            'tone_analysis_short': tone_text,
+            'tone_file': tone_filename,
+            'session_id': session_id,
+            'summary': {
+                'preview': tone_text[:500] + '...' if len(tone_text) > 500 else tone_text,
+                'total_characters': len(tone_text)
+            },
+            'metadata': {
+                'total_videos_checked': len(all_video_ids),
+                'suitable_videos_found': len(candidate_videos),
+                'duration_threshold_used': used_threshold,
+                'transcripts_extracted': len(transcripts_data)
+            }
+        }
+        
+        if analysis_warning:
+            response_data['warning'] = analysis_warning
+        
+        return jsonify(response_data)
+        
+    except HttpError as e:
+        app.logger.error(f"YouTube API error: {str(e)}")
+        return jsonify({'error': f'YouTube API error: {str(e)}'}), 503
+    except Exception as e:
+        app.logger.error(f"Short-form tone analysis error: {str(e)}")
+        import traceback
+        print(traceback.format_exc())
+        return jsonify({'error': f'An error occurred: {str(e)}'}), 500
+
+
 # ============================================================================
 # HELPER FUNCTIONS - Add these to your Flask app
 # ============================================================================
@@ -6169,6 +6452,227 @@ Please retry the analysis to get a detailed style guide for this creator.
 
 Default guidelines: Use a professional, engaging, and conversational YouTube tone.
 Be clear, direct, and accessible. Maintain moderate energy and enthusiasm."""
+
+
+def generate_tone_text_short_with_retry(transcripts_data, channel_title, subscriber_count):
+    """Generate SHORT-FORM tone analysis text using Claude.
+    
+    Returns a plain text string describing the creator's short-form tone, hooks,
+    pacing, engagement tactics, common phrases, and short-form content patterns.
+    """
+    
+    global anthropic_client
+    
+    if not anthropic_client:
+        raise ValueError("Anthropic client not initialized. Set ANTHROPIC_API_KEY.")
+    
+    transcripts_text = "\n\n".join([
+        f"<short{i+1}>\nSHORT {i+1}: {t['title']}\nDURATION: {t['duration']//60}:{t['duration']%60:02d}\nWORD COUNT: {t['word_count']:,}\n\n{t['transcript']}\n</short{i+1}>"
+        for i, t in enumerate(transcripts_data)
+    ])
+    
+    prompt = f"""You are an expert short-form content analyst. Analyze these SHORT-FORM video transcripts to create a COMPREHENSIVE short-form style DNA for "{channel_title}".
+
+These are SHORT videos (under 3 minutes — Shorts, Reels, TikTok-style content). Your analysis must focus on SHORT-FORM specific patterns.
+
+Your goal: Extract enough detail that an AI could REPLICATE this creator's exact short-form voice, not just describe it.
+
+## 1. HOOK & OPENING PATTERNS (CRITICAL FOR SHORTS)
+
+**First 3 Seconds:**
+- Extract ALL opening lines verbatim (these are the hooks)
+- Hook type classification: [Question / Bold claim / Controversy / Pattern interrupt / Curiosity gap / Direct address / Story tease]
+- Average hook word count
+- Does hook match the payoff?
+
+**Opening Energy:**
+- Energy level in first 3 seconds vs rest of video
+- Pace: [Rapid-fire / Measured / Building]
+- Attention-grab technique: [Visual / Verbal / Both]
+
+## 2. SHORT-FORM SPEAKING PATTERNS
+
+**Delivery Style:**
+- Speed: [Fast / Medium / Slow] (estimate WPM if possible)
+- Sentence length: [Ultra-short <5 words / Short 5-10 / Mixed]
+- Pauses: [None / Strategic / Frequent]
+- Energy consistency: [Constant high / Builds / Drops / Varies]
+
+**Verbal Density:**
+- Filler words: frequency (lower = more scripted)
+- Word economy: [Every word counts / Some filler / Conversational]
+- Repetition for emphasis: examples
+
+**Top 10 Most Repeated Phrases:**
+- Count exact frequency (e.g., "Here's the thing" - 8 times)
+- Include variations
+- Note if phrase is used as hook, transition, or closer
+
+## 3. CONTENT STRUCTURE (SHORT-FORM SPECIFIC)
+
+**Formula/Framework:**
+- Identify their short-form structure pattern
+- Example: Hook → Problem → Solution → CTA (all in 60 sec)
+- Example: Hook → 3 Quick Tips → Closer
+- How consistent is this formula across videos?
+
+**Pacing & Information Density:**
+- How many key points per video?
+- Time allocation: Hook ___% | Body ___% | Closer ___%
+- Do they use timestamps/chapters or just flow?
+- Scene/cut frequency (if mentioned in transcript)
+
+**Transition Techniques:**
+- Between points: [Number-based / Verbal bridges / Jump cuts implied / None]
+- Extract actual transition phrases used
+
+## 4. ENGAGEMENT & RETENTION TACTICS
+
+**Retention Hooks (mid-video):**
+- "Wait for it" / "But here's the crazy part" type phrases
+- Open loops: starting a thought, delaying the payoff
+- Pattern interrupts mid-video
+
+**Viewer Address:**
+- "You" frequency (critical in shorts)
+- Direct commands: "Do this" / "Try this" / "Stop doing X"
+- Questions posed to viewer
+
+**CTA Patterns:**
+- End CTA type: [Follow / Like / Comment / Save / Share / None]
+- CTA phrasing (extract examples)
+- Embedded CTAs vs end-only
+
+## 5. PERSONALITY MARKERS (SHORT-FORM)
+
+**Tone Spectrum:**
+- Casual ←→ Professional (1-10 scale)
+- Friendly ←→ Authoritative (1-10)
+- Humble ←→ Confident (1-10)
+- Serious ←→ Entertaining (1-10)
+
+**Language Choices:**
+- Profanity: None / Mild / Frequent
+- Slang/internet language frequency
+- Jargon level: [None / Light / Heavy]
+- Vocabulary: [Simple / Mixed / Advanced]
+
+**Credibility Building (compressed format):**
+- How do they establish authority in <3 minutes?
+- Specific numbers/stats usage
+- "I tested this" / "I've done X" claims
+
+## 6. VERBAL FINGERPRINT (SHORT-FORM)
+
+**Sentence Starters (rank top 10):**
+1. [Exact phrase] - [count] - [usage: hook/transition/emphasis]
+
+**Grammar Signature:**
+- Fragment usage (very common in shorts)
+- Imperative sentences frequency ("Do this", "Try that")
+- Question frequency and type
+- Incomplete thoughts / cliffhangers
+
+**Unique Verbal Signatures:**
+- Catchphrases or coined terms
+- Signature ways of framing tips/advice
+- Unique rhetorical devices
+- Recurring themes or warnings
+
+## 7. SHORT-FORM CONTENT MOVES
+
+**Number Usage:**
+- Lists in titles: "3 ways" / "5 tips" pattern?
+- Specific stats in content
+- Time pressure: "in 30 seconds" / "under a minute"
+
+**Contrast Techniques:**
+- Before vs after
+- "Most people do X, instead do Y"
+- "Stop doing X, start doing Y"
+- Myth-busting frequency
+
+**Urgency & Scarcity:**
+- "You need to know this" type phrases
+- FOMO triggers
+- Time-sensitivity language
+
+## 8. FORMATTING & PACING PREFERENCES
+
+**Visual Structure (as reflected in speech):**
+- Sentence length (ultra-short for shorts?)
+- Paragraph/thought block length
+- Use of ALL CAPS emphasis
+- Bullet-point style delivery
+
+**Pacing Devices:**
+- Rapid-fire lists
+- Dramatic pauses (rare in shorts but notable)
+- Speed changes for emphasis
+- One-word/two-word sentences for punch
+
+---
+
+**CRITICAL OUTPUT REQUIREMENTS:**
+
+1. **Include actual quotes** - not just descriptions
+2. **Count everything** - give specific numbers
+3. **Focus on SHORT-FORM patterns** - not long-form habits
+4. **Emphasize hooks and closers** - these make or break shorts
+5. **Rate on scales** - give numeric assessments
+6. **Extract what's UNIQUE** - what makes THIS creator's shorts different
+
+Your analysis should be SO detailed that someone could:
+- Write short-form scripts in their voice
+- Craft hooks the same way
+- Match the same energy, pacing, and structure
+- Use the same verbal patterns in under 3 minutes
+
+Transcripts:
+{transcripts_text}"""
+    
+    max_attempts = 3
+    for attempt in range(1, max_attempts + 1):
+        print(f"[Claude - Short-Form Tone] Attempt {attempt}/{max_attempts}...")
+        
+        try:
+            message = anthropic_client.messages.create(
+                model="claude-sonnet-4-20250514",
+                max_tokens=8000,
+                temperature=0.3,
+                messages=[{"role": "user", "content": prompt}]
+            )
+            
+            raw_text = message.content[0].text.strip()
+            print(f"[Claude - Short-Form Tone] Response length: {len(raw_text):,} chars")
+            
+            if len(raw_text) < 200:
+                raise ValueError(f"Response too short ({len(raw_text)} chars), retrying...")
+            
+            print(f"[Claude - Short-Form Tone] ✓ Successfully generated short-form tone analysis!")
+            return raw_text
+            
+        except Exception as e:
+            print(f"[Claude - Short-Form Tone] Attempt {attempt} failed: {e}")
+            if attempt < max_attempts:
+                import time
+                time.sleep(2)
+    
+    raise ValueError("Failed to generate short-form tone analysis after all attempts")
+
+
+def create_fallback_tone_text_short(channel_title, subscriber_count, videos_analyzed):
+    """Minimal fallback text when short-form AI analysis fails"""
+    return f"""SHORT-FORM TONE ANALYSIS FOR: {channel_title}
+Subscribers: {subscriber_count:,}
+Short-Form Videos Analyzed: {videos_analyzed}
+
+Note: The AI-powered short-form tone analysis failed to generate. This is a fallback placeholder.
+Please retry the analysis to get a detailed short-form style guide for this creator.
+
+Default guidelines: Use a punchy, fast-paced, and engaging short-form tone.
+Hook viewers in the first 3 seconds. Keep sentences short and impactful.
+Use direct address (\"you\") frequently. End with a clear CTA."""
 
 
 def resolve_channel_identifier(youtube, identifier):
@@ -6971,4 +7475,3 @@ def internal_error(error):
 
 if __name__ == '__main__':
     app.run(debug=True, host='0.0.0.0', port=5000)
-

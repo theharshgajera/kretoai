@@ -1857,12 +1857,12 @@ def comp_analysis():
         uploads_playlist = channel_info["contentDetails"]["relatedPlaylists"]["uploads"]
 
         # -----------------------------------------------------------
-        # 2. FETCH LAST 10 UPLOADS → FILTER MEDIUM/LONG
+        # 2. FETCH LAST 20 UPLOADS → FILTER MEDIUM/LONG
         # -----------------------------------------------------------
         videos_resp = youtube.playlistItems().list(
             part="contentDetails,snippet",
             playlistId=uploads_playlist,
-            maxResults=10
+            maxResults=20
         ).execute()
 
         candidate_videos = []
@@ -1899,8 +1899,7 @@ def comp_analysis():
                 q=video["title"],
                 type="video",
                 maxResults=50,
-                relevanceLanguage="en",
-                videoDuration="medium"
+                relevanceLanguage="en"
             ).execute()
 
             for item in search_resp.get("items", []):
@@ -1937,8 +1936,90 @@ def comp_analysis():
                     "count": comp_data["count"],
                     "subs": comp_subs
                 }
+                
+        # -----------------------------------------------------------
+        # 4.5. CLAUDE AI RELEVANCE FILTERING
+        # -----------------------------------------------------------
+        if valid_competitors:
+            try:
+                import json
+                
+                # We need anthropic initialized
+                if 'anthropic_client' not in locals():
+                    from anthropic import Anthropic
+                    import os
+                    anthropic_client = Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+                
+                print(f"Sending {len(valid_competitors)} candidate competitors to Claude for relevance filtering...")
+                
+                # Build the list of competitors to evaluate
+                candidates_list = []
+                for cid, data in valid_competitors.items():
+                    candidates_list.append(f"ID: {cid} | Title: {data['title']}")
+                candidates_text = "\n".join(candidates_list)
+                
+                system_prompt = """You are an expert YouTube niche analyst.
+Your job is to review a list of potential competitor channels and filter out any that are clearly irrelevant or in completely different niches than the target channel.
 
-        # Sort only after filtering
+CRITICAL INSTRUCTIONS:
+- Be MODERATELY forgiving. Do not be overly strict. We want to keep around 50 strong candidates.
+- If a channel covers topics that are tangentially related, broadly similar, or appeal to a similar audience demographic, KEEP it.
+- Only REMOVE channels that are in a completely unrelated niche (e.g. if the target is a programming channel, remove a makeup tutorial channel. But keep a general tech or gaming channel).
+- You must output ONLY a raw JSON array of strings, where each string is the exact 'ID' of a channel you have approved. Nothing else.
+
+Example Output:
+["UC123abc...", "UC987xyz..."]
+"""
+                
+                user_prompt = f"""Target Channel Name: '{channel_title}'
+
+Here is the list of potential competitor channels found via search associations. 
+Please return ONLY a JSON array containing the exact IDs of the channels that are at least moderately relevant to the target channel's assumed niche.
+
+Candidate Channels:
+{candidates_text}"""
+                
+                message = anthropic_client.messages.create(
+                    model="claude-sonnet-4-20250514",
+                    max_tokens=2000,
+                    temperature=0.1,
+                    system=system_prompt,
+                    messages=[{"role": "user", "content": user_prompt}]
+                )
+                
+                # Parse the JSON array response
+                ai_response_text = message.content[0].text.strip()
+                
+                # Cleanup potential formatting
+                if ai_response_text.startswith("```json"):
+                    ai_response_text = ai_response_text[7:]
+                if ai_response_text.startswith("```"):
+                    ai_response_text = ai_response_text[3:]
+                if ai_response_text.endswith("```"):
+                    ai_response_text = ai_response_text[:-3]
+                ai_response_text = ai_response_text.strip()
+                
+                approved_ids = json.loads(ai_response_text)
+                
+                # Fallback safeguard: If it returned an empty list or failed badly, we just keep all of them
+                if isinstance(approved_ids, list) and len(approved_ids) > 0:
+                    print(f"Claude filtered list from {len(valid_competitors)} down to {len(approved_ids)} relevant competitors.")
+                    
+                    # Intersect valid competitors
+                    filtered_competitors = {}
+                    for cid in approved_ids:
+                        if cid in valid_competitors:
+                            filtered_competitors[cid] = valid_competitors[cid]
+                    
+                    # Update our working dictionary with the pruned version
+                    valid_competitors = filtered_competitors
+                else:
+                    print("Claude returned an empty list or invalid format. Bypassing filter to preserve candidates.")
+                    
+            except Exception as ai_e:
+                print(f"⚠️ AI Filtering Warning: Failed to filter via Claude. Proceeding with all {len(valid_competitors)} valid candidates. Error: {str(ai_e)}")
+
+        # Sort only after all filtering forms are done
         competitors = sorted(
             valid_competitors.items(),
             key=lambda kv: kv[1]["count"],

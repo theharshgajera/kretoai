@@ -7076,6 +7076,7 @@ def process_video():
     """
     UNIVERSAL MEDIA PROCESSOR: Process ANY media type and answer questions
     Uses dedicated extractors for FULL content (not summaries)
+    Now supports MULTIPLE sources aggregated together.
     """
     try:
         start_time = time.time()
@@ -7084,30 +7085,76 @@ def process_video():
         # Parse request
         content_type = request.content_type or ''
         
+        prompt = ""
+        sources_to_process = []
+        
         if 'application/json' in content_type:
             data = request.json or {}
             prompt = data.get('prompt', '').strip()
-            source_type = data.get('source_type', '').strip()
-            source_url = data.get('source_url', '').strip()
-            source_data = data.get('source_data')
-            source_filename = data.get('source_filename', 'file')
-            text_content = data.get('text_content', '').strip()
             
+            # 1. Direct 'sources' array
+            if 'sources' in data and isinstance(data['sources'], list):
+                sources_to_process.extend(data['sources'])
+                
+            # 2. Flat lists (like whole_script)
+            for url in data.get('youtube_urls', []):
+                if url and isinstance(url, str): sources_to_process.append({'source_type': 'youtube', 'source_url': url.strip()})
+            for url in data.get('instagram_urls', []):
+                if url and isinstance(url, str): sources_to_process.append({'source_type': 'instagram', 'source_url': url.strip()})
+            for url in data.get('facebook_urls', []):
+                if url and isinstance(url, str): sources_to_process.append({'source_type': 'facebook', 'source_url': url.strip()})
+            for url in data.get('tiktok_urls', []):
+                if url and isinstance(url, str): sources_to_process.append({'source_type': 'tiktok', 'source_url': url.strip()})
+            for url in data.get('video_files', []):
+                if url and isinstance(url, str): sources_to_process.append({'source_type': 'local_video', 'source_url': url.strip()})
+            for url in data.get('audio_files', []):
+                if url and isinstance(url, str): sources_to_process.append({'source_type': 'audio', 'source_url': url.strip()})
+            for url in data.get('image_files', []):
+                if url and isinstance(url, str): sources_to_process.append({'source_type': 'image', 'source_url': url.strip()})
+            for url in data.get('documents', []):
+                if url and isinstance(url, str): sources_to_process.append({'source_type': 'document', 'source_url': url.strip()})
+            
+            text_inputs_data = data.get('text_inputs')
+            if text_inputs_data:
+                if isinstance(text_inputs_data, list):
+                    for item in text_inputs_data:
+                        if isinstance(item, dict) and item.get('content'):
+                            sources_to_process.append({'source_type': 'text', 'text_content': item['content'].strip()})
+                        elif isinstance(item, str):
+                            sources_to_process.append({'source_type': 'text', 'text_content': item.strip()})
+                elif isinstance(text_inputs_data, str):
+                    sources_to_process.append({'source_type': 'text', 'text_content': text_inputs_data.strip()})
+
+            # 3. Legacy single source inputs
+            if not sources_to_process and data.get('source_type'):
+                sources_to_process.append({
+                    'source_type': data.get('source_type', '').strip(),
+                    'source_url': data.get('source_url', '').strip(),
+                    'source_data': data.get('source_data'),
+                    'source_filename': data.get('source_filename', 'file'),
+                    'text_content': data.get('text_content', '').strip()
+                })
+                
         elif 'multipart/form-data' in content_type:
             prompt = request.form.get('prompt', '').strip()
+            
+            # For multipart, we only support a single source cleanly right now (legacy support)
             source_type = request.form.get('source_type', '').strip()
-            source_url = request.form.get('source_url', '').strip()
-            text_content = request.form.get('text_content', '').strip()
-            
-            uploaded_file = request.files.get('file')
-            source_data = None
-            source_filename = 'file'
-            
-            if uploaded_file and uploaded_file.filename:
-                source_filename = secure_filename(uploaded_file.filename)
-                import base64
-                file_bytes = uploaded_file.read()
-                source_data = base64.b64encode(file_bytes).decode('utf-8')
+            if source_type:
+                source_dict = {
+                    'source_type': source_type,
+                    'source_url': request.form.get('source_url', '').strip(),
+                    'text_content': request.form.get('text_content', '').strip()
+                }
+                
+                uploaded_file = request.files.get('file')
+                if uploaded_file and uploaded_file.filename:
+                    source_dict['source_filename'] = secure_filename(uploaded_file.filename)
+                    import base64
+                    file_bytes = uploaded_file.read()
+                    source_dict['source_data'] = base64.b64encode(file_bytes).decode('utf-8')
+                
+                sources_to_process.append(source_dict)
         else:
             return jsonify({"error": "Unsupported content type"}), 415
         
@@ -7115,192 +7162,199 @@ def process_video():
         if not prompt:
             return jsonify({"error": "prompt is required"}), 400
         
-        if not source_type:
-            return jsonify({"error": "source_type is required"}), 400
+        if not sources_to_process:
+            return jsonify({"error": "At least one source must be provided"}), 400
         
         print(f"\n{'='*80}")
-        print(f"UNIVERSAL MEDIA PROCESSING: {source_type}")
+        print(f"UNIVERSAL MEDIA PROCESSING: {len(sources_to_process)} sources provided")
         print(f"{'='*80}")
         print(f"Prompt: {prompt[:100]}...")
         print(f"{'='*80}\n")
         
         # ========================================
-        # EXTRACT CONTENT USING DEDICATED EXTRACTORS
+        # PROCESSING ALL SOURCES
         # ========================================
         
-        content = None
-        method = None
-        error = None
-        source_info = None
+        extracted_results = []
+        errors = []
+        stats_list = []
         
-        # YOUTUBE
-        if source_type == 'youtube':
-            if not source_url:
-                return jsonify({"error": "source_url required for YouTube"}), 400
+        for idx, source in enumerate(sources_to_process):
+            source_type = source.get('source_type', '')
+            source_url = source.get('source_url', '')
+            source_data = source.get('source_data')
+            source_filename = source.get('source_filename', f'file_{idx}')
+            text_content = source.get('text_content', '')
             
-            content, method, error = universal_extractor.extract_youtube_transcript(source_url)
-            source_info = source_url
-        
-        # INSTAGRAM
-        elif source_type == 'instagram':
-            if not source_url:
-                return jsonify({"error": "source_url required for Instagram"}), 400
+            content = None
+            method = None
+            error = None
+            source_info = None
             
-            content, method, error = universal_extractor.extract_instagram_content(source_url)
-            source_info = source_url
-        
-        # FACEBOOK
-        elif source_type == 'facebook':
-            if not source_url:
-                return jsonify({"error": "source_url required for Facebook"}), 400
+            print(f"Processing Source {idx+1}/{len(sources_to_process)}: [{source_type}]")
             
-            content, method, error = universal_extractor.extract_facebook_content(source_url)
-            source_info = source_url
-        
-        # LOCAL VIDEO
-        elif source_type == 'local_video':
-            safe_user_id = user_id.replace('.', '_').replace(':', '_')
-            temp_video_path = None
-            
-            try:
-                # Download from URL if provided
-                if source_url:
-                    temp_video_path = os.path.join(
-                        UPLOAD_FOLDER,
-                        f"temp_{safe_user_id}_{int(time.time())}_downloaded.mp4"
-                    )
-                    
-                    success, dl_error = download_file_from_url(source_url, temp_video_path)
-                    if not success:
-                        return jsonify({"error": f"Video download failed: {dl_error}"}), 500
-                    
-                    source_info = os.path.basename(source_url.split('?')[0])
-                
-                # Use base64 data if provided
-                elif source_data:
-                    temp_video_path = os.path.join(
-                        UPLOAD_FOLDER,
-                        f"temp_{safe_user_id}_{int(time.time())}_{source_filename}"
-                    )
-                    
-                    import base64
-                    video_bytes = base64.b64decode(source_data)
-                    with open(temp_video_path, 'wb') as f:
-                        f.write(video_bytes)
-                    
-                    source_info = source_filename
+            # YOUTUBE
+            if source_type == 'youtube':
+                if not source_url:
+                    error = "source_url required for YouTube"
                 else:
-                    return jsonify({"error": "Either source_url or source_data required for local video"}), 400
-                
-                # Process video
-                content, method, error = universal_extractor.extract_local_video_content(temp_video_path)
-                
-            finally:
-                # Always cleanup temp file
-                if temp_video_path and os.path.exists(temp_video_path):
-                    try:
-                        os.remove(temp_video_path)
-                    except:
-                        pass
+                    content, method, error = universal_extractor.extract_youtube_transcript(source_url)
+                    source_info = source_url
+            
+            # INSTAGRAM
+            elif source_type == 'instagram':
+                if not source_url:
+                    error = "source_url required for Instagram"
+                else:
+                    content, method, error = universal_extractor.extract_instagram_content(source_url)
+                    source_info = source_url
+            
+            # FACEBOOK
+            elif source_type == 'facebook':
+                if not source_url:
+                    error = "source_url required for Facebook"
+                else:
+                    content, method, error = universal_extractor.extract_facebook_content(source_url)
+                    source_info = source_url
+            
+            # TIKTOK (assuming you add tiktok extractor eventually, or fallback)
+            elif source_type == 'tiktok':
+                 error = "TikTok extraction not yet supported in universal extractor."
+                 source_info = source_url
 
-        # AUDIO
-        elif source_type == 'audio':
-            safe_user_id = user_id.replace('.', '_').replace(':', '_')
-            temp_audio_path = None
-            
-            try:
-                # Download from URL if provided
-                if source_url:
-                    temp_audio_path = os.path.join(
-                        UPLOAD_FOLDER,
-                        f"temp_{safe_user_id}_{int(time.time())}_downloaded.mp3"
-                    )
-                    
-                    success, dl_error = download_file_from_url(source_url, temp_audio_path)
-                    if not success:
-                        return jsonify({"error": f"Audio download failed: {dl_error}"}), 500
-                    
-                    source_info = os.path.basename(source_url.split('?')[0])
+            # LOCAL VIDEO
+            elif source_type == 'local_video':
+                safe_user_id = user_id.replace('.', '_').replace(':', '_')
+                temp_video_path = None
                 
-                # Use base64 data if provided
-                elif source_data:
-                    temp_audio_path = os.path.join(
-                        UPLOAD_FOLDER,
-                        f"temp_{safe_user_id}_{int(time.time())}_{source_filename}"
-                    )
-                    
-                    import base64
-                    audio_bytes = base64.b64decode(source_data)
-                    with open(temp_audio_path, 'wb') as f:
-                        f.write(audio_bytes)
-                    
-                    source_info = source_filename
+                try:
+                    if source_url:
+                        temp_video_path = os.path.join(UPLOAD_FOLDER, f"temp_{safe_user_id}_{int(time.time())}_{idx}_downloaded.mp4")
+                        success, dl_error = download_file_from_url(source_url, temp_video_path)
+                        if not success:
+                            error = f"Video download failed: {dl_error}"
+                        else:
+                            source_info = os.path.basename(source_url.split('?')[0])
+                            content, method, error = universal_extractor.extract_local_video_content(temp_video_path)
+                    elif source_data:
+                        temp_video_path = os.path.join(UPLOAD_FOLDER, f"temp_{safe_user_id}_{int(time.time())}_{idx}_{source_filename}")
+                        import base64
+                        video_bytes = base64.b64decode(source_data)
+                        with open(temp_video_path, 'wb') as f:
+                            f.write(video_bytes)
+                        source_info = source_filename
+                        content, method, error = universal_extractor.extract_local_video_content(temp_video_path)
+                    else:
+                        error = "Either source_url or source_data required for local video"
+                finally:
+                    if temp_video_path and os.path.exists(temp_video_path):
+                        try: os.remove(temp_video_path)
+                        except: pass
+
+            # AUDIO
+            elif source_type == 'audio':
+                safe_user_id = user_id.replace('.', '_').replace(':', '_')
+                temp_audio_path = None
+                
+                try:
+                    if source_url:
+                        temp_audio_path = os.path.join(UPLOAD_FOLDER, f"temp_{safe_user_id}_{int(time.time())}_{idx}_downloaded.mp3")
+                        success, dl_error = download_file_from_url(source_url, temp_audio_path)
+                        if not success:
+                            error = f"Audio download failed: {dl_error}"
+                        else:
+                            source_info = os.path.basename(source_url.split('?')[0])
+                            content, method, error = universal_extractor.extract_audio_transcript(temp_audio_path)
+                    elif source_data:
+                        temp_audio_path = os.path.join(UPLOAD_FOLDER, f"temp_{safe_user_id}_{int(time.time())}_{idx}_{source_filename}")
+                        import base64
+                        audio_bytes = base64.b64decode(source_data)
+                        with open(temp_audio_path, 'wb') as f:
+                            f.write(audio_bytes)
+                        source_info = source_filename
+                        content, method, error = universal_extractor.extract_audio_transcript(temp_audio_path)
+                    else:
+                        error = "Either source_url or source_data required for audio"
+                finally:
+                    if temp_audio_path and os.path.exists(temp_audio_path):
+                        try: os.remove(temp_audio_path)
+                        except: pass
+
+            # DOCUMENT
+            elif source_type == 'document':
+                if not source_url:
+                    error = "source_url required for document"
                 else:
-                    return jsonify({"error": "Either source_url or source_data required for audio"}), 400
-                
-                # Process audio
-                content, method, error = universal_extractor.extract_audio_transcript(temp_audio_path)
-                
-            finally:
-                # Always cleanup temp file
-                if temp_audio_path and os.path.exists(temp_audio_path):
-                    try:
-                        os.remove(temp_audio_path)
-                    except:
-                        pass
-        # DOCUMENT
-        elif source_type == 'document':
-            if not source_url:
-                return jsonify({"error": "source_url required for document"}), 400
+                    content, method, error = universal_extractor.extract_document_text(source_url)
+                    source_info = os.path.basename(source_url.split('?')[0])
             
-            content, method, error = universal_extractor.extract_document_text(source_url)
-            source_info = os.path.basename(source_url.split('?')[0])
-        
-        # IMAGE
-        elif source_type == 'image':
-            if not source_url:
-                return jsonify({"error": "source_url required for image"}), 400
+            # IMAGE
+            elif source_type == 'image':
+                if not source_url:
+                    error = "source_url required for image"
+                else:
+                    content, method, error = universal_extractor.extract_image_content(source_url)
+                    source_info = os.path.basename(source_url.split('?')[0])
             
-            content, method, error = universal_extractor.extract_image_content(source_url)
-            source_info = os.path.basename(source_url.split('?')[0])
-        
-        # TEXT
-        elif source_type == 'text':
-            if not text_content:
-                return jsonify({"error": "text_content required for text input"}), 400
+            # TEXT
+            elif source_type == 'text':
+                if not text_content:
+                    error = "text_content required for text input"
+                else:
+                    content, method, error = universal_extractor.extract_text_content(text_content)
+                    source_info = 'text_input'
             
-            content, method, error = universal_extractor.extract_text_content(text_content)
-            source_info = 'text_input'
+            # UNKNOWN
+            else:
+                error = f"Unsupported source_type: {source_type}"
+            
+            if error:
+                errors.append(f"Source {idx+1} ({source_type}): {error}")
+            elif content:
+                content_str = str(content)
+                extracted_results.append({
+                    'index': idx + 1,
+                    'type': str(source_type),
+                    'info': str(source_info) if source_info else f"Source {idx+1}",
+                    'content': content_str,
+                    'method': str(method) if method else "unknown"
+                })
+                stats_list.append({
+                    "source_type": source_type,
+                    "extraction_method": method,
+                    "content_char_count": len(content_str),
+                    "content_word_count": len(content_str.split())
+                })
         
-        # UNKNOWN
-        else:
+        # Check if we got any successful extractions
+        if not extracted_results:
             return jsonify({
-                "error": f"Unsupported source_type: {source_type}",
-                "supported_types": ["youtube", "instagram", "facebook", "local_video", "audio", "document", "image", "text"]
-            }), 400
-        
-        # Check for extraction errors
-        if error:
-            return jsonify({"error": error}), 500
-        
-        if not content:
-            return jsonify({"error": "Failed to extract content from source"}), 500
-        
+                "error": "Failed to extract content from any source",
+                "details": errors
+            }), 500
+            
         print(f"\n{'='*60}")
-        print(f"✓ CONTENT EXTRACTED")
-        print(f"{'='*60}")
-        print(f"Length: {len(content):,} chars")
-        print(f"Method: {method}")
+        print(f"✓ SUCCESSFULLY EXTRACTED {len(extracted_results)}/{len(sources_to_process)} SOURCES")
         print(f"{'='*60}\n")
         
+        # Build Combined Final Transcript String with Separators
+        combined_transcript = ""
+        for res in extracted_results:
+            combined_transcript += f"--- SOURCE {res['index']} ({res['type'].upper()}): {res['info']} ---\n"
+            combined_transcript += f"{res['content']}\n\n"
+            
+        final_source_info = f"{len(extracted_results)} combined sources"
+        if len(extracted_results) == 1:
+            final_source_info = extracted_results[0]['info']
+            
         # ========================================
         # GENERATE ANSWER
         # ========================================
         
         try:
-            answer = generate_answer_from_transcript(content, prompt, source_info)
+            answer = generate_answer_from_transcript(combined_transcript, prompt, final_source_info)
         except Exception as e:
-            return jsonify({"error": f"Answer generation failed: {str(e)}"}), 500
+            return jsonify({"error": f"Answer generation failed: {str(e)}", "partial_errors": errors}), 500
         
         # ========================================
         # RETURN RESPONSE
@@ -7310,22 +7364,22 @@ def process_video():
         
         return jsonify({
             "success": True,
-            "source_type": source_type,
-            "source": source_info,
+            "sources_processed": len(extracted_results),
+            "sources_failed": len(errors),
+            "source_info": final_source_info,
             "prompt": prompt,
             "answer": answer,
             "stats": {
-                "source_type": source_type,
-                "extraction_method": method,
-                "content_char_count": len(content),
-                "content_word_count": len(content.split()),
+                "individual_sources": stats_list,
+                "total_content_char_count": len(combined_transcript),
                 "answer_char_count": len(answer),
                 "answer_word_count": len(answer.split()),
                 "processing_time": processing_time
             },
+            "errors": errors if errors else None,
             "metadata": {
                 "timestamp": datetime.utcnow().isoformat(),
-                "extraction_method": method
+                "multiple_sources_used": len(extracted_results) > 1
             }
         })
         

@@ -1630,7 +1630,7 @@ def shorts_outliers_from_channels():
                 duration = parse_duration(duration_str)
 
                 multiplier = round(views / avg_recent_views, 2) if avg_recent_views else 0
-
+                thumb_url = f"https://i.ytimg.com/vi/{video_id}/maxresdefault.jpg"
                 published_at = snippet.get("publishedAt")
 
                 return {
@@ -1644,7 +1644,7 @@ def shorts_outliers_from_channels():
                     "duration_seconds": duration,
                     "multiplier": multiplier,
                     "avg_recent_views": round(avg_recent_views, 2),
-                    "thumbnail_url": snippet.get("thumbnails", {}).get("high", {}).get("url"),
+                    "thumbnail_url": thumb_url,
                     "url": f"https://www.youtube.com/watch?v={v['id']}",
                     "published_at": published_at
                 }

@@ -1623,6 +1623,7 @@ def shorts_outliers_from_channels():
                     break
 
             def format_video(v):
+                video_id = v.get("id")
                 snippet = v.get("snippet", {})
                 views = int(v["statistics"].get("viewCount", 0))
 

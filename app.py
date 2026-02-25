@@ -2155,33 +2155,189 @@ def generate_titles():
         app.logger.debug(f"Received data: {data}")
         topic = data.get('topic')
         prompt = data.get('prompt')
-        script = data.get('script')
+        script = data.get('script', '')
         youtube_url = data.get('youtube_url', '').strip()  # Optional: YouTube URL to pull transcript from
         niche = data.get('niche', 'general')  # Optional: niche for tailoring titles
         audience = data.get('audience', 'general')  # Optional: target audience
 
-        # Fetch transcript from YouTube URL if provided
-        youtube_transcript = None
+        # We will collect everything into a single script variable
+        extracted_texts = []
+        if script:
+            extracted_texts.append(script)
+
+        # 1. Process legacy youtube_url
         if youtube_url:
             try:
                 print(f"[generate_titles] Fetching transcript for: {youtube_url}")
                 youtube_transcript = transcribe_youtube_with_transcript_api(youtube_url)
                 if youtube_transcript and len(youtube_transcript) > 50:
                     print(f"[generate_titles] ✓ Transcript fetched: {len(youtube_transcript):,} chars")
-                    # Merge into script (or use as script if not provided)
-                    if script:
-                        script = script + "\n\n[YouTube Transcript]:\n" + youtube_transcript
-                    else:
-                        script = youtube_transcript
+                    extracted_texts.append(f"[YouTube Transcript]:\n{youtube_transcript}")
                 else:
                     print(f"[generate_titles] ⚠ Transcript too short or empty")
             except Exception as e:
                 print(f"[generate_titles] ✗ Failed to fetch transcript: {str(e)}")
-                # Non-fatal — continue without transcript
+
+        # 2. Process flat media arrays (youtube_urls, instagram_urls, audio_files, etc) just like whole_script
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        import base64
+        import requests
+        
+        user_id = request.remote_addr or "unknown_user"
+        folders = []
+        
+        # YouTube URLs
+        youtube_urls = data.get('youtube_urls', [])
+        if youtube_urls and isinstance(youtube_urls, list):
+            yt_folder = {'name': 'YouTube', 'type': 'inspiration', 'items': []}
+            for url in youtube_urls:
+                if url and isinstance(url, str) and url.strip():
+                    yt_folder['items'].append({'type': 'youtube_url', 'url': url.strip()})
+            if yt_folder['items']:
+                folders.append(yt_folder)
+        
+        # Instagram URLs
+        instagram_urls = data.get('instagram_urls', [])
+        if instagram_urls and isinstance(instagram_urls, list):
+            insta_folder = {'name': 'Instagram', 'type': 'inspiration', 'items': []}
+            for url in instagram_urls:
+                if url and isinstance(url, str) and url.strip():
+                    insta_folder['items'].append({'type': 'instagram_url', 'url': url.strip()})
+            if insta_folder['items']:
+                folders.append(insta_folder)
+        
+        # Audio Files
+        audio_files = data.get('audio_files', [])
+        if audio_files and isinstance(audio_files, list):
+            audio_folder = {'name': 'Audio Files', 'type': 'inspiration', 'items': []}
+            for idx, audio_url in enumerate(audio_files):
+                if audio_url and isinstance(audio_url, str) and audio_url.strip():
+                    try:
+                        audio_url = audio_url.strip().lstrip('$')
+                        if not audio_url.startswith(('http://', 'https://')):
+                            continue
+                        
+                        print(f"Downloading audio {idx+1}/{len(audio_files)}: {audio_url[:80]}...")
+                        response = requests.get(audio_url, timeout=60)
+                        if response.status_code == 200:
+                            filename = audio_url.split('/')[-1].split('?')[0] or f'audio_{idx+1}.mp3'
+                            audio_data = base64.b64encode(response.content).decode('utf-8')
+                            audio_folder['items'].append({
+                                'type': 'audio_file',
+                                'filename': filename,
+                                'data': audio_data
+                            })
+                    except Exception as e:
+                        print(f"  ✗ Error downloading audio: {str(e)}")
+            if audio_folder['items']:
+                folders.append(audio_folder)
+                
+        # Video Files
+        video_files = data.get('video_files', [])
+        if video_files and isinstance(video_files, list):
+            video_folder = {'name': 'Videos', 'type': 'inspiration', 'items': []}
+            for idx, video_url in enumerate(video_files):
+                if video_url and isinstance(video_url, str) and video_url.strip():
+                    try:
+                        response = requests.get(video_url, timeout=60)
+                        if response.status_code == 200:
+                            filename = video_url.split('/')[-1].split('?')[0] or f'video_{idx+1}.mp4'
+                            video_data = base64.b64encode(response.content).decode('utf-8')
+                            video_folder['items'].append({
+                                'type': 'video_file',
+                                'filename': filename,
+                                'data': video_data
+                            })
+                    except Exception as e:
+                        print(f"  ✗ Error downloading video {video_url}: {e}")
+            if video_folder['items']:
+                folders.append(video_folder)
+
+        # Process gathered folders
+        def process_media_item(folder_name, folder_type, item, item_idx):
+            try:
+                item_type = item.get('type')
+                
+                if item_type == 'youtube_url':
+                    url = item.get('url', '').strip()
+                    if url and video_processor.validate_youtube_url(url):
+                        transcript = transcribe_youtube_with_transcript_api(url)
+                        if transcript and len(transcript) >= 50:
+                            return transcript
+                            
+                elif item_type == 'instagram_url':
+                    url = item.get('url', '').strip()
+                    if url and instagram_processor.validate_instagram_url(url):
+                        result = instagram_processor.process_instagram_url(url)
+                        if not result.get('error'):
+                            return result.get('transcript')
+                            
+                elif item_type == 'audio_file':
+                    filename = item.get('filename', 'audio.mp3')
+                    file_data = item.get('data')
+                    if audio_processor.is_supported_audio_format(filename) and file_data:
+                        safe_user_id = user_id.replace('.', '_').replace(':', '_')
+                        audio_path = os.path.join(
+                            UPLOAD_FOLDER,
+                            f"temp_title_{safe_user_id}_{int(time.time())}_{item_idx}_{secure_filename(filename)}"
+                        )
+                        try:
+                            audio_bytes = base64.b64decode(file_data)
+                            with open(audio_path, 'wb') as f:
+                                f.write(audio_bytes)
+                            result = audio_processor.process_audio_file(audio_path, filename)
+                            if not result.get('error'):
+                                return result.get('transcript')
+                        finally:
+                            if os.path.exists(audio_path):
+                                try: os.remove(audio_path)
+                                except: pass
+                                
+                elif item_type == 'video_file':
+                    filename = item.get('filename', 'video.mp4')
+                    file_data = item.get('data')
+                    if video_processor.is_supported_video_format(filename) and file_data:
+                        safe_user_id = user_id.replace('.', '_').replace(':', '_')
+                        video_path = os.path.join(
+                            UPLOAD_FOLDER,
+                            f"temp_title_{safe_user_id}_{int(time.time())}_{item_idx}_{secure_filename(filename)}"
+                        )
+                        try:
+                            video_bytes = base64.b64decode(file_data)
+                            with open(video_path, 'wb') as f:
+                                f.write(video_bytes)
+                            result = video_processor.process_local_video(video_path, filename)
+                            if not result.get('error'):
+                                return result.get('transcript')
+                        finally:
+                            if os.path.exists(video_path):
+                                try: os.remove(video_path)
+                                except: pass
+                                
+            except Exception as e:
+                print(f"[generate_titles] Error processing media item: {str(e)}")
+            return None
+
+        # Execute processing in parallel
+        futures = []
+        with ThreadPoolExecutor(max_workers=5) as executor:
+            for folder in folders:
+                folder_name = folder.get('name', 'Unknown')
+                folder_type = folder.get('type', 'inspiration')
+                for i, item in enumerate(folder.get('items', [])):
+                    futures.append(executor.submit(process_media_item, folder_name, folder_type, item, i))
+                    
+            for future in as_completed(futures):
+                result = future.result()
+                if result:
+                    extracted_texts.append(result)
+
+        # Combine all extracted texts into a single context string
+        combined_script = "\n\n".join(extracted_texts).strip()
 
         # Check if at least one input is provided
-        if not any([topic, prompt, script, youtube_url]):
-            return jsonify({'error': 'At least one of topic, prompt, script, or youtube_url is required'}), 400
+        if not any([topic, prompt, combined_script]):
+            return jsonify({'error': 'At least one of topic, prompt, script, or media inputs is required'}), 400
         
         # Initialize base prompt from provided guidelines
         base_prompt = """
@@ -2260,12 +2416,11 @@ Tailor all titles to the video’s niche (e.g., education, entertainment, financ
         if prompt:
             base_prompt += f"\nUse the following user prompt for additional context: '{prompt[:500]}' (truncated for brevity). "
         
-        # Add script / YouTube transcript to prompt if provided
-        if script:
-            source_label = "YouTube video transcript" if (youtube_transcript and not data.get('script')) else "video script"
+        # Add script / combined extracted context to prompt if provided
+        if combined_script:
             base_prompt += (
-                f"\nAlso consider the following {source_label} for context: '{script[:1500]}' (truncated for brevity). "
-                f"Extract the main hook or payoff from the script to ensure the titles match the video's content. "
+                f"\nAlso consider the following reference context extracted from provided scripts or media: '{combined_script[:1500]}' (truncated for brevity). "
+                f"Extract the main hook or payoff from the context to ensure the titles match the content. "
             )
         # Finalize prompt with output instructions
         base_prompt += (

@@ -2156,12 +2156,32 @@ def generate_titles():
         topic = data.get('topic')
         prompt = data.get('prompt')
         script = data.get('script')
+        youtube_url = data.get('youtube_url', '').strip()  # Optional: YouTube URL to pull transcript from
         niche = data.get('niche', 'general')  # Optional: niche for tailoring titles
         audience = data.get('audience', 'general')  # Optional: target audience
-        
+
+        # Fetch transcript from YouTube URL if provided
+        youtube_transcript = None
+        if youtube_url:
+            try:
+                print(f"[generate_titles] Fetching transcript for: {youtube_url}")
+                youtube_transcript = transcribe_youtube_with_transcript_api(youtube_url)
+                if youtube_transcript and len(youtube_transcript) > 50:
+                    print(f"[generate_titles] ✓ Transcript fetched: {len(youtube_transcript):,} chars")
+                    # Merge into script (or use as script if not provided)
+                    if script:
+                        script = script + "\n\n[YouTube Transcript]:\n" + youtube_transcript
+                    else:
+                        script = youtube_transcript
+                else:
+                    print(f"[generate_titles] ⚠ Transcript too short or empty")
+            except Exception as e:
+                print(f"[generate_titles] ✗ Failed to fetch transcript: {str(e)}")
+                # Non-fatal — continue without transcript
+
         # Check if at least one input is provided
-        if not any([topic, prompt, script]):
-            return jsonify({'error': 'At least one of topic, prompt, or script is required'}), 400
+        if not any([topic, prompt, script, youtube_url]):
+            return jsonify({'error': 'At least one of topic, prompt, script, or youtube_url is required'}), 400
         
         # Initialize base prompt from provided guidelines
         base_prompt = """
@@ -2240,13 +2260,13 @@ Tailor all titles to the video’s niche (e.g., education, entertainment, financ
         if prompt:
             base_prompt += f"\nUse the following user prompt for additional context: '{prompt[:500]}' (truncated for brevity). "
         
-        # Add script to prompt if provided
+        # Add script / YouTube transcript to prompt if provided
         if script:
+            source_label = "YouTube video transcript" if (youtube_transcript and not data.get('script')) else "video script"
             base_prompt += (
-                f"\nAlso consider the following video script for context: '{script[:500]}' (truncated for brevity). "
-                f"Extract the main hook or payoff from the script to ensure the titles match the video’s content. "
+                f"\nAlso consider the following {source_label} for context: '{script[:1500]}' (truncated for brevity). "
+                f"Extract the main hook or payoff from the script to ensure the titles match the video's content. "
             )
-        
         # Finalize prompt with output instructions
         base_prompt += (
             f"\nFor each title, provide a virality score out of 100 based on its potential CTR, emotional appeal, and alignment with YouTube’s algorithm. "

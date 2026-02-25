@@ -3820,6 +3820,664 @@ Provide a structured knowledge summary (400-600 words) focusing on factual conte
         print(f"Traceback:\n{traceback.format_exc()}")
         print(f"{'='*60}\n")
         return jsonify({'error': f'Script generation failed: {str(e)}'}), 500
+
+@app.route('/api/short_script', methods=['POST'])
+def short_script():
+    """SHORT FORM: Identical to whole_script but adds a maximum-retention rewrite directive to the prompt."""
+
+    # ---------------------------------------------------------------
+    # Retention add-on injected into every short_script generation
+    # ---------------------------------------------------------------
+    SHORT_SCRIPT_ADDON = (
+        "\n\nRewrite this script for maximum retention. "
+        "Every sentence should be short and punchy. "
+        "The first line must immediately hook the viewer and make them feel like they'll miss something important if they stop. "
+        "Build curiosity or suspense by slowly building up to key moments instead of giving everything away too fast. "
+        "Each sentence should make the next one feel impossible to skip."
+    )
+
+    user_id = request.remote_addr
+    print(f"\n{'='*60}")
+    print(f"SHORT SCRIPT GENERATION: {user_id}")
+    print(f"{'='*60}\n")
+
+    try:
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        import requests
+        import base64
+
+        # Parse request
+        content_type = request.content_type or ''
+        folders = []
+        prompt = ""
+        target_minutes = None
+        tone_analyzer = None
+
+        if 'application/json' in content_type:
+            data = request.json or {}
+            prompt = data.get('prompt', '').strip()
+            target_minutes = data.get('minutes')
+            tone_analyzer = data.get('tone_analysis') or data.get('tone_analyzer')
+
+            if tone_analyzer:
+                if isinstance(tone_analyzer, str):
+                    print(f"✓ Tone analysis text provided ({len(tone_analyzer):,} chars)")
+                else:
+                    channel_name = tone_analyzer.get('channel_name', 'Unknown')
+                    print(f"✓ Tone analyzer dict provided: {channel_name}")
+            else:
+                print(f"⚠ No tone analysis provided - using general professional tone")
+
+            # Folders mode
+            existing_folders = data.get('folders', [])
+            if existing_folders and isinstance(existing_folders, list):
+                print(f"✓ Detected {len(existing_folders)} folders provided directly in JSON")
+                folders.extend(existing_folders)
+
+            # YouTube URLs
+            youtube_urls = data.get('youtube_urls', [])
+            if youtube_urls and isinstance(youtube_urls, list):
+                yt_folder = {'name': 'YouTube', 'type': 'inspiration', 'items': []}
+                for url in youtube_urls:
+                    if url and isinstance(url, str) and url.strip():
+                        yt_folder['items'].append({'type': 'youtube_url', 'url': url.strip()})
+                if yt_folder['items']:
+                    folders.append(yt_folder)
+                    print(f"Added {len(yt_folder['items'])} YouTube URLs from flat list")
+
+            # Instagram URLs
+            instagram_urls = data.get('instagram_urls', [])
+            if instagram_urls and isinstance(instagram_urls, list):
+                insta_folder = {'name': 'Instagram', 'type': 'inspiration', 'items': []}
+                for url in instagram_urls:
+                    if url and isinstance(url, str) and url.strip():
+                        insta_folder['items'].append({'type': 'instagram_url', 'url': url.strip()})
+                if insta_folder['items']:
+                    folders.append(insta_folder)
+                    print(f"Added {len(insta_folder['items'])} Instagram URLs from flat list")
+
+            # Facebook URLs
+            facebook_urls = data.get('facebook_urls', [])
+            if facebook_urls and isinstance(facebook_urls, list):
+                fb_folder = {'name': 'Facebook', 'type': 'inspiration', 'items': []}
+                for url in facebook_urls:
+                    if url and isinstance(url, str) and url.strip():
+                        fb_folder['items'].append({'type': 'facebook_url', 'url': url.strip()})
+                if fb_folder['items']:
+                    folders.append(fb_folder)
+                    print(f"Added {len(fb_folder['items'])} Facebook URLs from flat list")
+
+            # TikTok URLs
+            tiktok_urls = data.get('tiktok_urls', [])
+            if tiktok_urls and isinstance(tiktok_urls, list):
+                tiktok_folder = {'name': 'TikTok', 'type': 'inspiration', 'items': []}
+                for url in tiktok_urls:
+                    if url and isinstance(url, str) and url.strip():
+                        tiktok_folder['items'].append({'type': 'tiktok_url', 'url': url.strip()})
+                if tiktok_folder['items']:
+                    folders.append(tiktok_folder)
+                    print(f"Added {len(tiktok_folder['items'])} TikTok URLs from flat list")
+
+            # Video Files (Download from URLs)
+            video_files = data.get('video_files', [])
+            if video_files and isinstance(video_files, list):
+                video_folder = {'name': 'Videos', 'type': 'inspiration', 'items': []}
+                for idx, video_url in enumerate(video_files):
+                    if video_url and isinstance(video_url, str) and video_url.strip():
+                        try:
+                            print(f"Downloading video {idx+1}/{len(video_files)}: {video_url[:50]}...")
+                            response = requests.get(video_url, timeout=60)
+                            if response.status_code == 200:
+                                filename = video_url.split('/')[-1].split('?')[0] or f'video_{idx+1}.mp4'
+                                video_data = base64.b64encode(response.content).decode('utf-8')
+                                video_folder['items'].append({
+                                    'type': 'video_file',
+                                    'filename': filename,
+                                    'data': video_data
+                                })
+                                print(f"  ✓ Downloaded: {len(response.content):,} bytes")
+                            else:
+                                print(f"  ✗ Failed: HTTP {response.status_code}")
+                        except Exception as e:
+                            print(f"  ✗ Error downloading video {video_url}: {e}")
+                if video_folder['items']:
+                    folders.append(video_folder)
+                    print(f"Added {len(video_folder['items'])} video files")
+
+            # Audio Files (Download from URLs)
+            audio_files = data.get('audio_files', [])
+            if audio_files and isinstance(audio_files, list):
+                audio_folder = {'name': 'Audio Files', 'type': 'inspiration', 'items': []}
+                for idx, audio_url in enumerate(audio_files):
+                    if audio_url and isinstance(audio_url, str) and audio_url.strip():
+                        try:
+                            audio_url = audio_url.strip().lstrip('$')
+                            if not audio_url.startswith(('http://', 'https://')):
+                                print(f"  ✗ Invalid URL format: {audio_url}")
+                                continue
+                            print(f"Downloading audio {idx+1}/{len(audio_files)}: {audio_url[:80]}...")
+                            response = requests.get(audio_url, timeout=60)
+                            if response.status_code == 200:
+                                filename = audio_url.split('/')[-1].split('?')[0] or f'audio_{idx+1}.mp3'
+                                audio_data = base64.b64encode(response.content).decode('utf-8')
+                                audio_folder['items'].append({
+                                    'type': 'audio_file',
+                                    'filename': filename,
+                                    'data': audio_data
+                                })
+                                print(f"  ✓ Downloaded: {len(response.content):,} bytes")
+                            else:
+                                print(f"  ✗ Failed: HTTP {response.status_code}")
+                        except Exception as e:
+                            print(f"  ✗ Error downloading audio: {str(e)}")
+                if audio_folder['items']:
+                    folders.append(audio_folder)
+                    print(f"✓ Added {len(audio_folder['items'])} audio files")
+
+            # Image Files (URLs only)
+            image_files = data.get('image_files', [])
+            if image_files and isinstance(image_files, list):
+                image_folder = {'name': 'Images', 'type': 'document', 'items': []}
+                for idx, image_url in enumerate(image_files):
+                    if image_url and isinstance(image_url, str) and image_url.strip():
+                        filename = image_url.split('/')[-1].split('?')[0] or f'image_{idx+1}.jpg'
+                        image_folder['items'].append({
+                            'type': 'image_files',
+                            'url': image_url,
+                            'filename': filename
+                        })
+                        print(f"Added image URL {idx+1}: {filename}")
+                if image_folder['items']:
+                    folders.append(image_folder)
+                    print(f"✓ Added {len(image_folder['items'])} image URLs")
+
+            # Documents (URLs)
+            documents = data.get('documents', [])
+            if documents and isinstance(documents, list):
+                doc_folder = {'name': 'Documents', 'type': 'document', 'items': []}
+                for doc_url in documents:
+                    if doc_url and isinstance(doc_url, str) and doc_url.strip():
+                        doc_folder['items'].append({'type': 'document', 'url': doc_url.strip()})
+                if doc_folder['items']:
+                    folders.append(doc_folder)
+
+            # Text Inputs
+            text_inputs_data = data.get('text_inputs')
+            if text_inputs_data:
+                text_folder = {'name': 'Text Inputs', 'type': 'document', 'items': []}
+                if isinstance(text_inputs_data, list):
+                    for idx, text_item in enumerate(text_inputs_data):
+                        if isinstance(text_item, dict):
+                            text_content = text_item.get('content', '').strip()
+                            if text_content:
+                                text_folder['items'].append({
+                                    'type': 'text_input',
+                                    'content': text_content,
+                                    'name': f"Text Input {idx + 1}"
+                                })
+                        elif isinstance(text_item, str) and text_item.strip():
+                            text_folder['items'].append({
+                                'type': 'text_input',
+                                'content': text_item.strip(),
+                                'name': f"Text Input {idx + 1}"
+                            })
+                elif isinstance(text_inputs_data, dict):
+                    text_content_array = text_inputs_data.get('content', [])
+                    if isinstance(text_content_array, list):
+                        for idx, text_content in enumerate(text_content_array):
+                            if text_content and isinstance(text_content, str) and text_content.strip():
+                                text_folder['items'].append({
+                                    'type': 'text_input',
+                                    'content': text_content.strip(),
+                                    'name': f"Text Input {idx + 1}"
+                                })
+                elif isinstance(text_inputs_data, str) and text_inputs_data.strip():
+                    text_folder['items'].append({
+                        'type': 'text_input',
+                        'content': text_inputs_data.strip(),
+                        'name': "Text Input 1"
+                    })
+                if text_folder['items']:
+                    folders.append(text_folder)
+                    print(f"✓ Added {len(text_folder['items'])} text inputs total")
+
+        elif 'multipart/form-data' in content_type:
+            prompt = request.form.get('prompt', '').strip()
+            target_minutes = request.form.get('minutes', type=int)
+            tone_text_form = request.form.get('tone_analysis') or request.form.get('tone_analyzer')
+            if tone_text_form:
+                if tone_text_form.strip().startswith('{'):
+                    try:
+                        tone_analyzer = json.loads(tone_text_form)
+                        print(f"✓ Tone analyzer dict provided via form")
+                    except:
+                        tone_analyzer = tone_text_form
+                        print(f"✓ Tone analysis text provided via form")
+                else:
+                    tone_analyzer = tone_text_form
+                    print(f"✓ Tone analysis text provided via form")
+
+        else:
+            return jsonify({'error': 'Unsupported content type'}), 415
+
+        if not prompt:
+            prompt = "Create an engaging short-form video script."
+
+        # ------------------------------------------------------------------
+        # ✨ KEY DIFFERENCE: Inject short-form retention add-on into prompt
+        # ------------------------------------------------------------------
+        prompt = prompt + SHORT_SCRIPT_ADDON
+
+        print(f"\n{'='*60}")
+        print(f"PROCESSING SUMMARY (SHORT SCRIPT)")
+        print(f"{'='*60}")
+        print(f"Folders: {len(folders)}")
+        print(f"Prompt: {prompt[:120]}...")
+        print(f"Target Duration: {target_minutes or 'Not specified'} minutes")
+        print(f"Tone: {'✓ Provided' if tone_analyzer else '✗ Not provided (using general tone)'}")
+        print(f"{'='*60}\n")
+
+        # Results storage
+        processed_personal = []
+        processed_inspiration = []
+        processed_documents = []
+        errors = []
+
+        def process_item(folder_name, folder_type, item, item_idx):
+            """Process a single item (video/audio/doc/youtube/instagram/facebook/tiktok/image/text)"""
+            try:
+                if isinstance(item, str):
+                    item_type = 'document'
+                else:
+                    item_type = item.get('type')
+
+                # Smart type detection for video_file with URL
+                if item_type == 'video_file' and 'url' in item and 'data' not in item:
+                    url = item.get('url', '').strip()
+                    if 'youtube.com' in url or 'youtu.be' in url:
+                        item_type = 'youtube_url'
+                    elif 'instagram.com' in url:
+                        item_type = 'instagram_url'
+                    elif 'facebook.com' in url or 'fb.watch' in url:
+                        item_type = 'facebook_url'
+                    elif 'tiktok.com' in url:
+                        item_type = 'tiktok_url'
+
+                if item_type == 'youtube_url':
+                    url = item.get('url', '').strip()
+                    if url and video_processor.validate_youtube_url(url):
+                        print(f"\n[{folder_name}] Processing YouTube: {url}")
+                        try:
+                            transcript = transcribe_youtube_with_transcript_api(url)
+                        except Exception as e:
+                            return ('error', f"[{folder_name}] YouTube {url}: {str(e)}")
+                        if not transcript or len(transcript) < 50:
+                            return ('error', f"[{folder_name}] YouTube {url}: Transcript too short or empty")
+                        word_count = len(transcript.split())
+                        return (folder_type if folder_type == 'personal' else 'inspiration', {
+                            'folder_name': folder_name, 'url': url, 'transcript': transcript,
+                            'stats': {'char_count': len(transcript), 'word_count': word_count, 'source_type': 'transcript_api'},
+                            'type': 'youtube'
+                        })
+                    return ('error', f"[{folder_name}] Invalid YouTube URL")
+
+                elif item_type == 'instagram_url':
+                    url = item.get('url', '').strip()
+                    if url and instagram_processor.validate_instagram_url(url):
+                        result = instagram_processor.process_instagram_url(url)
+                        if result['error']:
+                            return ('error', f"[{folder_name}] Instagram {url}: {result['error']}")
+                        return (folder_type if folder_type == 'personal' else 'inspiration', {
+                            'folder_name': folder_name, 'url': url, 'transcript': result['transcript'],
+                            'stats': result['stats'], 'type': 'instagram'
+                        })
+                    return ('error', f"[{folder_name}] Invalid Instagram URL")
+
+                elif item_type == 'facebook_url':
+                    url = item.get('url', '').strip()
+                    if url and facebook_processor.validate_facebook_url(url):
+                        result = facebook_processor.process_facebook_url(url)
+                        if result['error']:
+                            return ('error', f"[{folder_name}] Facebook {url}: {result['error']}")
+                        return (folder_type if folder_type == 'personal' else 'inspiration', {
+                            'folder_name': folder_name, 'url': url, 'transcript': result['transcript'],
+                            'stats': result['stats'], 'type': 'facebook'
+                        })
+                    return ('error', f"[{folder_name}] Invalid Facebook URL")
+
+                elif item_type == 'tiktok_url':
+                    return ('error', f"[{folder_name}] TikTok processing not implemented")
+
+                elif item_type == 'audio_file':
+                    filename = item.get('filename', 'audio.mp3')
+                    file_data = item.get('data')
+                    if not audio_processor.is_supported_audio_format(filename):
+                        return ('error', f"[{folder_name}] Unsupported audio format: {filename}")
+                    if not file_data:
+                        return ('error', f"[{folder_name}] No data: {filename}")
+                    safe_user_id = user_id.replace('.', '_').replace(':', '_')
+                    audio_path = os.path.join(
+                        UPLOAD_FOLDER,
+                        f"temp_{safe_user_id}_{int(time.time())}_{item_idx}_{secure_filename(filename)}"
+                    )
+                    try:
+                        audio_bytes = base64.b64decode(file_data)
+                        with open(audio_path, 'wb') as f:
+                            f.write(audio_bytes)
+                        result = audio_processor.process_audio_file(audio_path, filename)
+                        try:
+                            os.remove(audio_path)
+                        except:
+                            pass
+                        if result['error']:
+                            return ('error', f"[{folder_name}] Audio {filename}: {result['error']}")
+                        return (folder_type if folder_type == 'personal' else 'inspiration', {
+                            'folder_name': folder_name, 'source': filename,
+                            'transcript': result['transcript'], 'stats': result['stats'], 'type': 'audio_file'
+                        })
+                    except Exception as e:
+                        if os.path.exists(audio_path):
+                            try:
+                                os.remove(audio_path)
+                            except:
+                                pass
+                        return ('error', f"[{folder_name}] Audio error {filename}: {str(e)}")
+
+                elif item_type == 'video_file':
+                    filename = item.get('filename', 'video.mp4')
+                    file_data = item.get('data')
+                    file_url = item.get('url')
+                    if file_url and not file_data:
+                        try:
+                            r = requests.get(file_url, timeout=120)
+                            if r.status_code == 200:
+                                file_data = base64.b64encode(r.content).decode('utf-8')
+                                filename = file_url.split('/')[-1].split('?')[0] or filename
+                            else:
+                                return ('error', f"[{folder_name}] Failed to download video: HTTP {r.status_code}")
+                        except Exception as e:
+                            return ('error', f"[{folder_name}] Error downloading video: {str(e)}")
+                    if not file_data:
+                        return ('error', f"[{folder_name}] No video data: {filename}")
+                    if not video_processor.is_supported_video_format(filename):
+                        return ('error', f"[{folder_name}] Unsupported video format: {filename}")
+                    safe_user_id = user_id.replace('.', '_').replace(':', '_')
+                    video_path = os.path.join(
+                        UPLOAD_FOLDER,
+                        f"temp_{safe_user_id}_{int(time.time())}_{item_idx}_{secure_filename(filename)}"
+                    )
+                    try:
+                        video_bytes = base64.b64decode(file_data)
+                        with open(video_path, 'wb') as f:
+                            f.write(video_bytes)
+                        result = video_processor.process_local_video_via_api(video_path, filename)
+                        try:
+                            os.remove(video_path)
+                        except:
+                            pass
+                        if result.get('error'):
+                            return ('error', f"[{folder_name}] Video {filename}: {result['error']}")
+                        return (folder_type if folder_type == 'personal' else 'inspiration', {
+                            'folder_name': folder_name, 'source': filename,
+                            'transcript': result.get('transcript', ''), 'stats': result.get('stats', {}),
+                            'type': 'local_video'
+                        })
+                    except Exception as e:
+                        if os.path.exists(video_path):
+                            try:
+                                os.remove(video_path)
+                            except:
+                                pass
+                        return ('error', f"[{folder_name}] Video error {filename}: {str(e)}")
+
+                elif item_type in ('document', 'doc_url'):
+                    url = item.get('url', '') if isinstance(item, dict) else item
+                    if url:
+                        try:
+                            result = document_processor.process_document(url)
+                            if result.get('error'):
+                                return ('error', f"[{folder_name}] Document {url}: {result['error']}")
+                            return ('document', {
+                                'folder_name': folder_name, 'source_name': url,
+                                'text': result.get('text', ''), 'stats': result.get('stats', {}),
+                                'type': 'document'
+                            })
+                        except Exception as e:
+                            return ('error', f"[{folder_name}] Document error {url}: {str(e)}")
+
+                elif item_type == 'image_files':
+                    image_url = item.get('url', '')
+                    filename = item.get('filename', 'image.jpg')
+                    if image_url:
+                        try:
+                            result = image_processor.process_image_url(image_url, filename)
+                            if result.get('error'):
+                                return ('error', f"[{folder_name}] Image {filename}: {result['error']}")
+                            return ('document', {
+                                'folder_name': folder_name, 'filename': filename,
+                                'text': result.get('text', ''), 'stats': result.get('stats', {}),
+                                'type': 'image'
+                            })
+                        except Exception as e:
+                            return ('error', f"[{folder_name}] Image error {filename}: {str(e)}")
+
+                elif item_type == 'text_input':
+                    text_content = item.get('content', '')
+                    name = item.get('name', 'Text Input')
+                    if text_content:
+                        try:
+                            result = text_processor.process_text_input(text_content, name)
+                            if result.get('error'):
+                                return ('error', f"[{folder_name}] Text input error: {result['error']}")
+                            return ('document', {
+                                'folder_name': folder_name, 'source_name': name,
+                                'text': result.get('text', ''), 'stats': result.get('stats', {}),
+                                'type': 'text_input'
+                            })
+                        except Exception as e:
+                            return ('error', f"[{folder_name}] Text input error: {str(e)}")
+
+                return ('error', f"[{folder_name}] Unknown item type: {item_type}")
+
+            except Exception as e:
+                return ('error', f"[{folder_name}] Item error: {str(e)}")
+
+        # Process all items in parallel
+        all_tasks = []
+        for folder in folders:
+            folder_name = folder.get('name', 'Unnamed')
+            folder_type = folder.get('type', 'inspiration')
+            items = folder.get('items', [])
+            for idx, item in enumerate(items):
+                all_tasks.append((folder_name, folder_type, item, idx))
+
+        print(f"Total tasks: {len(all_tasks)}")
+        max_workers = min(5, len(all_tasks)) if all_tasks else 1
+
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {
+                executor.submit(process_item, fn, ft, item, idx): (fn, ft, item, idx)
+                for fn, ft, item, idx in all_tasks
+            }
+            completed = 0
+            for future in as_completed(futures):
+                completed += 1
+                try:
+                    result_type, result_data = future.result()
+                except Exception as e:
+                    errors.append(f"Processing exception: {str(e)}")
+                    continue
+                if result_type == 'error':
+                    errors.append(result_data)
+                elif result_type == 'personal':
+                    processed_personal.append(result_data)
+                elif result_type == 'inspiration':
+                    processed_inspiration.append(result_data)
+                elif result_type == 'document':
+                    processed_documents.append(result_data)
+
+        # Knowledge extraction
+        inspiration_knowledge = ""
+        document_knowledge = ""
+
+        def extract_inspiration_knowledge():
+            if processed_inspiration:
+                transcripts = [v['transcript'] for v in processed_inspiration]
+                sources_info = [
+                    f"Source {i+1}: {v.get('url', v.get('source', 'Unknown'))}"
+                    for i, v in enumerate(processed_inspiration)
+                ]
+                knowledge_prompt = f"""You are analyzing {len(transcripts)} inspiration sources to extract KNOWLEDGE POINTS for a short-form video script.
+
+**IMPORTANT: Extract factual knowledge, insights, and information ONLY.**
+
+Sources:\n{chr(10).join(sources_info)}
+
+TRANSCRIPTS:
+{chr(10).join([f'--- SOURCE {i+1} ---{chr(10)}{t}' for i, t in enumerate(transcripts)])}
+
+Provide a structured knowledge summary without copying style or delivery."""
+                message = anthropic_client.messages.create(
+                    model="claude-sonnet-4-20250514",
+                    max_tokens=4000,
+                    temperature=0.3,
+                    messages=[{"role": "user", "content": knowledge_prompt}]
+                )
+                return message.content[0].text.strip()
+            return "No inspiration sources provided."
+
+        def extract_document_knowledge():
+            if processed_documents:
+                texts = [d['text'] for d in processed_documents]
+                sources_info = [
+                    f"Document {i+1}: {d.get('filename', d.get('source_name', 'Unknown'))}"
+                    for i, d in enumerate(processed_documents)
+                ]
+                doc_prompt = f"""You are analyzing {len(texts)} documents/images/text inputs to extract FACTUAL KNOWLEDGE for a short-form video script.
+
+Sources:\n{chr(10).join(sources_info)}
+
+DOCUMENTS:
+{chr(10).join([f'--- DOCUMENT {i+1} ---{chr(10)}{t}' for i, t in enumerate(texts)])}
+
+Provide a structured knowledge summary (400-600 words) focusing on factual content only."""
+                message = anthropic_client.messages.create(
+                    model="claude-sonnet-4-20250514",
+                    max_tokens=4000,
+                    temperature=0.3,
+                    messages=[{"role": "user", "content": doc_prompt}]
+                )
+                return message.content[0].text.strip()
+            return "No document sources provided."
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            inspiration_future = executor.submit(extract_inspiration_knowledge)
+            docs_future = executor.submit(extract_document_knowledge)
+            inspiration_knowledge = inspiration_future.result()
+            document_knowledge = docs_future.result()
+
+        print("✓ Knowledge extraction complete\n")
+
+        # Generate script (prompt already has the SHORT_SCRIPT_ADDON appended)
+        print(f"{'='*60}")
+        print(f"GENERATING SHORT SCRIPT")
+        print(f"{'='*60}\n")
+
+        script = script_generator.generate_script_with_tone(
+            tone_analyzer=tone_analyzer,
+            knowledge_base={
+                'inspiration_knowledge': inspiration_knowledge,
+                'document_knowledge': document_knowledge
+            },
+            prompt=prompt,
+            target_minutes=target_minutes
+        )
+
+        print(f"Length: {len(script):,} characters")
+
+        # Store session
+        chat_session_id = str(uuid.uuid4())
+        user_data[user_id]['current_script'] = {
+            'content': script,
+            'tone_analysis': tone_analyzer,
+            'knowledge_base': {
+                'inspiration': inspiration_knowledge,
+                'documents': document_knowledge
+            },
+            'original_prompt': prompt,
+            'target_minutes': target_minutes,
+            'timestamp': datetime.now().isoformat()
+        }
+        user_data[user_id]['chat_sessions'][chat_session_id] = {
+            'messages': [],
+            'script_versions': [script],
+            'created_at': datetime.now().isoformat()
+        }
+
+        stats = {
+            'folders_processed': len(folders),
+            'inspiration_sources': len(processed_inspiration),
+            'documents': len(processed_documents),
+            'total_sources': len(processed_inspiration) + len(processed_documents),
+            'errors_count': len(errors),
+            'target_duration': target_minutes,
+            'tone_used': tone_analyzer is not None
+        }
+
+        print(f"\n{'='*60}")
+        print(f"✓ SHORT SCRIPT GENERATION COMPLETE")
+        print(f"{'='*60}\n")
+
+        return jsonify({
+            'success': True,
+            'script': script,
+            'chat_session_id': chat_session_id,
+            'knowledge_base': {
+                'inspiration': inspiration_knowledge,
+                'documents': document_knowledge
+            },
+            'stats': stats,
+            'processed_content': {
+                'inspiration_sources': len(processed_inspiration),
+                'documents': len(processed_documents),
+                'video_files': len([v for v in processed_inspiration if v.get('type') == 'local_video']),
+                'audio_files': len([v for v in processed_inspiration if v.get('type') == 'audio_file']),
+                'instagram_reels': len([v for v in processed_inspiration if v.get('type') == 'instagram']),
+                'facebook_videos': len([v for v in processed_inspiration if v.get('type') == 'facebook']),
+                'tiktok_videos': len([v for v in processed_inspiration if v.get('type') == 'tiktok']),
+                'images': len([d for d in processed_documents if d.get('stats', {}).get('source_type') == 'image']),
+                'text_inputs': len([d for d in processed_documents if d.get('stats', {}).get('source_type') == 'text_input'])
+            },
+            'errors': errors if errors else None,
+            'tone_info': {
+                'applied': tone_analyzer is not None,
+                'type': 'text' if isinstance(tone_analyzer, str) else ('dict' if tone_analyzer else None),
+                'preview': (tone_analyzer[:200] + '...' if isinstance(tone_analyzer, str) and len(tone_analyzer) > 200 else tone_analyzer) if isinstance(tone_analyzer, str) else (tone_analyzer.get('channel_name') if isinstance(tone_analyzer, dict) else None)
+            },
+            'folder_summary': [
+                {
+                    'name': folder.get('name'),
+                    'type': folder.get('type'),
+                    'items_count': len(folder.get('items', [])),
+                    'processed_successfully': len([
+                        item for item in folder.get('items', [])
+                        if not any(folder.get('name') in err for err in errors)
+                    ])
+                }
+                for folder in folders
+            ]
+        })
+
+    except Exception as e:
+        print(f"\n{'='*60}")
+        print(f"SHORT SCRIPT - CRITICAL ERROR")
+        print(f"{'='*60}")
+        print(f"Error: {str(e)}")
+        import traceback
+        print(f"Traceback:\n{traceback.format_exc()}")
+        print(f"{'='*60}\n")
+        return jsonify({'error': f'Short script generation failed: {str(e)}'}), 500
+
 @app.route('/api/chat-modify-script', methods=['POST'])
 def chat_modify_script():
     """Enhanced chat modification - accepts script directly in payload"""

@@ -11,7 +11,8 @@ import yt_dlp
 from sklearn import logger
 import logging
 from isodate import parse_duration
-from datetime import datetime, timezone, timedeltafrom uuid import uuid4
+from datetime import datetime, timezone, timedelta
+from uuid import uuid4
 import multiprocessing
 import json
 from youtube_api import get_viral_thumbnails

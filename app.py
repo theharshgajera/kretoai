@@ -1606,20 +1606,20 @@ def shorts_outliers_from_channels():
                 int(v["statistics"].get("viewCount", 0)) for v in shorts_videos
             ) / len(shorts_videos)
 
-            # Top 5 popular shorts
+            # Top 15 popular shorts
             popular_videos = sorted(
                 shorts_videos,
                 key=lambda x: int(x["statistics"].get("viewCount", 0)),
                 reverse=True
-            )[:5]
+            )[:15]
 
             # Trending shorts = views > channel average
             trending_videos = []
-            for v in shorts_videos[:10]:
+            for v in shorts_videos[:30]:
                 views = int(v["statistics"].get("viewCount", 0))
                 if avg_recent_views > 0 and (views / avg_recent_views) > 1:
                     trending_videos.append(v)
-                if len(trending_videos) >= 5:
+                if len(trending_videos) >= 15:
                     break
 
             def format_video(v):
@@ -1664,7 +1664,7 @@ def shorts_outliers_from_channels():
 
         # Interleave like video_outliers
         all_videos = []
-        max_videos_per_type = 5
+        max_videos_per_type = 15
 
         for i in range(max_videos_per_type):
             for j, channel in enumerate(channel_shorts):
@@ -1672,15 +1672,15 @@ def shorts_outliers_from_channels():
                     all_videos.append(channel["trending"][i])
                 elif j % 2 == 1 and i < len(channel["popular"]):
                     all_videos.append(channel["popular"][i])
-                if len(all_videos) >= 200:
+                if len(all_videos) >= 500:
                     break
-            if len(all_videos) >= 200:
+            if len(all_videos) >= 500:
                 break
 
         return jsonify({
             "success": True,
             "total_videos": len(all_videos),
-            "videos": all_videos[:200]
+            "videos": all_videos[:500]
         })
 
     except Exception as e:
@@ -1756,7 +1756,7 @@ def video_outliers():
                 comp_videos,
                 key=lambda x: int(x["statistics"].get("viewCount", 0)),
                 reverse=True
-            )[:5]
+            )[:15]
 
             trending_videos = []
             for v in comp_videos[:30]:
@@ -1826,7 +1826,7 @@ def video_outliers():
 
         # Interleave videos: trending/popular alternating across channels
         all_videos = []
-        max_videos_per_type = 5
+        max_videos_per_type = 15
         for i in range(max_videos_per_type):
             for j, channel in enumerate(channel_videos):
                 if j % 2 == 0 and i < len(channel["trending"]):

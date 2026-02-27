@@ -1759,11 +1759,11 @@ def video_outliers():
             )[:5]
 
             trending_videos = []
-            for v in comp_videos[:10]:
+            for v in comp_videos[:30]:
                 views = int(v["statistics"].get("viewCount", 0))
                 if avg_recent_views > 0 and (views / avg_recent_views) > 1:
                     trending_videos.append(v)
-                if len(trending_videos) >= 5:
+                if len(trending_videos) >= 15:
                     break
 
             channel_data = {

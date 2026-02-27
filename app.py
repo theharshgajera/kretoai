@@ -1554,150 +1554,7 @@ def shorts_outliers_from_channels():
             return jsonify({"error": "Channel IDs list is required"}), 400
 
         youtube = googleapiclient.discovery.build("youtube", "v3", developerKey=YOUTUBE_API_KEY)
-
         channel_shorts = []
-
-        for ch_id in channel_ids:
-            # Fetch channel details
-            ch_resp = youtube.channels().list(
-                part="snippet,statistics",
-                id=ch_id
-            ).execute()
-
-            if not ch_resp.get("items"):
-                continue
-
-            ch_info = ch_resp["items"][0]
-            ch_title = ch_info["snippet"]["title"]
-            subs_count = int(ch_info["statistics"].get("subscriberCount", 1))
-
-            # Fetch latest videos from the channel (will filter shorts later)
-            search_resp = youtube.search().list(
-                part="snippet",
-                channelId=ch_id,
-                type="video",
-                order="date",
-                maxResults=50
-            ).execute()
-
-            video_ids = [item["id"]["videoId"] for item in search_resp.get("items", [])]
-            if not video_ids:
-                continue
-
-            # Fetch details
-            comp_videos = fetch_video_details(youtube, video_ids)
-            if not comp_videos:
-                continue
-
-            # Filter Shorts: videos <= 90 seconds
-            shorts_videos = []
-            for v in comp_videos:
-                duration_str = v.get("contentDetails", {}).get("duration", "")
-                duration_seconds = parse_duration(duration_str)
-
-                if duration_seconds <= 90:
-                    shorts_videos.append(v)
-
-            if not shorts_videos:
-                continue
-
-            # Calculate average views for these Shorts
-            avg_recent_views = sum(
-                int(v["statistics"].get("viewCount", 0)) for v in shorts_videos
-            ) / len(shorts_videos)
-
-            # Top 15 popular shorts
-            popular_videos = sorted(
-                shorts_videos,
-                key=lambda x: int(x["statistics"].get("viewCount", 0)),
-                reverse=True
-            )[:15]
-
-            # Trending shorts = views > channel average
-            trending_videos = []
-            for v in shorts_videos[:30]:
-                views = int(v["statistics"].get("viewCount", 0))
-                if avg_recent_views > 0 and (views / avg_recent_views) > 1:
-                    trending_videos.append(v)
-                if len(trending_videos) >= 15:
-                    break
-
-            def format_video(v):
-                video_id = v.get("id")
-                snippet = v.get("snippet", {})
-                views = int(v["statistics"].get("viewCount", 0))
-
-                duration_str = v.get("contentDetails", {}).get("duration", "")
-                duration = parse_duration(duration_str)
-
-                multiplier = round(views / avg_recent_views, 2) if avg_recent_views else 0
-                thumb_url = f"https://i.ytimg.com/vi/{video_id}/maxresdefault.jpg"
-                published_at = snippet.get("publishedAt")
-
-                return {
-                    "video_id": v["id"],
-                    "title": snippet.get("title"),
-                    "channel_id": ch_id,
-                    "channel_title": ch_title,
-                    "subscriber_count": subs_count,
-                    "views": views,
-                    "views_formatted": format_number(views),
-                    "duration_seconds": duration,
-                    "multiplier": multiplier,
-                    "avg_recent_views": round(avg_recent_views, 2),
-                    "thumbnail_url": thumb_url,
-                    "url": f"https://www.youtube.com/watch?v={v['id']}",
-                    "published_at": published_at
-                }
-
-            channel_data = {
-                "channel_id": ch_id,
-                "channel_title": ch_title,
-                "subscriber_count": subs_count,
-                "avg_recent_views": round(avg_recent_views, 2),
-                "avg_recent_views_formatted": format_number(avg_recent_views),
-                "trending": [format_video(v) for v in trending_videos],
-                "popular": [format_video(v) for v in popular_videos],
-            }
-
-            channel_shorts.append(channel_data)
-
-        # Interleave like video_outliers
-        all_videos = []
-        max_videos_per_type = 15
-
-        for i in range(max_videos_per_type):
-            for j, channel in enumerate(channel_shorts):
-                if j % 2 == 0 and i < len(channel["trending"]):
-                    all_videos.append(channel["trending"][i])
-                elif j % 2 == 1 and i < len(channel["popular"]):
-                    all_videos.append(channel["popular"][i])
-                if len(all_videos) >= 500:
-                    break
-            if len(all_videos) >= 500:
-                break
-
-        return jsonify({
-            "success": True,
-            "total_videos": len(all_videos),
-            "videos": all_videos[:500]
-        })
-
-    except Exception as e:
-        app.logger.error(f"Shorts outliers error: {str(e)}")
-        return jsonify({"error": str(e)}), 500
-
-@app.route("/api/video_outliers", methods=["POST"])
-def video_outliers():
-    try:
-        data = request.get_json()
-        channel_ids = data.get("channel_ids", [])
-        if not channel_ids:
-            return jsonify({"error": "Channel IDs list is required"}), 400
-
-        youtube = googleapiclient.discovery.build("youtube", "v3", developerKey=YOUTUBE_API_KEY)
-
-        channel_videos = []
 
         for ch_id in channel_ids:
             ch_resp = youtube.channels().list(
@@ -1712,7 +1569,7 @@ def video_outliers():
             ch_title = ch_info["snippet"]["title"]
             subs_count = int(ch_info["statistics"].get("subscriberCount", 1))
 
-            # ✅ Use uploads playlist instead of search — deterministic, consistent
+            # ✅ Use uploads playlist for consistency
             uploads_playlist_id = ch_info["contentDetails"]["relatedPlaylists"]["uploads"]
 
             playlist_resp = youtube.playlistItems().list(
@@ -1733,7 +1590,157 @@ def video_outliers():
             if not comp_videos:
                 continue
 
-            # ✅ Exclude videos newer than 3 days so new uploads don't skew the avg
+            # Filter Shorts: videos <= 90 seconds
+            shorts_videos = [
+                v for v in comp_videos
+                if parse_duration(v.get("contentDetails", {}).get("duration", "")) <= 90
+            ]
+
+            if not shorts_videos:
+                continue
+
+            # ✅ Exclude videos newer than 3 days from avg calculation
+            cutoff = datetime.now(timezone.utc) - timedelta(days=3)
+            mature_shorts = []
+            for v in shorts_videos:
+                published_at = v.get("snippet", {}).get("publishedAt", "")
+                try:
+                    dt = datetime.fromisoformat(published_at.replace("Z", "+00:00"))
+                    if dt < cutoff:
+                        mature_shorts.append(v)
+                except Exception:
+                    mature_shorts.append(v)
+
+            videos_for_avg = mature_shorts if mature_shorts else shorts_videos
+            avg_recent_views = sum(
+                int(v["statistics"].get("viewCount", 0)) for v in videos_for_avg
+            ) / len(videos_for_avg)
+
+            # ✅ popular — only multiplier <= 1
+            popular_videos = sorted(
+                [
+                    v for v in shorts_videos
+                    if avg_recent_views > 0 and
+                    (int(v["statistics"].get("viewCount", 0)) / avg_recent_views) <= 1
+                ],
+                key=lambda x: int(x["statistics"].get("viewCount", 0)),
+                reverse=True
+            )[:15]
+
+            # ✅ trending — only multiplier > 1
+            trending_videos = []
+            for v in shorts_videos[:30]:
+                views = int(v["statistics"].get("viewCount", 0))
+                multiplier = views / avg_recent_views if avg_recent_views > 0 else 0
+                if multiplier > 1:
+                    trending_videos.append(v)
+                if len(trending_videos) >= 15:
+                    break
+
+            def format_video(v, avg=avg_recent_views, ch_id=ch_id, ch_title=ch_title, subs=subs_count):
+                video_id = v.get("id")
+                snippet = v.get("snippet", {})
+                views = int(v["statistics"].get("viewCount", 0))
+                duration = parse_duration(v.get("contentDetails", {}).get("duration", ""))
+                multiplier = round(views / avg, 2) if avg else 0
+                published_at = snippet.get("publishedAt")
+
+                return {
+                    "video_id": video_id,
+                    "title": snippet.get("title"),
+                    "channel_id": ch_id,
+                    "channel_title": ch_title,
+                    "subscriber_count": subs,
+                    "views": views,
+                    "views_formatted": format_number(views),
+                    "duration_seconds": duration,
+                    "multiplier": multiplier,
+                    "avg_recent_views": round(avg, 2),
+                    "thumbnail_url": f"https://i.ytimg.com/vi/{video_id}/maxresdefault.jpg",
+                    "url": f"https://www.youtube.com/watch?v={video_id}",
+                    "published_at": published_at
+                }
+
+            channel_data = {
+                "channel_id": ch_id,
+                "channel_title": ch_title,
+                "subscriber_count": subs_count,
+                "avg_recent_views": round(avg_recent_views, 2),
+                "avg_recent_views_formatted": format_number(avg_recent_views),
+                "trending": [format_video(v) for v in trending_videos],
+                "popular": [format_video(v) for v in popular_videos],
+            }
+
+            channel_shorts.append(channel_data)
+
+        # ✅ Fixed interleave — every channel contributes both trending and popular
+        all_videos = []
+        for i in range(15):
+            for channel in channel_shorts:
+                if i < len(channel["trending"]):
+                    all_videos.append(channel["trending"][i])
+                if i < len(channel["popular"]):
+                    existing_ids = {v["video_id"] for v in all_videos}
+                    if channel["popular"][i]["video_id"] not in existing_ids:
+                        all_videos.append(channel["popular"][i])
+                if len(all_videos) >= 500:
+                    break
+            if len(all_videos) >= 500:
+                break
+
+        return jsonify({
+            "success": True,
+            "total_videos": len(all_videos),
+            "videos": all_videos[:500]
+        })
+
+    except Exception as e:
+        app.logger.error(f"Shorts outliers error: {str(e)}")
+        return jsonify({"error": str(e)}), 500
+@app.route("/api/video_outliers", methods=["POST"])
+def video_outliers():
+    try:
+        data = request.get_json()
+        channel_ids = data.get("channel_ids", [])
+        if not channel_ids:
+            return jsonify({"error": "Channel IDs list is required"}), 400
+
+        youtube = googleapiclient.discovery.build("youtube", "v3", developerKey=YOUTUBE_API_KEY)
+        channel_videos = []
+
+        for ch_id in channel_ids:
+            ch_resp = youtube.channels().list(
+                part="snippet,statistics,contentDetails",
+                id=ch_id
+            ).execute()
+
+            if not ch_resp.get("items"):
+                continue
+
+            ch_info = ch_resp["items"][0]
+            ch_title = ch_info["snippet"]["title"]
+            subs_count = int(ch_info["statistics"].get("subscriberCount", 1))
+
+            uploads_playlist_id = ch_info["contentDetails"]["relatedPlaylists"]["uploads"]
+
+            playlist_resp = youtube.playlistItems().list(
+                part="snippet",
+                playlistId=uploads_playlist_id,
+                maxResults=50
+            ).execute()
+
+            video_ids = [
+                item["snippet"]["resourceId"]["videoId"]
+                for item in playlist_resp.get("items", [])
+            ]
+
+            if not video_ids:
+                continue
+
+            comp_videos = fetch_video_details(youtube, video_ids)
+            if not comp_videos:
+                continue
+
             cutoff = datetime.now(timezone.utc) - timedelta(days=3)
             mature_videos = []
             for v in comp_videos:
@@ -1743,25 +1750,30 @@ def video_outliers():
                     if dt < cutoff:
                         mature_videos.append(v)
                 except Exception:
-                    mature_videos.append(v)  # if date parse fails, include it
+                    mature_videos.append(v)
 
-            # ✅ Calculate avg ONCE from mature videos, fall back to all if none qualify
             videos_for_avg = mature_videos if mature_videos else comp_videos
             avg_recent_views = sum(
                 int(v["statistics"].get("viewCount", 0)) for v in videos_for_avg
             ) / len(videos_for_avg)
 
-            # ✅ popular and trending still use full comp_videos, but avg is stable
+            # ✅ popular — only videos with multiplier <= 1 (at or below average)
             popular_videos = sorted(
-                comp_videos,
+                [
+                    v for v in comp_videos
+                    if avg_recent_views > 0 and
+                    (int(v["statistics"].get("viewCount", 0)) / avg_recent_views) <= 1
+                ],
                 key=lambda x: int(x["statistics"].get("viewCount", 0)),
                 reverse=True
             )[:15]
 
+            # ✅ trending — only videos with multiplier > 1 (above average)
             trending_videos = []
             for v in comp_videos[:30]:
                 views = int(v["statistics"].get("viewCount", 0))
-                if avg_recent_views > 0 and (views / avg_recent_views) > 1:
+                multiplier = views / avg_recent_views if avg_recent_views > 0 else 0
+                if multiplier > 1:
                     trending_videos.append(v)
                 if len(trending_videos) >= 15:
                     break
@@ -1777,7 +1789,6 @@ def video_outliers():
             }
 
             def format_video(v, avg=avg_recent_views, ch_id=ch_id, ch_title=ch_title, subs=subs_count):
-                # ✅ avg is captured via default arg — no closure bug across loop iterations
                 duration_str = v.get("contentDetails", {}).get("duration", "")
                 duration = parse_duration(duration_str)
                 views = int(v["statistics"].get("viewCount", 0))
@@ -1824,15 +1835,16 @@ def video_outliers():
             channel_data["popular"] = [format_video(v) for v in popular_videos]
             channel_videos.append(channel_data)
 
-        # Interleave videos: trending/popular alternating across channels
+        # ✅ Fixed interleave — every channel contributes both trending and popular
         all_videos = []
-        max_videos_per_type = 15
-        for i in range(max_videos_per_type):
-            for j, channel in enumerate(channel_videos):
-                if j % 2 == 0 and i < len(channel["trending"]):
+        for i in range(15):
+            for channel in channel_videos:
+                if i < len(channel["trending"]):
                     all_videos.append(channel["trending"][i])
-                elif j % 2 == 1 and i < len(channel["popular"]):
-                    all_videos.append(channel["popular"][i])
+                if i < len(channel["popular"]):
+                    existing_ids = {v["video_id"] for v in all_videos}
+                    if channel["popular"][i]["video_id"] not in existing_ids:
+                        all_videos.append(channel["popular"][i])
                 if len(all_videos) >= 200:
                     break
             if len(all_videos) >= 200:
@@ -1845,7 +1857,7 @@ def video_outliers():
         })
 
     except Exception as e:
-        app.logger.error(f"Video outliers error: {str(e)}") 
+        app.logger.error(f"Video outliers error: {str(e)}")
         return jsonify({"error": str(e)}), 500
 
 

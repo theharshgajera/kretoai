@@ -1762,7 +1762,7 @@ def video_outliers():
                 [
                     v for v in comp_videos
                     if avg_recent_views > 0 and
-                    (int(v["statistics"].get("viewCount", 0)) / avg_recent_views) <= 1
+                    (int(v["statistics"].get("viewCount", 0)) / avg_recent_views) >= 1
                 ],
                 key=lambda x: int(x["statistics"].get("viewCount", 0)),
                 reverse=True

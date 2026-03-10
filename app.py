@@ -1740,7 +1740,14 @@ def video_outliers():
             comp_videos = fetch_video_details(youtube, video_ids)
             if not comp_videos:
                 continue
-
+            # ✅ Filter out Shorts and very short videos (<120s) at the source
+            comp_videos = [
+                v for v in comp_videos
+                if parse_duration(v.get("contentDetails", {}).get("duration", "")) >= 120
+            ]
+            
+            if not comp_videos:
+                continue
             cutoff = datetime.now(timezone.utc) - timedelta(days=3)
             mature_videos = []
             for v in comp_videos:

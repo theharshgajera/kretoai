@@ -3400,6 +3400,9 @@ def whole_script():
         processed_documents = []
         errors = []
         
+        # NEW: Group-indexed storage to preserve group identity
+        grouped_content = {}  # { "Group Name": { "items": [...], "types": set() } }
+        
         # ========================================
         # PARALLEL PROCESSING OF ALL ITEMS
         # (Keep your existing process_item function unchanged)
@@ -3863,6 +3866,14 @@ def whole_script():
                 elif result_type == 'document':
                     processed_documents.append(result_data)
                     print(f"[{completed}/{len(all_tasks)}] ✓ Document")
+                
+                # NEW: Track by group name
+                if result_type != 'error':
+                    group_name = result_data.get('folder_name', 'Ungrouped')
+                    if group_name not in grouped_content:
+                        grouped_content[group_name] = {'items': [], 'types': set()}
+                    grouped_content[group_name]['items'].append(result_data)
+                    grouped_content[group_name]['types'].add(result_type)
         
         print(f"\n{'='*60}")
         print(f"PROCESSING COMPLETE")
@@ -3884,19 +3895,49 @@ def whole_script():
         document_knowledge = ""
         
         def extract_inspiration_knowledge():
-            """Extract knowledge points from inspiration sources (videos, audio, etc.)"""
+            """Extract knowledge points from inspiration sources (videos, audio, etc.) — GROUP-AWARE"""
             if processed_inspiration:
-                transcripts = [v['transcript'] for v in processed_inspiration]
-                sources_info = [
-                    f"Source {i+1}: {v.get('url', v.get('source', 'Unknown'))}"
-                    for i, v in enumerate(processed_inspiration)
-                ]
+                # Build group-organized transcript sections
+                group_sections = []
+                ungrouped = []
                 
-                knowledge_prompt = f"""You are analyzing {len(transcripts)} inspiration sources to extract KNOWLEDGE POINTS that can be used as reference material for creating a new video script.
+                for v in processed_inspiration:
+                    group_name = v.get('folder_name', 'Ungrouped')
+                    source_label = v.get('url', v.get('source', 'Unknown'))
+                    transcript = v.get('transcript', '')
+                    if group_name and group_name != 'Ungrouped':
+                        group_sections.append((group_name, source_label, transcript))
+                    else:
+                        ungrouped.append((source_label, transcript))
+                
+                # Build grouped transcripts text
+                grouped_text_parts = []
+                current_group = None
+                source_idx = 0
+                for group_name, source_label, transcript in group_sections:
+                    if group_name != current_group:
+                        current_group = group_name
+                        source_idx = 0
+                        grouped_text_parts.append(f'\n--- GROUP: "{group_name}" ---')
+                    source_idx += 1
+                    grouped_text_parts.append(f'Source {source_idx} ({source_label}):\n{transcript}')
+                
+                # Add ungrouped items
+                if ungrouped:
+                    grouped_text_parts.append('\n--- UNGROUPED SOURCES ---')
+                    for idx, (source_label, transcript) in enumerate(ungrouped):
+                        grouped_text_parts.append(f'Source {idx+1} ({source_label}):\n{transcript}')
+                
+                transcripts_text = chr(10).join(grouped_text_parts)
+                
+                knowledge_prompt = f"""You are analyzing {len(processed_inspiration)} inspiration sources to extract KNOWLEDGE POINTS that can be used as reference material for creating a new video script.
+
+The sources are organized into NAMED GROUPS by the user. **PRESERVE the group names** in your output so the user can reference them by name (e.g., "use facts from Group 1").
 
 **IMPORTANT: DO NOT analyze tone, style, or delivery. ONLY extract factual knowledge, insights, and information.**
 
-Extract and organize:
+Extract and organize BY GROUP:
+For each group, extract:
 1. **Key Topics & Themes**: Main subjects discussed
 2. **Facts & Statistics**: Concrete data points, numbers, trends
 3. **Insights & Perspectives**: Unique viewpoints or expert opinions
@@ -3904,13 +3945,10 @@ Extract and organize:
 5. **Actionable Tips**: Practical advice or strategies
 6. **Important Concepts**: Frameworks or methodologies explained
 
-Sources:
-{chr(10).join(sources_info)}
+SOURCES (grouped):
+{transcripts_text}
 
-TRANSCRIPTS:
-{chr(10).join([f'--- SOURCE {i+1} ---{chr(10)}{t}' for i, t in enumerate(transcripts)])}
-
-Provide a structured knowledge summary without copying style or delivery."""
+Provide a structured knowledge summary ORGANIZED BY GROUP NAME. Use clear headers like "## Group: [name]" for each group."""
 
                 message = anthropic_client.messages.create(
                     model="claude-sonnet-4-20250514",
@@ -3921,7 +3959,7 @@ Provide a structured knowledge summary without copying style or delivery."""
                 result = message.content[0].text.strip()
                 
                 print(f"\n{'='*80}")
-                print(f"INSPIRATION KNOWLEDGE EXTRACTED")
+                print(f"INSPIRATION KNOWLEDGE EXTRACTED (GROUP-AWARE)")
                 print(f"{'='*80}")
                 print(f"{result[:800]}...")
                 print(f"{'='*80}\n")
@@ -3930,32 +3968,58 @@ Provide a structured knowledge summary without copying style or delivery."""
             return "No inspiration sources provided."
         
         def extract_document_knowledge():
-            """Extract knowledge from documents, images, text inputs"""
+            """Extract knowledge from documents, images, text inputs — GROUP-AWARE"""
             if processed_documents:
-                texts = [d['text'] for d in processed_documents]
-                sources_info = [
-                    f"Document {i+1}: {d.get('filename', d.get('source_name', 'Unknown'))}"
-                    for i, d in enumerate(processed_documents)
-                ]
+                # Build group-organized document sections
+                group_sections = []
+                ungrouped = []
                 
-                doc_prompt = f"""You are analyzing {len(texts)} documents/images/text inputs to extract FACTUAL KNOWLEDGE that can be used as reference material.
+                for d in processed_documents:
+                    group_name = d.get('folder_name', 'Ungrouped')
+                    doc_label = d.get('filename', d.get('source_name', 'Unknown'))
+                    text = d.get('text', '')
+                    if group_name and group_name != 'Ungrouped':
+                        group_sections.append((group_name, doc_label, text))
+                    else:
+                        ungrouped.append((doc_label, text))
+                
+                # Build grouped documents text
+                grouped_text_parts = []
+                current_group = None
+                doc_idx = 0
+                for group_name, doc_label, text in group_sections:
+                    if group_name != current_group:
+                        current_group = group_name
+                        doc_idx = 0
+                        grouped_text_parts.append(f'\n--- GROUP: "{group_name}" ---')
+                    doc_idx += 1
+                    grouped_text_parts.append(f'Document {doc_idx} ({doc_label}):\n{text}')
+                
+                # Add ungrouped items
+                if ungrouped:
+                    grouped_text_parts.append('\n--- UNGROUPED DOCUMENTS ---')
+                    for idx, (doc_label, text) in enumerate(ungrouped):
+                        grouped_text_parts.append(f'Document {idx+1} ({doc_label}):\n{text}')
+                
+                documents_text = chr(10).join(grouped_text_parts)
+                
+                doc_prompt = f"""You are analyzing {len(processed_documents)} documents/images/text inputs to extract FACTUAL KNOWLEDGE that can be used as reference material.
+
+The documents are organized into NAMED GROUPS by the user. **PRESERVE the group names** in your output so the user can reference them by name.
 
 **IMPORTANT: Extract only facts, data, and information - NOT writing style.**
 
-Focus on:
+For each group, focus on:
 1. **Core Facts & Data**: Key information and statistics
 2. **Technical Details**: Specific methodologies or processes
 3. **Expert Insights**: Authoritative perspectives
 4. **Important Concepts**: Key ideas and frameworks
 5. **Reference Material**: Information worth citing
 
-Sources:
-{chr(10).join(sources_info)}
+DOCUMENTS (grouped):
+{documents_text}
 
-DOCUMENTS:
-{chr(10).join([f'--- DOCUMENT {i+1} ---{chr(10)}{t}' for i, t in enumerate(texts)])}
-
-Provide a structured knowledge summary (400-600 words) focusing on factual content only."""
+Provide a structured knowledge summary ORGANIZED BY GROUP NAME. Use clear headers like "## Group: [name]" for each group."""
 
                 message = anthropic_client.messages.create(
                     model="claude-sonnet-4-20250514",
@@ -3966,7 +4030,7 @@ Provide a structured knowledge summary (400-600 words) focusing on factual conte
                 result = message.content[0].text.strip()
                 
                 print(f"\n{'='*80}")
-                print(f"DOCUMENT KNOWLEDGE EXTRACTED")
+                print(f"DOCUMENT KNOWLEDGE EXTRACTED (GROUP-AWARE)")
                 print(f"{'='*80}")
                 print(f"{result[:800]}...")
                 print(f"{'='*80}\n")
@@ -3992,11 +4056,20 @@ Provide a structured knowledge summary (400-600 words) focusing on factual conte
         print(f"GENERATING SCRIPT")
         print(f"{'='*60}\n")
         
+        # Build group summary for prompt context
+        group_summary_lines = []
+        for gname, gdata in grouped_content.items():
+            item_count = len(gdata['items'])
+            types_str = ', '.join(gdata['types'])
+            group_summary_lines.append(f'- "{gname}" ({types_str}): {item_count} item(s)')
+        group_summary_text = chr(10).join(group_summary_lines) if group_summary_lines else 'No named groups.'
+        
         script = script_generator.generate_script_with_tone(
             tone_analyzer=tone_analyzer,  # Optional - can be None
             knowledge_base={
                 'inspiration_knowledge': inspiration_knowledge,
-                'document_knowledge': document_knowledge
+                'document_knowledge': document_knowledge,
+                'group_summary': group_summary_text
             },
             prompt=prompt,
             target_minutes=target_minutes

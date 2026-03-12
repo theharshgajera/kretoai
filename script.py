@@ -2657,6 +2657,7 @@ Write in 1-2 sentence paragraphs for maximum readability. Each paragraph = one c
             
             inspiration_knowledge = knowledge_base.get('inspiration_knowledge', '')
             document_knowledge = knowledge_base.get('document_knowledge', '')
+            group_summary = knowledge_base.get('group_summary', '')
             
             # ============================================
             # PART 3: BUILD SIMPLE GENERATION PROMPT
@@ -2676,10 +2677,24 @@ Write in 1-2 sentence paragraphs for maximum readability. Each paragraph = one c
             if inspiration_knowledge or document_knowledge:
                 content_parts = []
                 if inspiration_knowledge:
-                    content_parts.append(f"**Reference Content:**\n{inspiration_knowledge}")
+                    content_parts.append(f"**Reference Content (organized by group):**\n{inspiration_knowledge}")
                 if document_knowledge:
-                    content_parts.append(f"**Documents:**\n{document_knowledge}")
+                    content_parts.append(f"**Documents (organized by group):**\n{document_knowledge}")
                 content_section = "\n\n".join(content_parts)
+            
+            # Build group reference map section
+            group_map_section = ""
+            if group_summary and group_summary != 'No named groups.':
+                group_map_section = f"""\n<group_reference_map>
+The user organized their content into the following named groups:
+{group_summary}
+
+**CRITICAL GROUP RULES:**
+- The reference content above is labeled by group name (e.g., "## Group: [name]")
+- When the user mentions a group by name in their prompt (e.g., "use facts from Group 1", "take the humor from Comedy Group"), you MUST use content specifically from that group
+- If the user doesn't reference specific groups, blend all group content naturally
+- Individual (ungrouped) items should be used as general reference material
+</group_reference_map>\n"""
             
             generation_prompt = f"""You are a professional scriptwriter tasked with writing content that PERFECTLY matches a specific creator's voice.
 
@@ -2694,7 +2709,7 @@ Topic: {prompt}
 
 {duration_instruction if duration_instruction else "Create a comprehensive script with natural pacing."}
 </assignment>
-
+{group_map_section}
 <reference_knowledge>
 {content_section if content_section else "No reference content provided. Research the topic yourself and bring fresh insights."}
 </reference_knowledge>

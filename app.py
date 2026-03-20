@@ -2379,48 +2379,48 @@ def generate_titles():
         
         # Initialize base prompt from provided guidelines
         base_prompt = """
-Generate 5 viral YouTube video title options that maximize click-through rate (CTR) and align with the video's content, adhering to the following comprehensive guidelines for creating high-performing titles. **Critical Instruction**: Strictly avoid using special symbols such as !, @, #, $, %, ^, &, *, or any other non-alphanumeric characters except spaces, commas, periods, question marks, and hyphens. Titles must be clean, professional, and use only alphanumeric characters, spaces, commas, periods, question marks, and hyphens to ensure compatibility and readability.
+You are an expert YouTube title strategist who writes titles that sound completely natural and human-written - never robotic, never templated, never AI-sounding. Every title must feel like it was written by a real creator who deeply understands their audience.
 
-### Foundation of a Viral Title
-- **Role and Importance**: The title acts as the headline or 'billboard' in the crowded YouTube feed, appearing alongside the thumbnail. Its primary jobs are to help YouTube recommend the content to the right audience through metadata (title, description, tags), accurately confirm what the viewer will get to encourage continued watching, and boost reach even for small channels. A single title change can revive underperforming videos. Titles directly impact CTR, impressions, and watch time. In education niches, clear titles may outperform flashy thumbnails; in entertainment, thumbnails lead but titles frame the story. Always prioritize writing for humans first, as algorithms reward what people click and watch.
-- **How YouTube Processes Titles**: YouTube uses the title as part of metadata to understand the video's topic via keywords. Balance human appeal (emotional pull for clicks) with algorithmic needs (1-2 relevant keywords for accurate categorization).
-- **Core Qualities for High-CTR Titles**: Keep titles short and easy to read, ideally under 70 characters (absolute max 100, with key words front-loaded since only 40-50 characters may show in Suggested Videos). Ensure accuracy and honesty to avoid misleading viewers, which harms retention and rankings—no clickbait that doesn't deliver. Drive emotions like curiosity, fear, excitement, urgency, or shock. Provide a clear benefit or hook, telling viewers what they'll gain or learn.
-- **Psychological Drivers**: Leverage three click-worthy emotions: Curiosity (opens an information gap, e.g., 'How did they do that'), Desire (promises an outcome or status, e.g., 'faster, richer, calmer'), Fear (helps avoid loss or mistakes, e.g., 'don’t waste time, avoid this mistake'). Combine Curiosity + Desire for sustainable appeal or Curiosity + Fear for stronger ethical impact. Ensure the video's intro (script) confirms and exceeds title expectations for 'click confirmation.'
+Generate exactly 10 YouTube video titles split into two categories of 5 titles each:
 
-### Core Title Frameworks
-- **Title Modes Based on Discovery Path**: Select one of three modes fitting the video's path:
-  - **Searchable**: Clear keywords and outcomes for tutorials or evergreen topics (e.g., 'How to Start a YouTube Channel in 2025').
-  - **Browse/Intriguing**: Sparks curiosity for recommendation feeds, paired with bold thumbnails (e.g., 'This Camera is Worse and That’s Why I Bought It').
-  - **Hybrid**: Blends keywords with intrigue for both search and browse (e.g., 'How to Make 100 Dollars a Day Without a Job').
-- **Power Words for Appeal**: Incorporate 1-2 words from these categories to enhance pull:
-  - Authority: Pro, Expert, Insider, Proven, Blueprint.
-  - Urgency: Today, Now, Before You, Last Chance.
-  - Exclusivity: Secret, Hidden, Little-Known, Behind-the-Scenes.
-  - Niche-Specific: For finance (millionaire, passive income), fitness (shredded, fat-burning), creators (algorithm, CTR, hook).
-  - Avoid dull words that reduce appeal.
-- **Proven High-Performing Formats**: Adapt one of these for each 5 titles diifferen structures to the video’s topic and niche:
-  - How-To: 'How to Do X in Timeframe'.
-  - List: 'Number Mistakes Every Audience Makes'.
-  - Unexpected: 'Why I Did Something Unexpected'.
-  - Urgency: 'Do This Before Event or Deadline'.
-  - Experiment: 'I Tried Thing So You Don’t Have To'.
-  - Result/Proof: 'How I Made X Dollars in Timeframe'.
-  - Question: 'Is This the End of Topic'.
-  - Before/After: 'From 0 to Goal in Timeframe'.
-  - Challenge: 'I Tried Action for Timeframe - Here’s What Happened'.
-  - Audience Callout: 'If You’re a Specific Audience, Watch This'.
-  - Open a Loop: 'I Flew 7292 Miles to Eat Here'.
-  - Additional List: 'Best 10 Ways to Grow on YouTube'.
+---
 
-### Process for Writing Viral Titles
-Follow this step-by-step research and creation flow:
-1. **Start with Video Content**: Review the script or edited video first. Identify the main payoff or hook moment to ensure the title matches the content exactly. Viewers should feel 'Yes, this is exactly what I clicked for.'
-2. **Research Before Writing**: Based on your knowledge of YouTube trends, infer popular title structures and keywords for the given topic. Identify high-performing patterns typically used for similar topics, niches, or audiences (e.g., tutorials, vlogs, or challenges). Consider common title frameworks used by successful videos in the niche. If available, draw inspiration from past high-performing titles, adapting their structures by swapping nouns or verbs.
-3. **Tweak and Adapt**: Adjust successful title formats to fit the video’s unique angle, ensuring it aligns with active searches while adding curiosity for browse recommendations.
-4. **Title & Thumbnail Chemistry**: Ensure title and thumbnail work together—divide labor: one teases (e.g., shocking visual), the other clarifies the promise. Avoid repeating text unless the concept is exceptionally strong. For intriguing titles, pair with visual proof in thumbnails (e.g., surprising face with text).
-5. **Final Pass for Accuracy & Strength**: Confirm 100% accuracy to the video—no misleading elements that kill retention. Adhere to length: Ideal 50-70 characters, max 100, front-load key words. Test hook strength: 'Would someone who clicked feel the video delivered exactly what was promised?' Rework if there’s any risk of misleading.
+CATEGORY 1 - SEO OPTIMIZED TITLES (5 titles):
+These titles are built to rank in YouTube and Google search. They must:
+- Naturally include high-intent keywords people actually search for (weave them in conversationally, never stuff them awkwardly)
+- Be clear, specific, and immediately tell the viewer exactly what they will learn or gain
+- Sound like something a knowledgeable friend would say, not a keyword-stuffed robot
+- Front-load the most important keyword or benefit within the first 4-5 words
+- Stay between 50-70 characters ideally (hard max 100 characters)
+- Use formats that perform well in search: How-To, Step-by-Step, Best X for Y, Complete Guide, X Tips, X Mistakes to Avoid, X vs Y, What Happens When, Does X Actually Work
+- Feel evergreen and trustworthy - something a viewer would click from search results at any time
+- Example feel: "How to Lose Belly Fat Without Giving Up Your Favorite Foods" or "10 Budgeting Mistakes That Keep You Broke"
 
-Tailor all titles to the video’s niche (e.g., education, entertainment, finance, fitness) and target audience using specific language or callouts. **Reiterated Instruction**: Ensure titles contain no special symbols (e.g., !, @, #, $, %, ^, &, *); use only alphanumeric characters, spaces, commas, periods, question marks, and hyphens.
+CATEGORY 2 - OUTLIER TITLES (5 titles):
+These titles are designed to go viral through Browse features, Suggested Videos, and Home Feed. They must:
+- Open a curiosity gap that makes it genuinely impossible not to click
+- Use unexpected angles, surprising contrasts, bold personal stories, or counterintuitive statements
+- Sound like something a real person would blurt out in conversation - raw, honest, a little vulnerable or bold
+- Create a strong emotional pull: shock, relatability, FOMO, fascination, or unexpected humor
+- Avoid sounding like a generic viral template - each title should feel fresh and specific to the content
+- Can be slightly longer if the intrigue demands it, but still punchy and front-loaded
+- Use formats that perform well in browse: Personal revelation, Unexpected result, Bold opinion, Story-driven, Shocking contrast, Behind-the-scenes confession, Pattern interrupt
+- Example feel: "I Quit My Job to Test If Passive Income Is Actually Real" or "Nobody Talks About This Side of Losing Weight"
+
+---
+
+STRICT RULES FOR ALL 10 TITLES (non-negotiable):
+1. NO special symbols whatsoever - forbidden characters include: ! @ # $ % ^ & * ( ) [ ] { } | \ / < > = + _ ~ ` " '
+2. Only allowed punctuation: spaces, commas, periods, question marks, and hyphens
+3. Every title must sound 100 percent human-written - varied sentence structures, natural phrasing, conversational rhythm
+4. No two titles should follow the same structural pattern or start with the same word
+5. No clickbait that the video cannot deliver on - every title must accurately reflect the content
+6. No corporate-speak, buzzword stuffing, or AI-sounding phrases like "Unlock", "Discover", "Leverage", "Dive into", "Game-changing", "Revolutionary"
+7. Titles should feel like they came from 10 different real creators with different voices, not one AI generating variations
+8. Each title must stand alone as compelling - if you removed all other context, a stranger should still want to click it
+9. Virality score must be honestly assessed based on realistic CTR potential for that specific title type (SEO titles typically score 65-82, Outlier titles typically score 75-95)
+10. Do not start titles with numbers more than twice across all 10 titles
+
 """
         
         # Add topic and research data if provided
@@ -2439,56 +2439,106 @@ Tailor all titles to the video’s niche (e.g., education, entertainment, financ
                     app.logger.warning(f"No videos found for topic: {topic}")
                 else:
                     base_prompt += (
-                        f"\nGiven the topic: '{topic}' and the following popular video titles related to it: "
-                        f"{', '.join(titles)}, use these as inspiration for title structures and keywords. "
+                        f"\nThe video topic is: '{topic}'. Here are currently popular titles on this topic from YouTube for reference and inspiration on what keywords and angles are working - DO NOT copy these, use them only to understand the landscape: "
+                        f"{', '.join(titles)}. "
+                        f"Study the keyword patterns and audience intent behind these titles, then write 10 original titles that outperform them. "
                     )
             except HttpError as e:
                 app.logger.error(f"YouTube API error while searching topic '{topic}': {str(e)}")
-                base_prompt += f"\nGiven the topic: '{topic}', infer relevant keywords and title structures. "
+                base_prompt += f"\nThe video topic is: '{topic}'. Infer the most relevant search keywords and browse-worthy angles for this topic based on what typically performs well on YouTube. "
         
         # Add niche and audience if provided
         if niche != 'general' or audience != 'general':
-            base_prompt += f"\nTailor the titles for the niche: '{niche}' and target audience: '{audience}'. "
+            base_prompt += (
+                f"\nNiche: '{niche}'. Target audience: '{audience}'. "
+                f"Use language, references, and pain points that resonate specifically with this audience. "
+                f"The titles should feel like they were written by a creator who is part of this community, not an outsider. "
+            )
         
         # Add custom prompt if provided
         if prompt:
-            base_prompt += f"\nUse the following user prompt for additional context: '{prompt[:500]}' (truncated for brevity). "
+            base_prompt += (
+                f"\nAdditional context from the creator: '{prompt[:500]}'. "
+                f"Use this to sharpen the angle and ensure the titles reflect the creator's unique perspective or hook. "
+            )
         
         # Add script / combined extracted context to prompt if provided
         if combined_script:
             base_prompt += (
-                f"\nAlso consider the following reference context extracted from provided scripts or media: '{combined_script[:1500]}' (truncated for brevity). "
-                f"Extract the main hook or payoff from the context to ensure the titles match the content. "
+                f"\nHere is the actual content context from the video script or media provided - use this to identify the single strongest hook, most surprising moment, or most valuable insight the video delivers, and make sure at least some titles are built around that core payoff: "
+                f"'{combined_script[:1500]}'. "
+                f"The viewer who clicks must feel the video delivered exactly what the title promised. "
             )
+
         # Finalize prompt with output instructions
         base_prompt += (
-            f"\nFor each title, provide a virality score out of 100 based on its potential CTR, emotional appeal, and alignment with YouTube’s algorithm. "
-            f"Also, provide 10 relevant tags and one description (100-150 words) common to all 5 titles, optimized for the topic, niche, and audience. "
-            f"Return the response in valid JSON format with the following structure: "
-            f"{{ 'titles': [{{'title': 'string', 'virality_score': int}}, ...], 'tags': ['string', ...], 'description': 'string' }}"
+            f"""
+For each title provide a virality score out of 100 reflecting realistic CTR potential.
+Also generate 10 relevant tags and one shared description of 100-150 words optimized for search, applicable to all 10 titles.
+
+Return ONLY valid JSON with exactly this structure, no extra text before or after:
+{{
+  "seo_titles": [
+    {{"title": "string", "virality_score": int}},
+    {{"title": "string", "virality_score": int}},
+    {{"title": "string", "virality_score": int}},
+    {{"title": "string", "virality_score": int}},
+    {{"title": "string", "virality_score": int}}
+  ],
+  "outlier_titles": [
+    {{"title": "string", "virality_score": int}},
+    {{"title": "string", "virality_score": int}},
+    {{"title": "string", "virality_score": int}},
+    {{"title": "string", "virality_score": int}},
+    {{"title": "string", "virality_score": int}}
+  ],
+  "tags": ["string", "string", "string", "string", "string", "string", "string", "string", "string", "string"],
+  "description": "string"
+}}
+"""
         )
         
         # Generate titles using the AI model
         client = genai.GenerativeModel('gemini-2.0-flash')
         response = client.generate_content(base_prompt)
-        gemini_response = response.text
+        gemini_response = response.text.strip()
         
-        # Clean and parse the response
-        if gemini_response.startswith('```json\n') and gemini_response.endswith('\n```'):
-            gemini_response = gemini_response[7:-4]
+        # Clean and parse the response - handle multiple markdown formats
+        if gemini_response.startswith('```json'):
+            gemini_response = gemini_response[7:]
+        elif gemini_response.startswith('```'):
+            gemini_response = gemini_response[3:]
+        if gemini_response.endswith('```'):
+            gemini_response = gemini_response[:-3]
+        gemini_response = gemini_response.strip()
+
         try:
-            gemini_response = json.loads(gemini_response)
+            parsed_response = json.loads(gemini_response)
         except json.JSONDecodeError as e:
             app.logger.error(f"Invalid JSON response from AI model: {str(e)}")
+            app.logger.error(f"Raw response: {gemini_response[:500]}")
             return jsonify({'error': 'Failed to parse AI response'}), 500
         
-        # Validate response structure
-        if not isinstance(gemini_response, dict) or 'titles' not in gemini_response or 'tags' not in gemini_response or 'description' not in gemini_response:
-            app.logger.error("Invalid response structure from AI model")
+        # Validate response structure - check for new dual-category format
+        required_keys = ['seo_titles', 'outlier_titles', 'tags', 'description']
+        if not isinstance(parsed_response, dict) or not all(k in parsed_response for k in required_keys):
+            app.logger.error(f"Invalid response structure from AI model. Keys found: {list(parsed_response.keys()) if isinstance(parsed_response, dict) else 'not a dict'}")
             return jsonify({'error': 'Invalid response structure from AI model'}), 500
+
+        # Validate each title category has exactly 5 titles
+        if len(parsed_response.get('seo_titles', [])) != 5:
+            app.logger.warning(f"Expected 5 SEO titles, got {len(parsed_response.get('seo_titles', []))}")
+        if len(parsed_response.get('outlier_titles', [])) != 5:
+            app.logger.warning(f"Expected 5 outlier titles, got {len(parsed_response.get('outlier_titles', []))}")
+
+        # Also include a combined 'titles' key for backwards compatibility with any existing frontend consumers
+        parsed_response['titles'] = parsed_response['seo_titles'] + parsed_response['outlier_titles']
         
-        app.logger.info(f"Generated {len(gemini_response['titles'])} titles for topic: {topic or 'unknown'}")
-        return jsonify(gemini_response)
+        app.logger.info(
+            f"Generated {len(parsed_response['seo_titles'])} SEO titles and "
+            f"{len(parsed_response['outlier_titles'])} outlier titles for topic: {topic or 'unknown'}"
+        )
+        return jsonify(parsed_response)
     
     except HttpError as e:
         app.logger.error(f"YouTube API error in generate_titles: {str(e)}")
@@ -2497,6 +2547,158 @@ Tailor all titles to the video’s niche (e.g., education, entertainment, financ
         app.logger.error(f"Generate titles error: {str(e)}")
         return jsonify({'error': f'An error occurred: {str(e)}'}), 500
 
+
+@app.route('/api/search_videos_on_title', methods=['POST'])
+def search_videos_on_title():
+    try:
+        data = request.get_json()
+        title = data.get("title", "").strip()
+        video_type = data.get("type", "long").strip().lower()  # "long" or "short"
+
+        if not title:
+            return jsonify({"error": "Title is required"}), 400
+
+        if video_type not in ["long", "short"]:
+            return jsonify({"error": "Type must be 'long' or 'short'"}), 400
+
+        youtube = googleapiclient.discovery.build("youtube", "v3", developerKey=YOUTUBE_API_KEY)
+
+        # Search YouTube with the given title
+        search_resp = youtube.search().list(
+            part="snippet",
+            q=title,
+            type="video",
+            maxResults=50,
+            videoDuration="any" if video_type == "short" else "medium",
+            order="relevance"
+        ).execute()
+
+        video_ids = [
+            item["id"]["videoId"]
+            for item in search_resp.get("items", [])
+            if item["id"].get("videoId")
+        ]
+
+        if not video_ids:
+            return jsonify({
+                "success": True,
+                "total_videos": 0,
+                "videos": [],
+                "query": title,
+                "type": video_type
+            })
+
+        # Fetch full video details
+        all_video_details = fetch_video_details(youtube, video_ids)
+
+        if not all_video_details:
+            return jsonify({
+                "success": True,
+                "total_videos": 0,
+                "videos": [],
+                "query": title,
+                "type": video_type
+            })
+
+        # Filter by duration based on type
+        # Shorts: < 120 seconds | Long: >= 120 seconds
+        if video_type == "short":
+            filtered_videos = [
+                v for v in all_video_details
+                if parse_duration(v.get("contentDetails", {}).get("duration", "")) < 120
+            ]
+        else:
+            filtered_videos = [
+                v for v in all_video_details
+                if parse_duration(v.get("contentDetails", {}).get("duration", "")) >= 120
+            ]
+
+        if not filtered_videos:
+            return jsonify({
+                "success": True,
+                "total_videos": 0,
+                "videos": [],
+                "query": title,
+                "type": video_type
+            })
+
+        # Compute average views across filtered results to calculate multiplier
+        total_views = sum(int(v["statistics"].get("viewCount", 0)) for v in filtered_videos)
+        avg_views = total_views / len(filtered_videos) if filtered_videos else 1
+
+        # Format each video in the same structure as video_outliers
+        def format_video(v, avg=avg_views):
+            duration_str = v.get("contentDetails", {}).get("duration", "")
+            duration = parse_duration(duration_str)
+            views = int(v["statistics"].get("viewCount", 0))
+            multiplier = round(views / avg, 2) if avg > 0 else 0
+
+            snippet = v.get("snippet", {}) or {}
+            ch_id = snippet.get("channelId", "")
+            ch_title = snippet.get("channelTitle", "")
+
+            language = (
+                snippet.get("defaultAudioLanguage")
+                or snippet.get("defaultLanguage")
+                or snippet.get("language")
+                or None
+            )
+
+            published_at = snippet.get("publishedAt")
+            published_date_friendly = None
+            if published_at:
+                try:
+                    if published_at.endswith("Z"):
+                        try:
+                            dt = datetime.strptime(published_at, "%Y-%m-%dT%H:%M:%SZ")
+                        except ValueError:
+                            dt = datetime.strptime(published_at, "%Y-%m-%dT%H:%M:%S.%fZ")
+                    else:
+                        dt = datetime.fromisoformat(published_at)
+                    published_date_friendly = dt.strftime("%Y-%m-%d")
+                except Exception:
+                    published_date_friendly = published_at
+
+            return {
+                "video_id": v["id"],
+                "title": snippet.get("title"),
+                "channel_id": ch_id,
+                "channel_title": ch_title,
+                "subscriber_count": None,
+                "views": views,
+                "views_formatted": format_number(views),
+                "duration_seconds": duration,
+                "multiplier": multiplier,
+                "avg_recent_views": round(avg, 2),
+                "channel_avg_views_formatted": format_number(round(avg, 0)),
+                "thumbnail_url": snippet.get("thumbnails", {}).get("high", {}).get("url"),
+                "url": f"https://www.youtube.com/watch?v={v['id']}",
+                "language": language,
+                "published_date": published_at,
+                "published_date_friendly": published_date_friendly
+            }
+
+        formatted_videos = [format_video(v) for v in filtered_videos]
+
+        # Sort by multiplier descending (outliers first), then by views descending as tiebreaker
+        formatted_videos.sort(
+            key=lambda x: (x["multiplier"], x["views"]),
+            reverse=True
+        )
+
+        return jsonify({
+            "success": True,
+            "query": title,
+            "type": video_type,
+            "total_videos": len(formatted_videos),
+            "avg_views_across_results": round(avg_views, 2),
+            "avg_views_formatted": format_number(round(avg_views, 0)),
+            "videos": formatted_videos
+        })
+
+    except Exception as e:
+        app.logger.error(f"Search videos error: {str(e)}")
+        return jsonify({"error": str(e)}), 500
 @app.route('/api/generate_ideas', methods=['POST'])
 def generate_ideas():
     """Generate 20 similar viral YouTube video ideas based on provided title."""

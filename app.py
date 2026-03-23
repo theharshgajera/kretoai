@@ -2187,23 +2187,32 @@ Candidate Channels:
 
 @app.route('/api/generate_titles', methods=['POST'])
 def generate_titles():
-    """Generate viral YouTube titles based on provided topic, prompt, or script."""
+    """
+    Generate viral YouTube titles based on provided topic, prompt, or script.
+    After generation, automatically searches YouTube videos for each of the 5
+    outlier titles in parallel and attaches results to each outlier title object.
+    """
     try:
         data = request.get_json()
         app.logger.debug(f"Received data: {data}")
         topic = data.get('topic')
         prompt = data.get('prompt')
         script = data.get('script', '')
-        youtube_url = data.get('youtube_url', '').strip()  # Optional: YouTube URL to pull transcript from
-        niche = data.get('niche', 'general')  # Optional: niche for tailoring titles
-        audience = data.get('audience', 'general')  # Optional: target audience
+        youtube_url = data.get('youtube_url', '').strip()
+        niche = data.get('niche', 'general')
+        audience = data.get('audience', 'general')
+        # NEW: accept video_type for outlier video search ("long" or "short", default "long")
+        video_type = data.get('video_type', 'long').strip().lower()
+        if video_type not in ['long', 'short']:
+            video_type = 'long'
 
-        # We will collect everything into a single script variable
+        # ------------------------------------------------------------------ #
+        # STEP 1 — Collect all transcript / script content                    #
+        # ------------------------------------------------------------------ #
         extracted_texts = []
         if script:
             extracted_texts.append(script)
 
-        # 1. Process legacy youtube_url
         if youtube_url:
             try:
                 print(f"[generate_titles] Fetching transcript for: {youtube_url}")
@@ -2216,15 +2225,13 @@ def generate_titles():
             except Exception as e:
                 print(f"[generate_titles] ✗ Failed to fetch transcript: {str(e)}")
 
-        # 2. Process flat media arrays (youtube_urls, instagram_urls, audio_files, etc) just like whole_script
         from concurrent.futures import ThreadPoolExecutor, as_completed
         import base64
-        import requests
-        
+        import requests as req_lib
+
         user_id = request.remote_addr or "unknown_user"
         folders = []
-        
-        # YouTube URLs
+
         youtube_urls = data.get('youtube_urls', [])
         if youtube_urls and isinstance(youtube_urls, list):
             yt_folder = {'name': 'YouTube', 'type': 'inspiration', 'items': []}
@@ -2233,8 +2240,7 @@ def generate_titles():
                     yt_folder['items'].append({'type': 'youtube_url', 'url': url.strip()})
             if yt_folder['items']:
                 folders.append(yt_folder)
-        
-        # Instagram URLs
+
         instagram_urls = data.get('instagram_urls', [])
         if instagram_urls and isinstance(instagram_urls, list):
             insta_folder = {'name': 'Instagram', 'type': 'inspiration', 'items': []}
@@ -2243,8 +2249,7 @@ def generate_titles():
                     insta_folder['items'].append({'type': 'instagram_url', 'url': url.strip()})
             if insta_folder['items']:
                 folders.append(insta_folder)
-        
-        # Audio Files
+
         audio_files = data.get('audio_files', [])
         if audio_files and isinstance(audio_files, list):
             audio_folder = {'name': 'Audio Files', 'type': 'inspiration', 'items': []}
@@ -2254,9 +2259,8 @@ def generate_titles():
                         audio_url = audio_url.strip().lstrip('$')
                         if not audio_url.startswith(('http://', 'https://')):
                             continue
-                        
                         print(f"Downloading audio {idx+1}/{len(audio_files)}: {audio_url[:80]}...")
-                        response = requests.get(audio_url, timeout=60)
+                        response = req_lib.get(audio_url, timeout=60)
                         if response.status_code == 200:
                             filename = audio_url.split('/')[-1].split('?')[0] or f'audio_{idx+1}.mp3'
                             audio_data = base64.b64encode(response.content).decode('utf-8')
@@ -2269,15 +2273,14 @@ def generate_titles():
                         print(f"  ✗ Error downloading audio: {str(e)}")
             if audio_folder['items']:
                 folders.append(audio_folder)
-                
-        # Video Files
+
         video_files = data.get('video_files', [])
         if video_files and isinstance(video_files, list):
             video_folder = {'name': 'Videos', 'type': 'inspiration', 'items': []}
             for idx, video_url in enumerate(video_files):
                 if video_url and isinstance(video_url, str) and video_url.strip():
                     try:
-                        response = requests.get(video_url, timeout=60)
+                        response = req_lib.get(video_url, timeout=60)
                         if response.status_code == 200:
                             filename = video_url.split('/')[-1].split('?')[0] or f'video_{idx+1}.mp4'
                             video_data = base64.b64encode(response.content).decode('utf-8')
@@ -2291,25 +2294,21 @@ def generate_titles():
             if video_folder['items']:
                 folders.append(video_folder)
 
-        # Process gathered folders
         def process_media_item(folder_name, folder_type, item, item_idx):
             try:
                 item_type = item.get('type')
-                
                 if item_type == 'youtube_url':
                     url = item.get('url', '').strip()
                     if url and video_processor.validate_youtube_url(url):
                         transcript = transcribe_youtube_with_transcript_api(url)
                         if transcript and len(transcript) >= 50:
                             return transcript
-                            
                 elif item_type == 'instagram_url':
                     url = item.get('url', '').strip()
                     if url and instagram_processor.validate_instagram_url(url):
                         result = instagram_processor.process_instagram_url(url)
                         if not result.get('error'):
                             return result.get('transcript')
-                            
                 elif item_type == 'audio_file':
                     filename = item.get('filename', 'audio.mp3')
                     file_data = item.get('data')
@@ -2330,7 +2329,6 @@ def generate_titles():
                             if os.path.exists(audio_path):
                                 try: os.remove(audio_path)
                                 except: pass
-                                
                 elif item_type == 'video_file':
                     filename = item.get('filename', 'video.mp4')
                     file_data = item.get('data')
@@ -2351,12 +2349,10 @@ def generate_titles():
                             if os.path.exists(video_path):
                                 try: os.remove(video_path)
                                 except: pass
-                                
             except Exception as e:
                 print(f"[generate_titles] Error processing media item: {str(e)}")
             return None
 
-        # Execute processing in parallel
         futures = []
         with ThreadPoolExecutor(max_workers=5) as executor:
             for folder in folders:
@@ -2364,20 +2360,19 @@ def generate_titles():
                 folder_type = folder.get('type', 'inspiration')
                 for i, item in enumerate(folder.get('items', [])):
                     futures.append(executor.submit(process_media_item, folder_name, folder_type, item, i))
-                    
             for future in as_completed(futures):
                 result = future.result()
                 if result:
                     extracted_texts.append(result)
 
-        # Combine all extracted texts into a single context string
         combined_script = "\n\n".join(extracted_texts).strip()
 
-        # Check if at least one input is provided
         if not any([topic, prompt, combined_script]):
             return jsonify({'error': 'At least one of topic, prompt, script, or media inputs is required'}), 400
-        
-        # Initialize base prompt from provided guidelines
+
+        # ------------------------------------------------------------------ #
+        # STEP 2 — Build AI prompt and generate titles                        #
+        # ------------------------------------------------------------------ #
         base_prompt = """
 You are an expert YouTube title strategist who writes titles that sound completely natural and human-written - never robotic, never templated, never AI-sounding. Every title must feel like it was written by a real creator who deeply understands their audience.
 
@@ -2389,7 +2384,7 @@ CATEGORY 1 - SEO OPTIMIZED TITLES (5 titles):
 These titles are built to rank in YouTube and Google search. They must:
 - Naturally include high-intent keywords people actually search for (weave them in conversationally, never stuff them awkwardly)
 - Be clear, specific, and immediately tell the viewer exactly what they will learn or gain
-- Sound like something a knowledgeable friend would say, not a keyword-stuffed robot
+- Sound like someone a knowledgeable friend would say, not a keyword-stuffed robot
 - Front-load the most important keyword or benefit within the first 4-5 words
 - Stay between 50-70 characters ideally (hard max 100 characters)
 - Use formats that perform well in search: How-To, Step-by-Step, Best X for Y, Complete Guide, X Tips, X Mistakes to Avoid, X vs Y, What Happens When, Does X Actually Work
@@ -2410,7 +2405,7 @@ These titles are designed to go viral through Browse features, Suggested Videos,
 ---
 
 STRICT RULES FOR ALL 10 TITLES (non-negotiable):
-1. NO special symbols whatsoever - forbidden characters include: ! @ # $ % ^ & * ( ) [ ] { } | \ / < > = + _ ~ ` " '
+1. NO special symbols whatsoever - forbidden characters include: ! @ # $ % ^ & * ( ) [ ] { } | \\ / < > = + _ ~ ` " '
 2. Only allowed punctuation: spaces, commas, periods, question marks, and hyphens
 3. Every title must sound 100 percent human-written - varied sentence structures, natural phrasing, conversational rhythm
 4. No two titles should follow the same structural pattern or start with the same word
@@ -2422,8 +2417,7 @@ STRICT RULES FOR ALL 10 TITLES (non-negotiable):
 10. Do not start titles with numbers more than twice across all 10 titles
 
 """
-        
-        # Add topic and research data if provided
+
         if topic:
             try:
                 youtube = build('youtube', 'v3', developerKey=YOUTUBE_API_KEY)
@@ -2446,23 +2440,20 @@ STRICT RULES FOR ALL 10 TITLES (non-negotiable):
             except HttpError as e:
                 app.logger.error(f"YouTube API error while searching topic '{topic}': {str(e)}")
                 base_prompt += f"\nThe video topic is: '{topic}'. Infer the most relevant search keywords and browse-worthy angles for this topic based on what typically performs well on YouTube. "
-        
-        # Add niche and audience if provided
+
         if niche != 'general' or audience != 'general':
             base_prompt += (
                 f"\nNiche: '{niche}'. Target audience: '{audience}'. "
                 f"Use language, references, and pain points that resonate specifically with this audience. "
                 f"The titles should feel like they were written by a creator who is part of this community, not an outsider. "
             )
-        
-        # Add custom prompt if provided
+
         if prompt:
             base_prompt += (
                 f"\nAdditional context from the creator: '{prompt[:500]}'. "
                 f"Use this to sharpen the angle and ensure the titles reflect the creator's unique perspective or hook. "
             )
-        
-        # Add script / combined extracted context to prompt if provided
+
         if combined_script:
             base_prompt += (
                 f"\nHere is the actual content context from the video script or media provided - use this to identify the single strongest hook, most surprising moment, or most valuable insight the video delivers, and make sure at least some titles are built around that core payoff: "
@@ -2470,7 +2461,6 @@ STRICT RULES FOR ALL 10 TITLES (non-negotiable):
                 f"The viewer who clicks must feel the video delivered exactly what the title promised. "
             )
 
-        # Finalize prompt with output instructions
         base_prompt += (
             f"""
 For each title provide a virality score out of 100 reflecting realistic CTR potential.
@@ -2497,13 +2487,11 @@ Return ONLY valid JSON with exactly this structure, no extra text before or afte
 }}
 """
         )
-        
-        # Generate titles using the AI model
+
         client = genai.GenerativeModel('gemini-2.0-flash')
         response = client.generate_content(base_prompt)
         gemini_response = response.text.strip()
-        
-        # Clean and parse the response - handle multiple markdown formats
+
         if gemini_response.startswith('```json'):
             gemini_response = gemini_response[7:]
         elif gemini_response.startswith('```'):
@@ -2518,187 +2506,194 @@ Return ONLY valid JSON with exactly this structure, no extra text before or afte
             app.logger.error(f"Invalid JSON response from AI model: {str(e)}")
             app.logger.error(f"Raw response: {gemini_response[:500]}")
             return jsonify({'error': 'Failed to parse AI response'}), 500
-        
-        # Validate response structure - check for new dual-category format
+
         required_keys = ['seo_titles', 'outlier_titles', 'tags', 'description']
         if not isinstance(parsed_response, dict) or not all(k in parsed_response for k in required_keys):
-            app.logger.error(f"Invalid response structure from AI model. Keys found: {list(parsed_response.keys()) if isinstance(parsed_response, dict) else 'not a dict'}")
+            app.logger.error(
+                f"Invalid response structure from AI model. Keys found: "
+                f"{list(parsed_response.keys()) if isinstance(parsed_response, dict) else 'not a dict'}"
+            )
             return jsonify({'error': 'Invalid response structure from AI model'}), 500
 
-        # Validate each title category has exactly 5 titles
         if len(parsed_response.get('seo_titles', [])) != 5:
             app.logger.warning(f"Expected 5 SEO titles, got {len(parsed_response.get('seo_titles', []))}")
         if len(parsed_response.get('outlier_titles', [])) != 5:
             app.logger.warning(f"Expected 5 outlier titles, got {len(parsed_response.get('outlier_titles', []))}")
 
-        # Also include a combined 'titles' key for backwards compatibility with any existing frontend consumers
-        parsed_response['titles'] = parsed_response['seo_titles'] + parsed_response['outlier_titles']
-        
+        # ------------------------------------------------------------------ #
+        # STEP 3 — Search YouTube videos for each outlier title (parallel)   #
+        # ------------------------------------------------------------------ #
+        def search_videos_for_title(title_obj):
+            """
+            Replicates search_videos_on_title logic for a single title string.
+            Returns the title_obj dict enriched with a 'videos' key.
+            """
+            title_str = title_obj.get('title', '').strip()
+            enriched = dict(title_obj)  # copy so we don't mutate the original
+            enriched['videos'] = []
+            enriched['video_search_meta'] = {}
+
+            if not title_str:
+                return enriched
+
+            try:
+                yt = googleapiclient.discovery.build("youtube", "v3", developerKey=YOUTUBE_API_KEY)
+
+                search_resp = yt.search().list(
+                    part="snippet",
+                    q=title_str,
+                    type="video",
+                    maxResults=50,
+                    # For shorts we use "any" duration; for long we use "medium" (4-20 min)
+                    videoDuration="any" if video_type == "short" else "medium",
+                    order="relevance"
+                ).execute()
+
+                video_ids = [
+                    item["id"]["videoId"]
+                    for item in search_resp.get("items", [])
+                    if item["id"].get("videoId")
+                ]
+
+                if not video_ids:
+                    return enriched
+
+                all_video_details = fetch_video_details(yt, video_ids)
+
+                if not all_video_details:
+                    return enriched
+
+                # Filter by duration
+                if video_type == "short":
+                    filtered = [
+                        v for v in all_video_details
+                        if parse_duration(v.get("contentDetails", {}).get("duration", "")) < 120
+                    ]
+                else:
+                    filtered = [
+                        v for v in all_video_details
+                        if parse_duration(v.get("contentDetails", {}).get("duration", "")) >= 120
+                    ]
+
+                if not filtered:
+                    return enriched
+
+                total_views = sum(int(v["statistics"].get("viewCount", 0)) for v in filtered)
+                avg_views = total_views / len(filtered) if filtered else 1
+
+                def fmt_video(v):
+                    duration_str = v.get("contentDetails", {}).get("duration", "")
+                    duration = parse_duration(duration_str)
+                    views = int(v["statistics"].get("viewCount", 0))
+                    multiplier = round(views / avg_views, 2) if avg_views > 0 else 0
+
+                    snippet = v.get("snippet", {}) or {}
+                    language = (
+                        snippet.get("defaultAudioLanguage")
+                        or snippet.get("defaultLanguage")
+                        or snippet.get("language")
+                        or None
+                    )
+
+                    published_at = snippet.get("publishedAt")
+                    published_date_friendly = None
+                    if published_at:
+                        try:
+                            if published_at.endswith("Z"):
+                                try:
+                                    dt = datetime.strptime(published_at, "%Y-%m-%dT%H:%M:%SZ")
+                                except ValueError:
+                                    dt = datetime.strptime(published_at, "%Y-%m-%dT%H:%M:%S.%fZ")
+                            else:
+                                dt = datetime.fromisoformat(published_at)
+                            published_date_friendly = dt.strftime("%Y-%m-%d")
+                        except Exception:
+                            published_date_friendly = published_at
+
+                    return {
+                        "video_id": v["id"],
+                        "title": snippet.get("title"),
+                        "channel_id": snippet.get("channelId", ""),
+                        "channel_title": snippet.get("channelTitle", ""),
+                        "subscriber_count": None,
+                        "views": views,
+                        "views_formatted": format_number(views),
+                        "duration_seconds": duration,
+                        "multiplier": multiplier,
+                        "avg_recent_views": round(avg_views, 2),
+                        "channel_avg_views_formatted": format_number(round(avg_views, 0)),
+                        "thumbnail_url": snippet.get("thumbnails", {}).get("high", {}).get("url"),
+                        "url": f"https://www.youtube.com/watch?v={v['id']}",
+                        "language": language,
+                        "published_date": published_at,
+                        "published_date_friendly": published_date_friendly,
+                    }
+
+                formatted_videos = [fmt_video(v) for v in filtered]
+                formatted_videos.sort(
+                    key=lambda x: (x["multiplier"], x["views"]),
+                    reverse=True
+                )
+
+                enriched['videos'] = formatted_videos
+                enriched['video_search_meta'] = {
+                    "query": title_str,
+                    "type": video_type,
+                    "total_videos": len(formatted_videos),
+                    "avg_views_across_results": round(avg_views, 2),
+                    "avg_views_formatted": format_number(round(avg_views, 0)),
+                }
+
+            except Exception as e:
+                app.logger.error(f"[generate_titles] Video search failed for title '{title_str}': {str(e)}")
+                enriched['video_search_error'] = str(e)
+
+            return enriched
+
+        # Run video searches for all 5 outlier titles in parallel
+        outlier_titles_raw = parsed_response.get('outlier_titles', [])
+        enriched_outlier_titles = []
+
+        with ThreadPoolExecutor(max_workers=5) as executor:
+            future_to_idx = {
+                executor.submit(search_videos_for_title, title_obj): idx
+                for idx, title_obj in enumerate(outlier_titles_raw)
+            }
+            # Preserve original order
+            results_by_idx = {}
+            for future in as_completed(future_to_idx):
+                idx = future_to_idx[future]
+                try:
+                    results_by_idx[idx] = future.result()
+                except Exception as e:
+                    app.logger.error(f"[generate_titles] Future error for outlier idx {idx}: {str(e)}")
+                    results_by_idx[idx] = dict(outlier_titles_raw[idx])
+                    results_by_idx[idx]['videos'] = []
+                    results_by_idx[idx]['video_search_error'] = str(e)
+
+            enriched_outlier_titles = [results_by_idx[i] for i in range(len(outlier_titles_raw))]
+
+        # ------------------------------------------------------------------ #
+        # STEP 4 — Assemble and return final response                         #
+        # ------------------------------------------------------------------ #
+        parsed_response['outlier_titles'] = enriched_outlier_titles
+
+        # Backwards-compatibility combined key
+        parsed_response['titles'] = parsed_response['seo_titles'] + enriched_outlier_titles
+
         app.logger.info(
             f"Generated {len(parsed_response['seo_titles'])} SEO titles and "
-            f"{len(parsed_response['outlier_titles'])} outlier titles for topic: {topic or 'unknown'}"
+            f"{len(parsed_response['outlier_titles'])} outlier titles (with videos) "
+            f"for topic: {topic or 'unknown'}"
         )
         return jsonify(parsed_response)
-    
+
     except HttpError as e:
         app.logger.error(f"YouTube API error in generate_titles: {str(e)}")
         return jsonify({'error': f'YouTube API error: {str(e)}'}), 503
     except Exception as e:
         app.logger.error(f"Generate titles error: {str(e)}")
         return jsonify({'error': f'An error occurred: {str(e)}'}), 500
-
-
-@app.route('/api/search_videos_on_title', methods=['POST'])
-def search_videos_on_title():
-    try:
-        data = request.get_json()
-        title = data.get("title", "").strip()
-        video_type = data.get("type", "long").strip().lower()  # "long" or "short"
-
-        if not title:
-            return jsonify({"error": "Title is required"}), 400
-
-        if video_type not in ["long", "short"]:
-            return jsonify({"error": "Type must be 'long' or 'short'"}), 400
-
-        youtube = googleapiclient.discovery.build("youtube", "v3", developerKey=YOUTUBE_API_KEY)
-
-        # Search YouTube with the given title
-        search_resp = youtube.search().list(
-            part="snippet",
-            q=title,
-            type="video",
-            maxResults=50,
-            videoDuration="any" if video_type == "short" else "medium",
-            order="relevance"
-        ).execute()
-
-        video_ids = [
-            item["id"]["videoId"]
-            for item in search_resp.get("items", [])
-            if item["id"].get("videoId")
-        ]
-
-        if not video_ids:
-            return jsonify({
-                "success": True,
-                "total_videos": 0,
-                "videos": [],
-                "query": title,
-                "type": video_type
-            })
-
-        # Fetch full video details
-        all_video_details = fetch_video_details(youtube, video_ids)
-
-        if not all_video_details:
-            return jsonify({
-                "success": True,
-                "total_videos": 0,
-                "videos": [],
-                "query": title,
-                "type": video_type
-            })
-
-        # Filter by duration based on type
-        # Shorts: < 120 seconds | Long: >= 120 seconds
-        if video_type == "short":
-            filtered_videos = [
-                v for v in all_video_details
-                if parse_duration(v.get("contentDetails", {}).get("duration", "")) < 120
-            ]
-        else:
-            filtered_videos = [
-                v for v in all_video_details
-                if parse_duration(v.get("contentDetails", {}).get("duration", "")) >= 120
-            ]
-
-        if not filtered_videos:
-            return jsonify({
-                "success": True,
-                "total_videos": 0,
-                "videos": [],
-                "query": title,
-                "type": video_type
-            })
-
-        # Compute average views across filtered results to calculate multiplier
-        total_views = sum(int(v["statistics"].get("viewCount", 0)) for v in filtered_videos)
-        avg_views = total_views / len(filtered_videos) if filtered_videos else 1
-
-        # Format each video in the same structure as video_outliers
-        def format_video(v, avg=avg_views):
-            duration_str = v.get("contentDetails", {}).get("duration", "")
-            duration = parse_duration(duration_str)
-            views = int(v["statistics"].get("viewCount", 0))
-            multiplier = round(views / avg, 2) if avg > 0 else 0
-
-            snippet = v.get("snippet", {}) or {}
-            ch_id = snippet.get("channelId", "")
-            ch_title = snippet.get("channelTitle", "")
-
-            language = (
-                snippet.get("defaultAudioLanguage")
-                or snippet.get("defaultLanguage")
-                or snippet.get("language")
-                or None
-            )
-
-            published_at = snippet.get("publishedAt")
-            published_date_friendly = None
-            if published_at:
-                try:
-                    if published_at.endswith("Z"):
-                        try:
-                            dt = datetime.strptime(published_at, "%Y-%m-%dT%H:%M:%SZ")
-                        except ValueError:
-                            dt = datetime.strptime(published_at, "%Y-%m-%dT%H:%M:%S.%fZ")
-                    else:
-                        dt = datetime.fromisoformat(published_at)
-                    published_date_friendly = dt.strftime("%Y-%m-%d")
-                except Exception:
-                    published_date_friendly = published_at
-
-            return {
-                "video_id": v["id"],
-                "title": snippet.get("title"),
-                "channel_id": ch_id,
-                "channel_title": ch_title,
-                "subscriber_count": None,
-                "views": views,
-                "views_formatted": format_number(views),
-                "duration_seconds": duration,
-                "multiplier": multiplier,
-                "avg_recent_views": round(avg, 2),
-                "channel_avg_views_formatted": format_number(round(avg, 0)),
-                "thumbnail_url": snippet.get("thumbnails", {}).get("high", {}).get("url"),
-                "url": f"https://www.youtube.com/watch?v={v['id']}",
-                "language": language,
-                "published_date": published_at,
-                "published_date_friendly": published_date_friendly
-            }
-
-        formatted_videos = [format_video(v) for v in filtered_videos]
-
-        # Sort by multiplier descending (outliers first), then by views descending as tiebreaker
-        formatted_videos.sort(
-            key=lambda x: (x["multiplier"], x["views"]),
-            reverse=True
-        )
-
-        return jsonify({
-            "success": True,
-            "query": title,
-            "type": video_type,
-            "total_videos": len(formatted_videos),
-            "avg_views_across_results": round(avg_views, 2),
-            "avg_views_formatted": format_number(round(avg_views, 0)),
-            "videos": formatted_videos
-        })
-
-    except Exception as e:
-        app.logger.error(f"Search videos error: {str(e)}")
-        return jsonify({"error": str(e)}), 500
 @app.route('/api/generate_ideas', methods=['POST'])
 def generate_ideas():
     """Generate 20 similar viral YouTube video ideas based on provided title."""

@@ -2521,32 +2521,74 @@ Return ONLY valid JSON with exactly this structure, no extra text before or afte
             app.logger.warning(f"Expected 5 outlier titles, got {len(parsed_response.get('outlier_titles', []))}")
 
         # ------------------------------------------------------------------ #
-        # STEP 3 — Search YouTube videos for each outlier title (parallel)   #
+        # STEP 3 — Generate 5 outlier search tags via AI                      #
         # ------------------------------------------------------------------ #
-        def search_videos_for_title(title_obj):
-            """
-            Replicates search_videos_on_title logic for a single title string.
-            Returns the title_obj dict enriched with a 'videos' key.
-            """
-            title_str = title_obj.get('title', '').strip()
-            enriched = dict(title_obj)  # copy so we don't mutate the original
-            enriched['videos'] = []
-            enriched['video_search_meta'] = {}
+        tag_prompt = f"""
+You are a YouTube research strategist. Based on the content context below, generate exactly 5 short search tags (2-4 words each) that represent the most viral, high-view-count angles for this topic on YouTube. These tags will be used to search YouTube to find the most popular videos in this niche.
 
-            if not title_str:
-                return enriched
+Rules:
+- Each tag must be a realistic YouTube search query a viewer would type
+- Tags must cover different angles or sub-topics so results are diverse
+- No special characters, no hashtags, keep them lowercase
+- Return ONLY valid JSON, no extra text before or after
 
+Topic: {topic or ''}
+Niche: {niche or 'general'}
+Audience: {audience or 'general'}
+Additional context: {prompt or ''}
+Script excerpt: {combined_script[:600] if combined_script else ''}
+
+Return ONLY valid JSON with exactly this structure:
+{{"outlier_tags": ["tag1", "tag2", "tag3", "tag4", "tag5"]}}
+"""
+
+        tag_client = genai.GenerativeModel('gemini-2.0-flash')
+        tag_response = tag_client.generate_content(tag_prompt)
+        tag_text = tag_response.text.strip()
+
+        if tag_text.startswith('```json'):
+            tag_text = tag_text[7:]
+        elif tag_text.startswith('```'):
+            tag_text = tag_text[3:]
+        if tag_text.endswith('```'):
+            tag_text = tag_text[:-3]
+        tag_text = tag_text.strip()
+
+        try:
+            tag_parsed = json.loads(tag_text)
+            outlier_search_tags = [t.strip() for t in tag_parsed.get('outlier_tags', []) if t.strip()][:5]
+        except Exception as e:
+            app.logger.warning(f"[generate_titles] Failed to parse outlier tags from AI: {str(e)}")
+            outlier_search_tags = []
+
+        # Fallback: use topic or prompt if AI tag generation failed
+        if not outlier_search_tags:
+            app.logger.warning("[generate_titles] Using fallback tags from topic/prompt")
+            if topic:
+                outlier_search_tags = [topic]
+            elif prompt:
+                outlier_search_tags = [prompt[:50]]
+
+        app.logger.info(f"[generate_titles] Outlier search tags: {outlier_search_tags}")
+
+        # ------------------------------------------------------------------ #
+        # STEP 4 — Search YouTube for each tag, 10 videos each (parallel)    #
+        # ------------------------------------------------------------------ #
+        def search_top_videos_for_tag(tag_str):
+            """
+            Search YouTube for tag_str ordered by viewCount.
+            Returns (tag_str, list of raw video detail dicts) sorted by views desc.
+            """
             try:
                 yt = googleapiclient.discovery.build("youtube", "v3", developerKey=YOUTUBE_API_KEY)
 
                 search_resp = yt.search().list(
                     part="snippet",
-                    q=title_str,
+                    q=tag_str,
                     type="video",
-                    maxResults=50,
-                    # For shorts we use "any" duration; for long we use "medium" (4-20 min)
+                    maxResults=10,
                     videoDuration="any" if video_type == "short" else "medium",
-                    order="relevance"
+                    order="viewCount"
                 ).execute()
 
                 video_ids = [
@@ -2556,134 +2598,201 @@ Return ONLY valid JSON with exactly this structure, no extra text before or afte
                 ]
 
                 if not video_ids:
-                    return enriched
+                    return tag_str, []
 
-                all_video_details = fetch_video_details(yt, video_ids)
+                all_details = fetch_video_details(yt, video_ids)
 
-                if not all_video_details:
-                    return enriched
-
-                # Filter by duration
+                # Filter by duration type
                 if video_type == "short":
                     filtered = [
-                        v for v in all_video_details
+                        v for v in all_details
                         if parse_duration(v.get("contentDetails", {}).get("duration", "")) < 120
                     ]
                 else:
                     filtered = [
-                        v for v in all_video_details
+                        v for v in all_details
                         if parse_duration(v.get("contentDetails", {}).get("duration", "")) >= 120
                     ]
 
-                if not filtered:
-                    return enriched
-
-                total_views = sum(int(v["statistics"].get("viewCount", 0)) for v in filtered)
-                avg_views = total_views / len(filtered) if filtered else 1
-
-                def fmt_video(v):
-                    duration_str = v.get("contentDetails", {}).get("duration", "")
-                    duration = parse_duration(duration_str)
-                    views = int(v["statistics"].get("viewCount", 0))
-                    multiplier = round(views / avg_views, 2) if avg_views > 0 else 0
-
-                    snippet = v.get("snippet", {}) or {}
-                    language = (
-                        snippet.get("defaultAudioLanguage")
-                        or snippet.get("defaultLanguage")
-                        or snippet.get("language")
-                        or None
-                    )
-
-                    published_at = snippet.get("publishedAt")
-                    published_date_friendly = None
-                    if published_at:
-                        try:
-                            if published_at.endswith("Z"):
-                                try:
-                                    dt = datetime.strptime(published_at, "%Y-%m-%dT%H:%M:%SZ")
-                                except ValueError:
-                                    dt = datetime.strptime(published_at, "%Y-%m-%dT%H:%M:%S.%fZ")
-                            else:
-                                dt = datetime.fromisoformat(published_at)
-                            published_date_friendly = dt.strftime("%Y-%m-%d")
-                        except Exception:
-                            published_date_friendly = published_at
-
-                    return {
-                        "video_id": v["id"],
-                        "title": snippet.get("title"),
-                        "channel_id": snippet.get("channelId", ""),
-                        "channel_title": snippet.get("channelTitle", ""),
-                        "subscriber_count": None,
-                        "views": views,
-                        "views_formatted": format_number(views),
-                        "duration_seconds": duration,
-                        "multiplier": multiplier,
-                        "avg_recent_views": round(avg_views, 2),
-                        "channel_avg_views_formatted": format_number(round(avg_views, 0)),
-                        "thumbnail_url": snippet.get("thumbnails", {}).get("high", {}).get("url"),
-                        "url": f"https://www.youtube.com/watch?v={v['id']}",
-                        "language": language,
-                        "published_date": published_at,
-                        "published_date_friendly": published_date_friendly,
-                    }
-
-                formatted_videos = [fmt_video(v) for v in filtered]
-                formatted_videos.sort(
-                    key=lambda x: (x["multiplier"], x["views"]),
+                # Sort by views descending — index 0 is always the most viewed
+                filtered.sort(
+                    key=lambda v: int(v["statistics"].get("viewCount", 0)),
                     reverse=True
                 )
-
-                enriched['videos'] = formatted_videos
-                enriched['video_search_meta'] = {
-                    "query": title_str,
-                    "type": video_type,
-                    "total_videos": len(formatted_videos),
-                    "avg_views_across_results": round(avg_views, 2),
-                    "avg_views_formatted": format_number(round(avg_views, 0)),
-                }
+                return tag_str, filtered
 
             except Exception as e:
-                app.logger.error(f"[generate_titles] Video search failed for title '{title_str}': {str(e)}")
-                enriched['video_search_error'] = str(e)
+                app.logger.error(f"[generate_titles] Tag search failed for '{tag_str}': {str(e)}")
+                return tag_str, []
 
-            return enriched
-
-        # Run video searches for all 5 outlier titles in parallel
-        outlier_titles_raw = parsed_response.get('outlier_titles', [])
-        enriched_outlier_titles = []
+        # Run all tag searches in parallel
+        tag_video_map = {}  # { tag_str: [raw_video_detail_dict, ...] }
 
         with ThreadPoolExecutor(max_workers=5) as executor:
-            future_to_idx = {
-                executor.submit(search_videos_for_title, title_obj): idx
-                for idx, title_obj in enumerate(outlier_titles_raw)
+            future_to_tag = {
+                executor.submit(search_top_videos_for_tag, tag): tag
+                for tag in outlier_search_tags
             }
-            # Preserve original order
-            results_by_idx = {}
-            for future in as_completed(future_to_idx):
-                idx = future_to_idx[future]
+            for future in as_completed(future_to_tag):
+                tag = future_to_tag[future]
                 try:
-                    results_by_idx[idx] = future.result()
+                    tag_str, videos = future.result()
+                    tag_video_map[tag_str] = videos
+                    app.logger.info(
+                        f"[generate_titles] Tag '{tag_str}' → {len(videos)} videos found"
+                    )
                 except Exception as e:
-                    app.logger.error(f"[generate_titles] Future error for outlier idx {idx}: {str(e)}")
-                    results_by_idx[idx] = dict(outlier_titles_raw[idx])
-                    results_by_idx[idx]['videos'] = []
-                    results_by_idx[idx]['video_search_error'] = str(e)
-
-            enriched_outlier_titles = [results_by_idx[i] for i in range(len(outlier_titles_raw))]
+                    app.logger.error(f"[generate_titles] Tag future error for '{tag}': {str(e)}")
+                    tag_video_map[tag] = []
 
         # ------------------------------------------------------------------ #
-        # STEP 4 — Assemble and return final response                         #
+        # STEP 5 — Merge all tag results into one shared 50-video pool        #
+        # ------------------------------------------------------------------ #
+        all_videos_raw = []
+        seen_video_ids = set()
+
+        for tag in outlier_search_tags:
+            for v in tag_video_map.get(tag, []):
+                vid_id = v.get("id")
+                if vid_id and vid_id not in seen_video_ids:
+                    seen_video_ids.add(vid_id)
+                    all_videos_raw.append(v)
+
+        # Compute avg views across the full combined pool for multiplier
+        total_combined_views = sum(
+            int(v["statistics"].get("viewCount", 0))
+            for v in all_videos_raw
+            if v.get("statistics")
+        )
+        avg_combined_views = total_combined_views / len(all_videos_raw) if all_videos_raw else 1
+
+        def fmt_video_from_detail(v, avg_views):
+            """Format a raw YouTube video detail dict into the standard response shape."""
+            duration_str = v.get("contentDetails", {}).get("duration", "")
+            duration = parse_duration(duration_str)
+            views = int(v["statistics"].get("viewCount", 0))
+            multiplier = round(views / avg_views, 2) if avg_views > 0 else 0
+
+            snippet = v.get("snippet", {}) or {}
+            language = (
+                snippet.get("defaultAudioLanguage")
+                or snippet.get("defaultLanguage")
+                or snippet.get("language")
+                or None
+            )
+
+            published_at = snippet.get("publishedAt")
+            published_date_friendly = None
+            if published_at:
+                try:
+                    if published_at.endswith("Z"):
+                        try:
+                            dt = datetime.strptime(published_at, "%Y-%m-%dT%H:%M:%SZ")
+                        except ValueError:
+                            dt = datetime.strptime(published_at, "%Y-%m-%dT%H:%M:%S.%fZ")
+                    else:
+                        dt = datetime.fromisoformat(published_at)
+                    published_date_friendly = dt.strftime("%Y-%m-%d")
+                except Exception:
+                    published_date_friendly = published_at
+
+            return {
+                "video_id": v["id"],
+                "title": snippet.get("title"),
+                "channel_id": snippet.get("channelId", ""),
+                "channel_title": snippet.get("channelTitle", ""),
+                "subscriber_count": None,
+                "views": views,
+                "views_formatted": format_number(views),
+                "duration_seconds": duration,
+                "multiplier": multiplier,
+                "avg_recent_views": round(avg_views, 2),
+                "channel_avg_views_formatted": format_number(round(avg_views, 0)),
+                "thumbnail_url": snippet.get("thumbnails", {}).get("high", {}).get("url"),
+                "url": f"https://www.youtube.com/watch?v={v['id']}",
+                "language": language,
+                "published_date": published_at,
+                "published_date_friendly": published_date_friendly,
+            }
+
+        # Format and sort the shared pool by multiplier then views
+        shared_video_pool = [
+            fmt_video_from_detail(v, avg_combined_views)
+            for v in all_videos_raw
+        ]
+        shared_video_pool.sort(
+            key=lambda x: (x["multiplier"], x["views"]),
+            reverse=True
+        )
+
+        app.logger.info(
+            f"[generate_titles] Shared video pool: {len(shared_video_pool)} unique videos "
+            f"from {len(outlier_search_tags)} tags"
+        )
+
+        # ------------------------------------------------------------------ #
+        # STEP 6 — Build enriched outlier title objects (no videos key)       #
+        #   • title         = exact YouTube title of #1 most-viewed video     #
+        #                     for that tag (replaces the AI-generated title)  #
+        #   • virality_score = kept from original AI response                 #
+        #   • source_tag    = which tag produced this title                   #
+        #   Videos live at top-level outlier_videos, not per-title            #
+        # ------------------------------------------------------------------ #
+        ai_outlier_titles = parsed_response.get('outlier_titles', [])
+        enriched_outlier_titles = []
+
+        for idx, tag in enumerate(outlier_search_tags):
+            tag_videos = tag_video_map.get(tag, [])
+
+            if tag_videos:
+                # Index 0 is the most viewed (sorted desc in search_top_videos_for_tag)
+                top_snippet = tag_videos[0].get("snippet", {}) or {}
+                outlier_title_str = top_snippet.get("title") or tag
+            else:
+                # No YouTube results — fall back to the AI-generated title for this slot
+                outlier_title_str = (
+                    ai_outlier_titles[idx].get("title", tag)
+                    if idx < len(ai_outlier_titles)
+                    else tag
+                )
+
+            # Keep the virality score from the original AI response
+            virality_score = (
+                ai_outlier_titles[idx].get("virality_score", 80)
+                if idx < len(ai_outlier_titles)
+                else 80
+            )
+
+            enriched_outlier_titles.append({
+                "title": outlier_title_str,
+                "virality_score": virality_score,
+                "source_tag": tag,
+            })
+
+        # ------------------------------------------------------------------ #
+        # STEP 7 — Assemble and return final response                         #
+        #   outlier_titles  = 5 slim title objects (title, score, source_tag) #
+        #   outlier_videos  = one shared pool of all ~50 videos at top level  #
+        #   outlier_video_meta = single meta block for the whole pool         #
         # ------------------------------------------------------------------ #
         parsed_response['outlier_titles'] = enriched_outlier_titles
+        parsed_response['outlier_tags'] = outlier_search_tags
+        parsed_response['outlier_videos'] = shared_video_pool
+        parsed_response['outlier_video_meta'] = {
+            "type": video_type,
+            "total_videos": len(shared_video_pool),
+            "tags_searched": outlier_search_tags,
+            "avg_views_across_results": round(avg_combined_views, 2),
+            "avg_views_formatted": format_number(round(avg_combined_views, 0)),
+        }
 
         # Backwards-compatibility combined key
         parsed_response['titles'] = parsed_response['seo_titles'] + enriched_outlier_titles
 
         app.logger.info(
             f"Generated {len(parsed_response['seo_titles'])} SEO titles and "
-            f"{len(parsed_response['outlier_titles'])} outlier titles (with videos) "
+            f"{len(enriched_outlier_titles)} outlier titles, "
+            f"{len(shared_video_pool)} shared outlier videos "
             f"for topic: {topic or 'unknown'}"
         )
         return jsonify(parsed_response)

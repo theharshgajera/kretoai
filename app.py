@@ -2371,16 +2371,13 @@ def generate_titles():
             return jsonify({'error': 'At least one of topic, prompt, script, or media inputs is required'}), 400
 
         # ------------------------------------------------------------------ #
-        # STEP 2 — Build AI prompt and generate titles                        #
+        # STEP 2 — Build AI prompt and generate SEO titles only               #
+        # (Outlier titles are sourced from YouTube in Step 6, not AI)         #
         # ------------------------------------------------------------------ #
         base_prompt = """
 You are an expert YouTube title strategist who writes titles that sound completely natural and human-written - never robotic, never templated, never AI-sounding. Every title must feel like it was written by a real creator who deeply understands their audience.
 
-Generate exactly 10 YouTube video titles split into two categories of 5 titles each:
-
----
-
-CATEGORY 1 - SEO OPTIMIZED TITLES (5 titles):
+Generate exactly 5 SEO OPTIMIZED TITLES:
 These titles are built to rank in YouTube and Google search. They must:
 - Naturally include high-intent keywords people actually search for (weave them in conversationally, never stuff them awkwardly)
 - Be clear, specific, and immediately tell the viewer exactly what they will learn or gain
@@ -2391,30 +2388,19 @@ These titles are built to rank in YouTube and Google search. They must:
 - Feel evergreen and trustworthy - something a viewer would click from search results at any time
 - Example feel: "How to Lose Belly Fat Without Giving Up Your Favorite Foods" or "10 Budgeting Mistakes That Keep You Broke"
 
-CATEGORY 2 - OUTLIER TITLES (5 titles):
-These titles are designed to go viral through Browse features, Suggested Videos, and Home Feed. They must:
-- Open a curiosity gap that makes it genuinely impossible not to click
-- Use unexpected angles, surprising contrasts, bold personal stories, or counterintuitive statements
-- Sound like something a real person would blurt out in conversation - raw, honest, a little vulnerable or bold
-- Create a strong emotional pull: shock, relatability, FOMO, fascination, or unexpected humor
-- Avoid sounding like a generic viral template - each title should feel fresh and specific to the content
-- Can be slightly longer if the intrigue demands it, but still punchy and front-loaded
-- Use formats that perform well in browse: Personal revelation, Unexpected result, Bold opinion, Story-driven, Shocking contrast, Behind-the-scenes confession, Pattern interrupt
-- Example feel: "I Quit My Job to Test If Passive Income Is Actually Real" or "Nobody Talks About This Side of Losing Weight"
-
 ---
 
-STRICT RULES FOR ALL 10 TITLES (non-negotiable):
+STRICT RULES FOR ALL 5 TITLES (non-negotiable):
 1. NO special symbols whatsoever - forbidden characters include: ! @ # $ % ^ & * ( ) [ ] { } | \\ / < > = + _ ~ ` " '
 2. Only allowed punctuation: spaces, commas, periods, question marks, and hyphens
 3. Every title must sound 100 percent human-written - varied sentence structures, natural phrasing, conversational rhythm
 4. No two titles should follow the same structural pattern or start with the same word
 5. No clickbait that the video cannot deliver on - every title must accurately reflect the content
 6. No corporate-speak, buzzword stuffing, or AI-sounding phrases like "Unlock", "Discover", "Leverage", "Dive into", "Game-changing", "Revolutionary"
-7. Titles should feel like they came from 10 different real creators with different voices, not one AI generating variations
+7. Titles should feel like they came from 5 different real creators with different voices, not one AI generating variations
 8. Each title must stand alone as compelling - if you removed all other context, a stranger should still want to click it
-9. Virality score must be honestly assessed based on realistic CTR potential for that specific title type (SEO titles typically score 65-82, Outlier titles typically score 75-95)
-10. Do not start titles with numbers more than twice across all 10 titles
+9. Virality score must be honestly assessed based on realistic CTR potential (SEO titles typically score 65-82)
+10. Do not start titles with numbers more than twice across all 5 titles
 
 """
 
@@ -2435,7 +2421,7 @@ STRICT RULES FOR ALL 10 TITLES (non-negotiable):
                     base_prompt += (
                         f"\nThe video topic is: '{topic}'. Here are currently popular titles on this topic from YouTube for reference and inspiration on what keywords and angles are working - DO NOT copy these, use them only to understand the landscape: "
                         f"{', '.join(titles)}. "
-                        f"Study the keyword patterns and audience intent behind these titles, then write 10 original titles that outperform them. "
+                        f"Study the keyword patterns and audience intent behind these titles, then write 5 original SEO titles that outperform them. "
                     )
             except HttpError as e:
                 app.logger.error(f"YouTube API error while searching topic '{topic}': {str(e)}")
@@ -2464,18 +2450,11 @@ STRICT RULES FOR ALL 10 TITLES (non-negotiable):
         base_prompt += (
             f"""
 For each title provide a virality score out of 100 reflecting realistic CTR potential.
-Also generate 10 relevant tags and one shared description of 100-150 words optimized for search, applicable to all 10 titles.
+Also generate 10 relevant tags and one shared description of 100-150 words optimized for search, applicable to all titles.
 
 Return ONLY valid JSON with exactly this structure, no extra text before or after:
 {{
   "seo_titles": [
-    {{"title": "string", "virality_score": int}},
-    {{"title": "string", "virality_score": int}},
-    {{"title": "string", "virality_score": int}},
-    {{"title": "string", "virality_score": int}},
-    {{"title": "string", "virality_score": int}}
-  ],
-  "outlier_titles": [
     {{"title": "string", "virality_score": int}},
     {{"title": "string", "virality_score": int}},
     {{"title": "string", "virality_score": int}},
@@ -2488,40 +2467,50 @@ Return ONLY valid JSON with exactly this structure, no extra text before or afte
 """
         )
 
-        client = genai.GenerativeModel('gemini-2.0-flash')
-        response = client.generate_content(base_prompt)
-        gemini_response = response.text.strip()
+        # ------------------------------------------------------------------ #
+        # Claude API call for SEO titles                                       #
+        # ------------------------------------------------------------------ #
+        if not anthropic_client:
+            return jsonify({'error': 'Anthropic client not initialized. Check ANTHROPIC_API_KEY.'}), 500
 
-        if gemini_response.startswith('```json'):
-            gemini_response = gemini_response[7:]
-        elif gemini_response.startswith('```'):
-            gemini_response = gemini_response[3:]
-        if gemini_response.endswith('```'):
-            gemini_response = gemini_response[:-3]
-        gemini_response = gemini_response.strip()
+        claude_response = anthropic_client.messages.create(
+            model="claude-sonnet-4-20250514",
+            max_tokens=2000,
+            messages=[
+                {"role": "user", "content": base_prompt}
+            ]
+        )
+
+        claude_text = claude_response.content[0].text.strip()
+
+        if claude_text.startswith('```json'):
+            claude_text = claude_text[7:]
+        elif claude_text.startswith('```'):
+            claude_text = claude_text[3:]
+        if claude_text.endswith('```'):
+            claude_text = claude_text[:-3]
+        claude_text = claude_text.strip()
 
         try:
-            parsed_response = json.loads(gemini_response)
+            parsed_response = json.loads(claude_text)
         except json.JSONDecodeError as e:
-            app.logger.error(f"Invalid JSON response from AI model: {str(e)}")
-            app.logger.error(f"Raw response: {gemini_response[:500]}")
+            app.logger.error(f"Invalid JSON response from Claude: {str(e)}")
+            app.logger.error(f"Raw response: {claude_text[:500]}")
             return jsonify({'error': 'Failed to parse AI response'}), 500
 
-        required_keys = ['seo_titles', 'outlier_titles', 'tags', 'description']
+        required_keys = ['seo_titles', 'tags', 'description']
         if not isinstance(parsed_response, dict) or not all(k in parsed_response for k in required_keys):
             app.logger.error(
-                f"Invalid response structure from AI model. Keys found: "
+                f"Invalid response structure from Claude. Keys found: "
                 f"{list(parsed_response.keys()) if isinstance(parsed_response, dict) else 'not a dict'}"
             )
             return jsonify({'error': 'Invalid response structure from AI model'}), 500
 
         if len(parsed_response.get('seo_titles', [])) != 5:
             app.logger.warning(f"Expected 5 SEO titles, got {len(parsed_response.get('seo_titles', []))}")
-        if len(parsed_response.get('outlier_titles', [])) != 5:
-            app.logger.warning(f"Expected 5 outlier titles, got {len(parsed_response.get('outlier_titles', []))}")
 
         # ------------------------------------------------------------------ #
-        # STEP 3 — Generate 5 outlier search tags via AI                      #
+        # STEP 3 — Generate 5 outlier search tags via Claude                  #
         # ------------------------------------------------------------------ #
         tag_prompt = f"""
 You are a YouTube research strategist. Based on the content context below, generate exactly 5 short search tags (2-4 words each) that represent the most viral, high-view-count angles for this topic on YouTube. These tags will be used to search YouTube to find the most popular videos in this niche.
@@ -2542,9 +2531,15 @@ Return ONLY valid JSON with exactly this structure:
 {{"outlier_tags": ["tag1", "tag2", "tag3", "tag4", "tag5"]}}
 """
 
-        tag_client = genai.GenerativeModel('gemini-2.0-flash')
-        tag_response = tag_client.generate_content(tag_prompt)
-        tag_text = tag_response.text.strip()
+        tag_claude_response = anthropic_client.messages.create(
+            model="claude-sonnet-4-20250514",
+            max_tokens=300,
+            messages=[
+                {"role": "user", "content": tag_prompt}
+            ]
+        )
+
+        tag_text = tag_claude_response.content[0].text.strip()
 
         if tag_text.startswith('```json'):
             tag_text = tag_text[7:]
@@ -2558,7 +2553,7 @@ Return ONLY valid JSON with exactly this structure:
             tag_parsed = json.loads(tag_text)
             outlier_search_tags = [t.strip() for t in tag_parsed.get('outlier_tags', []) if t.strip()][:5]
         except Exception as e:
-            app.logger.warning(f"[generate_titles] Failed to parse outlier tags from AI: {str(e)}")
+            app.logger.warning(f"[generate_titles] Failed to parse outlier tags from Claude: {str(e)}")
             outlier_search_tags = []
 
         # Fallback: use topic or prompt if AI tag generation failed
@@ -2731,41 +2726,51 @@ Return ONLY valid JSON with exactly this structure:
         )
 
         # ------------------------------------------------------------------ #
-        # STEP 6 — Build enriched outlier title objects (no videos key)       #
+        # STEP 6 — Build enriched outlier title objects                       #
         #   • title         = exact YouTube title of #1 most-viewed video     #
-        #                     for that tag (replaces the AI-generated title)  #
-        #   • virality_score = kept from original AI response                 #
+        #                     for that tag (top result per tag)               #
+        #   • virality_score = relative score based on views of the top video #
+        #                     per tag. Highest views = 100, others scaled     #
+        #                     proportionally. e.g. views [100k,90k,80k,70k,  #
+        #                     60k] → scores [100, 90, 80, 70, 60]            #
         #   • source_tag    = which tag produced this title                   #
-        #   Videos live at top-level outlier_videos, not per-title            #
         # ------------------------------------------------------------------ #
-        ai_outlier_titles = parsed_response.get('outlier_titles', [])
-        enriched_outlier_titles = []
 
-        for idx, tag in enumerate(outlier_search_tags):
+        def format_views_short(views):
+            """Format view count into compact human-readable string.
+            e.g. 2000000 → '2000K', 15689 → '15K', 1500000 → '1500K'
+            """
+            if views >= 1000:
+                k_val = views // 1000
+                return f"{k_val}K"
+            return str(views)
+
+        # Collect the top video (most viewed) per tag, in tag order
+        top_videos_per_tag = []
+        for tag in outlier_search_tags:
             tag_videos = tag_video_map.get(tag, [])
-
             if tag_videos:
-                # Index 0 is the most viewed (sorted desc in search_top_videos_for_tag)
-                top_snippet = tag_videos[0].get("snippet", {}) or {}
-                outlier_title_str = top_snippet.get("title") or tag
+                top_videos_per_tag.append((tag, tag_videos[0]))
             else:
-                # No YouTube results — fall back to the AI-generated title for this slot
-                outlier_title_str = (
-                    ai_outlier_titles[idx].get("title", tag)
-                    if idx < len(ai_outlier_titles)
-                    else tag
-                )
+                top_videos_per_tag.append((tag, None))
 
-            # Keep the virality score from the original AI response
-            virality_score = (
-                ai_outlier_titles[idx].get("virality_score", 80)
-                if idx < len(ai_outlier_titles)
-                else 80
-            )
+        enriched_outlier_titles = []
+        for tag, top_video in top_videos_per_tag:
+            if top_video is not None:
+                top_snippet = top_video.get("snippet", {}) or {}
+                outlier_title_str = top_snippet.get("title") or tag
+                video_views = int(top_video.get("statistics", {}).get("viewCount", 0))
+                views_display = format_views_short(video_views)
+            else:
+                # No YouTube result for this tag — use the tag itself as fallback title
+                outlier_title_str = tag
+                video_views = 0
+                views_display = "N/A"
 
             enriched_outlier_titles.append({
                 "title": outlier_title_str,
-                "virality_score": virality_score,
+                "views": video_views,
+                "views_display": views_display,
                 "source_tag": tag,
             })
 
@@ -2787,6 +2792,7 @@ Return ONLY valid JSON with exactly this structure:
         }
 
         # Backwards-compatibility combined key
+        # Note: outlier_titles use views/views_display instead of virality_score
         parsed_response['titles'] = parsed_response['seo_titles'] + enriched_outlier_titles
 
         app.logger.info(

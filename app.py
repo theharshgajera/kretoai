@@ -2582,8 +2582,7 @@ Return ONLY valid JSON with exactly this structure:
                     q=tag_str,
                     type="video",
                     maxResults=10,
-                    videoDuration="any" if video_type == "short" else "medium",
-                    order="viewCount"
+                    videoDuration="short" if video_type == "short" else "medium",
                 ).execute()
 
                 video_ids = [

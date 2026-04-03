@@ -1743,7 +1743,7 @@ def video_outliers():
             # ✅ Filter out Shorts and very short videos (<120s) at the source
             comp_videos = [
                 v for v in comp_videos
-                if parse_duration(v.get("contentDetails", {}).get("duration", "")) >= 120
+                if parse_duration(v.get("contentDetails", {}).get("duration", "")) >= 150
             ]
             
             if not comp_videos:

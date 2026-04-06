@@ -3853,6 +3853,22 @@ def whole_script():
                 elif item_type == 'audio_file':
                     filename = item.get('filename', 'audio.mp3')
                     file_data = item.get('data')
+                    file_url = item.get('url')  # ADD
+
+                    # ADD — download from URL if no base64 data provided
+                    if file_url and not file_data:
+                        try:
+                            import requests
+                            print(f"  Downloading audio from URL: {file_url[:80]}")
+                            dl_response = requests.get(file_url, timeout=60)
+                            if dl_response.status_code == 200:
+                                file_data = base64.b64encode(dl_response.content).decode('utf-8')
+                                filename = file_url.split('/')[-1].split('?')[0] or filename
+                                print(f"  ✓ Downloaded: {len(dl_response.content):,} bytes")
+                            else:
+                                return ('error', f"[{folder_name}] Failed to download audio: HTTP {dl_response.status_code}")
+                        except Exception as e:
+                            return ('error', f"[{folder_name}] Audio download error: {str(e)}")
 
                     if not audio_processor.is_supported_audio_format(filename):
                         return ('error', f"[{folder_name}] Unsupported audio format: {filename}")
@@ -4810,13 +4826,25 @@ def short_script():
                 elif item_type == 'tiktok_url':
                     return ('error', f"[{folder_name}] TikTok processing not implemented")
 
+                # ADD this one line at the top of the download block
                 elif item_type == 'audio_file':
                     filename = item.get('filename', 'audio.mp3')
                     file_data = item.get('data')
-                    if not audio_processor.is_supported_audio_format(filename):
-                        return ('error', f"[{folder_name}] Unsupported audio format: {filename}")
-                    if not file_data:
-                        return ('error', f"[{folder_name}] No data: {filename}")
+                    file_url = item.get('url')
+
+                    if file_url and not file_data:
+                        try:
+                            import requests  # ADD THIS LINE
+                            print(f"  Downloading audio from URL: {file_url[:80]}")
+                            dl_response = requests.get(file_url, timeout=60)
+                            if dl_response.status_code == 200:
+                                file_data = base64.b64encode(dl_response.content).decode('utf-8')
+                                filename = file_url.split('/')[-1].split('?')[0] or filename
+                                print(f"  ✓ Downloaded: {len(dl_response.content):,} bytes")
+                            else:
+                                return ('error', f"[{folder_name}] Failed to download audio: HTTP {dl_response.status_code}")
+                        except Exception as e:
+                            return ('error', f"[{folder_name}] Audio download error: {str(e)}")
                     safe_user_id = user_id.replace('.', '_').replace(':', '_')
                     audio_path = os.path.join(
                         UPLOAD_FOLDER,
@@ -4851,6 +4879,7 @@ def short_script():
                     file_url = item.get('url')
                     if file_url and not file_data:
                         try:
+                            import requests
                             r = requests.get(file_url, timeout=120)
                             if r.status_code == 200:
                                 file_data = base64.b64encode(r.content).decode('utf-8')

@@ -2233,6 +2233,8 @@ def generate_titles():
         folders = []
 
         youtube_urls = data.get('youtube_urls', [])
+        if isinstance(youtube_urls, str) and youtube_urls.strip():
+            youtube_urls = [youtube_urls]
         if youtube_urls and isinstance(youtube_urls, list):
             yt_folder = {'name': 'YouTube', 'type': 'inspiration', 'items': []}
             for url in youtube_urls:
@@ -2242,6 +2244,8 @@ def generate_titles():
                 folders.append(yt_folder)
 
         instagram_urls = data.get('instagram_urls', [])
+        if isinstance(instagram_urls, str) and instagram_urls.strip():
+            instagram_urls = [instagram_urls]
         if instagram_urls and isinstance(instagram_urls, list):
             insta_folder = {'name': 'Instagram', 'type': 'inspiration', 'items': []}
             for url in instagram_urls:
@@ -2251,6 +2255,8 @@ def generate_titles():
                 folders.append(insta_folder)
 
         audio_files = data.get('audio_files', [])
+        if isinstance(audio_files, str) and audio_files.strip():
+            audio_files = [audio_files]
         if audio_files and isinstance(audio_files, list):
             audio_folder = {'name': 'Audio Files', 'type': 'inspiration', 'items': []}
             for idx, audio_url in enumerate(audio_files):
@@ -2275,6 +2281,8 @@ def generate_titles():
                 folders.append(audio_folder)
 
         video_files = data.get('video_files', [])
+        if isinstance(video_files, str) and video_files.strip():
+            video_files = [video_files]
         if video_files and isinstance(video_files, list):
             video_folder = {'name': 'Videos', 'type': 'inspiration', 'items': []}
             for idx, video_url in enumerate(video_files):
@@ -2370,6 +2378,26 @@ def generate_titles():
         if not any([topic, prompt, combined_script]):
             return jsonify({'error': 'At least one of topic, prompt, script, or media inputs is required'}), 400
 
+        media_summary = ""
+        if combined_script:
+            print(f"[generate_titles] Generating summary for combined script/transcript (length: {len(combined_script)})")
+            try:
+                summary_prompt = f"""Analyze the following video transcript or script. Provide a comprehensive summary that captures the main topic, key takeaways, interesting hooks, and important points. This summary will be used by an SEO title generator, so ensure it highlights the most compelling elements that make viewers want to click.
+
+SCRIPT/TRANSCRIPT:
+{combined_script[:100000]}""" # Send up to ~100k chars to Claude
+                
+                summary_response = anthropic_client.messages.create(
+                    model="claude-sonnet-4-20250514",
+                    max_tokens=1500,
+                    messages=[{"role": "user", "content": summary_prompt}]
+                )
+                media_summary = summary_response.content[0].text.strip()
+                print(f"[generate_titles] \u2713 Summary generated: {len(media_summary)} chars")
+            except Exception as e:
+                app.logger.error(f"[generate_titles] Error generating summary: {str(e)}")
+                media_summary = combined_script[:1500]  # Fallback to truncated script if summary fails
+
         # ------------------------------------------------------------------ #
         # STEP 2 — Build AI prompt and generate SEO titles only               #
         # (Outlier titles are sourced from YouTube in Step 6, not AI)         #
@@ -2440,10 +2468,10 @@ STRICT RULES FOR ALL 5 TITLES (non-negotiable):
                 f"Use this to sharpen the angle and ensure the titles reflect the creator's unique perspective or hook. "
             )
 
-        if combined_script:
+        if media_summary:
             base_prompt += (
-                f"\nHere is the actual content context from the video script or media provided - use this to identify the single strongest hook, most surprising moment, or most valuable insight the video delivers, and make sure at least some titles are built around that core payoff: "
-                f"'{combined_script[:1500]}'. "
+                f"\nHere is a comprehensive summary of the actual content from the video script or media provided - use this summary to identify the single strongest hook, most surprising moment, or most valuable insight the video delivers, and make sure at least some titles are built around that core payoff: "
+                f"'{media_summary}'. "
                 f"The viewer who clicks must feel the video delivered exactly what the title promised. "
             )
 

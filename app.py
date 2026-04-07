@@ -3849,7 +3849,7 @@ def whole_script():
                             print(f"... (truncated, {len(transcript) - 500:,} more characters)")
                         print(f"{'='*80}\n")
 
-                        return (folder_type if folder_type == 'personal' else 'inspiration', {
+                        return ('inspiration', {
                             'folder_name': folder_name,
                             'url': url,
                             'transcript': transcript,
@@ -3872,7 +3872,7 @@ def whole_script():
 
                         transcript = result['transcript']
 
-                        return (folder_type if folder_type == 'personal' else 'inspiration', {
+                        return ('inspiration', {
                             'folder_name': folder_name,
                             'url': url,
                             'transcript': transcript,
@@ -3895,7 +3895,7 @@ def whole_script():
 
                         transcript = result['transcript']
 
-                        return (folder_type if folder_type == 'personal' else 'inspiration', {
+                        return ('inspiration', {
                             'folder_name': folder_name,
                             'url': url,
                             'transcript': transcript,
@@ -3967,7 +3967,7 @@ def whole_script():
 
                         transcript = result['transcript']
 
-                        return (folder_type if folder_type == 'personal' else 'inspiration', {
+                        return ('inspiration', {
                             'folder_name': folder_name,
                             'source': filename,
                             'transcript': transcript,
@@ -4040,7 +4040,7 @@ def whole_script():
 
                         transcript = result['transcript']
 
-                        return (folder_type if folder_type == 'personal' else 'inspiration', {
+                        return ('inspiration', {
                             'folder_name': folder_name,
                             'source': filename,
                             'transcript': transcript,
@@ -4248,12 +4248,9 @@ def whole_script():
                 if result_type == 'error':
                     errors.append(result_data)
                     print(f"[{completed}/{len(all_tasks)}] ❌ Error: {result_data}")
-                elif result_type == 'personal':
-                    processed_personal.append(result_data)
-                    print(f"[{completed}/{len(all_tasks)}] ✓ Personal video")
-                elif result_type == 'inspiration':
+                elif result_type == 'personal' or result_type == 'inspiration':
                     processed_inspiration.append(result_data)
-                    print(f"[{completed}/{len(all_tasks)}] ✓ Inspiration")
+                    print(f"[{completed}/{len(all_tasks)}] ✓ Inspiration/Personal video")
                 elif result_type == 'document':
                     processed_documents.append(result_data)
                     print(f"[{completed}/{len(all_tasks)}] ✓ Document")
@@ -4856,7 +4853,7 @@ def short_script():
                         if not transcript or len(transcript) < 50:
                             return ('error', f"[{folder_name}] YouTube {url}: Transcript too short or empty")
                         word_count = len(transcript.split())
-                        return (folder_type if folder_type == 'personal' else 'inspiration', {
+                        return ('inspiration', {
                             'folder_name': folder_name, 'url': url, 'transcript': transcript,
                             'stats': {'char_count': len(transcript), 'word_count': word_count, 'source_type': 'transcript_api'},
                             'type': 'youtube'
@@ -4869,7 +4866,7 @@ def short_script():
                         result = instagram_processor.process_instagram_url(url)
                         if result['error']:
                             return ('error', f"[{folder_name}] Instagram {url}: {result['error']}")
-                        return (folder_type if folder_type == 'personal' else 'inspiration', {
+                        return ('inspiration', {
                             'folder_name': folder_name, 'url': url, 'transcript': result['transcript'],
                             'stats': result['stats'], 'type': 'instagram'
                         })
@@ -4881,7 +4878,7 @@ def short_script():
                         result = facebook_processor.process_facebook_url(url)
                         if result['error']:
                             return ('error', f"[{folder_name}] Facebook {url}: {result['error']}")
-                        return (folder_type if folder_type == 'personal' else 'inspiration', {
+                        return ('inspiration', {
                             'folder_name': folder_name, 'url': url, 'transcript': result['transcript'],
                             'stats': result['stats'], 'type': 'facebook'
                         })
@@ -4925,7 +4922,7 @@ def short_script():
                             pass
                         if result['error']:
                             return ('error', f"[{folder_name}] Audio {filename}: {result['error']}")
-                        return (folder_type if folder_type == 'personal' else 'inspiration', {
+                        return ('inspiration', {
                             'folder_name': folder_name, 'source': filename,
                             'transcript': result['transcript'], 'stats': result['stats'], 'type': 'audio_file'
                         })
@@ -4972,7 +4969,7 @@ def short_script():
                             pass
                         if result.get('error'):
                             return ('error', f"[{folder_name}] Video {filename}: {result['error']}")
-                        return (folder_type if folder_type == 'personal' else 'inspiration', {
+                        return ('inspiration', {
                             'folder_name': folder_name, 'source': filename,
                             'transcript': result.get('transcript', ''), 'stats': result.get('stats', {}),
                             'type': 'local_video'
@@ -5064,9 +5061,7 @@ def short_script():
                     continue
                 if result_type == 'error':
                     errors.append(result_data)
-                elif result_type == 'personal':
-                    processed_personal.append(result_data)
-                elif result_type == 'inspiration':
+                elif result_type == 'personal' or result_type == 'inspiration':
                     processed_inspiration.append(result_data)
                 elif result_type == 'document':
                     processed_documents.append(result_data)
@@ -5247,7 +5242,22 @@ def chat_modify_script():
         'inspiration': '',
         'documents': ''
     })
-    knowledge_base_raw = data.get('knowledge_base_raw')  # ✅ NEW: Raw URLs to process
+    # Extract knowledge_base_raw and folders (check both top-level and nested)
+    knowledge_base_raw = data.get('knowledge_base_raw')
+    folders = data.get('folders', [])
+    
+    # NEW: If folders are nested inside knowledge_base_raw, extract them
+    if knowledge_base_raw and isinstance(knowledge_base_raw, dict):
+        inner_folders = knowledge_base_raw.get('folders', [])
+        if inner_folders and isinstance(inner_folders, list):
+            folders.extend(inner_folders)
+            print(f"  (Extracted {len(inner_folders)} nested folders from knowledge_base_raw)")
+            
+    # Also extract target duration (minutes) from either top level or nested
+    target_minutes = data.get('minutes')
+    if not target_minutes and knowledge_base_raw and isinstance(knowledge_base_raw, dict):
+        target_minutes = knowledge_base_raw.get('minutes')
+    
     chat_session_id = data.get('chat_session_id')  # Optional for tracking
     
     # Validation
@@ -5270,17 +5280,107 @@ def chat_modify_script():
         print(f"{'='*80}\n")
         
         # ============================================
-        # Process knowledge_base_raw if provided
-        # Uses same flat structure as whole_script:
-        # youtube_urls, instagram_urls, facebook_urls,
-        # tiktok_urls, video_files, audio_files,
-        # documents, image_files, text_inputs
+        # 1. Initialize storage for raw content
+        # ============================================
+        raw_transcripts = []  # For inspiration sources (videos/audio)
+        raw_doc_texts = []    # For document sources (docs/images/text)
+        safe_user_id = user_id.replace('.', '_').replace(':', '_')
+        
+        # ============================================
+        # 2. Process FOLDERS (NEW: Matches whole_script)
+        # ============================================
+        if folders and isinstance(folders, list):
+            print(f"\n[chat-modify] Processing {len(folders)} folders...")
+            
+            def process_item_local(folder_name, folder_type, item, item_idx):
+                try:
+                    if isinstance(item, str):
+                        item_type = 'document'
+                    else:
+                        item_type = item.get('type')
+
+                    # Smart type detection
+                    if item_type == 'video_file' and 'url' in item and 'data' not in item:
+                        url = item.get('url', '').strip()
+                        if 'youtube.com' in url or 'youtu.be' in url: item_type = 'youtube_url'
+                        elif 'instagram.com' in url: item_type = 'instagram_url'
+                        elif 'facebook.com' in url or 'fb.watch' in url: item_type = 'facebook_url'
+
+                    # Process YouTube
+                    if item_type == 'youtube_url':
+                        url = item.get('url', '').strip()
+                        if url and video_processor.validate_youtube_url(url):
+                            transcript = transcribe_youtube_with_transcript_api(url)
+                            if transcript and len(transcript) > 50:
+                                return ('inspiration', transcript)
+                    
+                    # Process Instagram
+                    elif item_type == 'instagram_url':
+                        url = item.get('url', '').strip()
+                        if url and instagram_processor.validate_instagram_url(url):
+                            res = instagram_processor.process_instagram_url(url)
+                            if res and not res.get('error') and res.get('transcript'):
+                                return ('inspiration', res['transcript'])
+                    
+                    # Process Facebook
+                    elif item_type == 'facebook_url':
+                        url = item.get('url', '').strip()
+                        if url and facebook_processor.validate_facebook_url(url):
+                            res = facebook_processor.process_facebook_url(url)
+                            if res and not res.get('error') and res.get('transcript'):
+                                return ('inspiration', res['transcript'])
+
+                    # Process Document/Image/Text
+                    elif item_type in ('document', 'doc_url'):
+                        url = item.get('url', '') if isinstance(item, dict) else item
+                        if url:
+                            res = document_processor.process_document(url)
+                            if res and res.get('text'): return ('document', res['text'])
+                    
+                    elif item_type == 'image_files':
+                        url = item.get('url', '')
+                        if url:
+                            res = image_processor.process_image_url(url, item.get('filename', 'image.jpg'))
+                            if res and res.get('text'): return ('document', res['text'])
+                    
+                    elif item_type == 'text_input':
+                        content = item.get('content', '')
+                        if content:
+                            res = text_processor.process_text_input(content, item.get('name', 'Text'))
+                            if res and res.get('text'): return ('document', res['text'])
+
+                    return ('error', None)
+                except Exception as e:
+                    print(f"Error in process_item_local: {e}")
+                    return ('error', None)
+
+            # Build tasks
+            all_folder_tasks = []
+            for folder in folders:
+                f_name = folder.get('name', 'Unnamed')
+                f_type = folder.get('type', 'inspiration')
+                # NORMALIZATION: treat personal as inspiration
+                if f_type == 'personal': f_type = 'inspiration'
+                
+                f_items = folder.get('items', [])
+                for idx, item in enumerate(f_items):
+                    all_folder_tasks.append((f_name, f_type, item, idx))
+
+            if all_folder_tasks:
+                from concurrent.futures import ThreadPoolExecutor, as_completed
+                with ThreadPoolExecutor(max_workers=min(5, len(all_folder_tasks))) as executor:
+                    futures = {executor.submit(process_item_local, *task): task for task in all_folder_tasks}
+                    for future in as_completed(futures):
+                        rtype, rtext = future.result()
+                        if rtype == 'inspiration' and rtext:
+                            raw_transcripts.append(rtext)
+                        elif rtype == 'document' and rtext:
+                            raw_doc_texts.append(rtext)
+
+        # ============================================
+        # 3. Process knowledge_base_raw if provided (Backward compatibility)
         # ============================================
         if knowledge_base_raw:
-            raw_transcripts = []  # For inspiration sources (videos/audio)
-            raw_doc_texts = []    # For document sources (docs/images/text)
-            safe_user_id = user_id.replace('.', '_').replace(':', '_')
-            
             # --- YouTube URLs ---
             kb_youtube = knowledge_base_raw.get('youtube_urls', [])
             if kb_youtube and isinstance(kb_youtube, list):

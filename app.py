@@ -2414,7 +2414,7 @@ These titles are built to rank in YouTube and Google search. They must:
 - Be clear, specific, and immediately tell the viewer exactly what they will learn or gain
 - Sound like someone a knowledgeable friend would say, not a keyword-stuffed robot
 - Front-load the most important keyword or benefit within the first 4-5 words
-- Stay between 50-70 characters ideally (hard max 100 characters)
+- MUST be between 50-70 characters long (this is a STRICT REQUIREMENT)
 - Use formats that perform well in search: How-To, Step-by-Step, Best X for Y, Complete Guide, X Tips, X Mistakes to Avoid, X vs Y, What Happens When, Does X Actually Work
 - Feel evergreen and trustworthy - something a viewer would click from search results at any time
 - Example feel: "How to Lose Belly Fat Without Giving Up Your Favorite Foods" or "10 Budgeting Mistakes That Keep You Broke"
@@ -2481,7 +2481,12 @@ STRICT RULES FOR ALL 5 TITLES (non-negotiable):
         base_prompt += (
             f"""
 For each title provide a virality score out of 100 reflecting realistic CTR potential.
-Also generate 10 relevant tags and one shared description of 100-150 words optimized for search, applicable to all titles.
+Also generate a high-quality list of relevant tags and one shared description (100-150 words) optimized for search, applicable to all titles.
+
+IMPORTANT TAG RULE: The total SUM of all characters of all tags (when joined by commas) MUST be between 450 and 500 characters. 
+STRICT MINIMUM: 450 characters. YouTube allows a max of 500. 
+To reach this, you MUST provide a large number of relevant tags (typically 30-50 tags depending on length). 
+Keep generating tags until the total character count is at least 450, but do not exceed 500.
 
 Return ONLY valid JSON with exactly this structure, no extra text before or after:
 {{
@@ -2492,7 +2497,7 @@ Return ONLY valid JSON with exactly this structure, no extra text before or afte
     {{"title": "string", "virality_score": int}},
     {{"title": "string", "virality_score": int}}
   ],
-  "tags": ["string", "string", "string", "string", "string", "string", "string", "string", "string", "string"],
+  "tags": ["tag1", "tag2", "tag3", "tag4", "tag5", "tag6", "tag7", "tag8", "tag9", "tag10", "tag11", "tag12", "tag13", "tag14", "tag15", "tag16", "tag17", "tag18", "tag19", "tag20", "tag21", "tag22", "tag23", "tag24", "tag25", "tag26", "tag27", "tag28", "tag29", "tag30"],
   "description": "string"
 }}
 """
@@ -2539,6 +2544,24 @@ Return ONLY valid JSON with exactly this structure, no extra text before or afte
 
         if len(parsed_response.get('seo_titles', [])) != 5:
             app.logger.warning(f"Expected 5 SEO titles, got {len(parsed_response.get('seo_titles', []))}")
+
+        # Post-process tags to ensure total character count is within YouTube's 500 limit
+        # This acts as a safety guard if the AI exceeds the requested 500 characters
+        raw_tags = parsed_response.get('tags', [])
+        if raw_tags:
+            safe_tags = []
+            current_total = 0
+            for tag in raw_tags:
+                tag_len = len(tag)
+                # YouTube counts the comma as well
+                comma_len = 1 if safe_tags else 0
+                if current_total + tag_len + comma_len <= 500:
+                    safe_tags.append(tag)
+                    current_total += tag_len + comma_len
+                else:
+                    break
+            parsed_response['tags'] = safe_tags
+            app.logger.info(f"[generate_titles] Tag normalization: final total characters: {current_total}")
 
         # ------------------------------------------------------------------ #
         # STEP 3 — Generate 5 outlier search tags via Claude                  #
@@ -2612,7 +2635,7 @@ Return ONLY valid JSON with exactly this structure:
                     part="snippet",
                     q=tag_str,
                     type="video",
-                    maxResults=10,
+                    maxResults=25,
                     videoDuration="short" if video_type == "short" else "medium",
                 ).execute()
 
@@ -2683,13 +2706,17 @@ Return ONLY valid JSON with exactly this structure:
                     seen_video_ids.add(vid_id)
                     all_videos_raw.append(v)
 
-        # Compute avg views across the full combined pool for multiplier
-        total_combined_views = sum(
+        # Compute median views across the full combined pool for a more robust baseline
+        all_view_counts = [
             int(v["statistics"].get("viewCount", 0))
             for v in all_videos_raw
             if v.get("statistics")
-        )
-        avg_combined_views = total_combined_views / len(all_videos_raw) if all_videos_raw else 1
+        ]
+        
+        if all_view_counts:
+            avg_combined_views = float(np.median(all_view_counts))
+        else:
+            avg_combined_views = 1.0
 
         def fmt_video_from_detail(v, avg_views):
             """Format a raw YouTube video detail dict into the standard response shape."""
@@ -2745,6 +2772,10 @@ Return ONLY valid JSON with exactly this structure:
             fmt_video_from_detail(v, avg_combined_views)
             for v in all_videos_raw
         ]
+        
+        # Filter for true outliers only (multiplier >= 1.0)
+        shared_video_pool = [v for v in shared_video_pool if v["multiplier"] >= 1.0]
+        
         shared_video_pool.sort(
             key=lambda x: (x["multiplier"], x["views"]),
             reverse=True

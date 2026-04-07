@@ -2199,6 +2199,9 @@ def generate_titles():
         prompt = data.get('prompt')
         script = data.get('script', '')
         youtube_url = data.get('youtube_url', '').strip()
+        youtube_titleid = data.get('youtube_titleid', '').strip()
+        if not youtube_url and youtube_titleid:
+            youtube_url = f"https://www.youtube.com/watch?v={youtube_titleid}"
         niche = data.get('niche', 'general')
         audience = data.get('audience', 'general')
         # NEW: accept video_type for outlier video search ("long" or "short", default "long")

@@ -2705,10 +2705,20 @@ CRITICAL: This is not just a "style guide" - this is the creator's VOICE DNA. Ev
 </creator_voice_profile>
 
 <assignment>
-Topic: {prompt}
+User Request: {prompt}
 
 {duration_instruction if duration_instruction else "Create a comprehensive script with natural pacing."}
 </assignment>
+
+<decision_step>
+Before writing, evaluate the user's request:
+- Is it clear what the script should be about and what angle to take?
+- Is there enough context from the reference knowledge or request to write a meaningful script?
+
+IF the request is too vague, ambiguous, or could go in multiple different directions, DO NOT generate a script. Instead, respond ONLY with a short, friendly message asking 1–3 clarifying questions. For example: "Before I write this script, could you clarify: 1) What angle or perspective should I take? 2) Who is the target audience? 3) Should I focus more on X or Y?" You may also offer 2–3 concrete options for the user to choose from.
+
+IF the request is clear enough, proceed to write the full script as instructed below.
+</decision_step>
 {group_map_section}
 <reference_knowledge>
 {content_section if content_section else "No reference content provided. Research the topic yourself and bring fresh insights."}
@@ -2799,7 +2809,8 @@ End with their typical closing pattern.
 Do not include meta-commentary like "Here's the script" - just write the script directly.
 </output_format>
 
-Now write the full script, channeling this creator's exact voice:"""
+If the request is clear: write the full script now, channeling this creator's exact voice.
+If the request is unclear or ambiguous: respond with clarifying questions or options instead of generating a script."""
 
             # ============================================
             # PART 5: GENERATE SCRIPT
@@ -2974,7 +2985,7 @@ Instructions: {tone_analyzer.get('ai_replication_instructions', 'Maintain profes
 2. Answer questions about the script
 3. Provide suggestions or improvements
 4. Make sure to give whole script in same format not only changes.
-5. Do NOT include any introductory phrases, prefaces, explanations, or meta text. Start your response directly with the requested content.
+5. If the user's request is too vague, unclear, or could mean multiple things — DO NOT guess. Instead, ask 1-3 short, friendly clarifying questions or offer 2-3 concrete options for them to choose from.
 
 **IMPORTANT:**
 - If modifying the script, maintain the exact tone and style specified above
@@ -2983,6 +2994,7 @@ Instructions: {tone_analyzer.get('ai_replication_instructions', 'Maintain profes
 - Ensure smooth flow and transitions
 - If the user asks a question, answer it clearly
 - If they want changes, provide the modified version or specific suggestions
+- If you need clarification, ask directly — do NOT generate a generic or placeholder script
 
 Provide your response:"""
 

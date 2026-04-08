@@ -2432,6 +2432,8 @@ STRICT RULES FOR ALL 5 TITLES (non-negotiable):
 8. Each title must stand alone as compelling - if you removed all other context, a stranger should still want to click it
 9. Virality score must be honestly assessed based on realistic CTR potential (SEO titles typically score 65-82)
 10. Do not start titles with numbers more than twice across all 5 titles
+11. Every title MUST be written strictly in English, regardless of the input language or topic. This is a primary requirement.
+
 
 """
 
@@ -2573,7 +2575,9 @@ Rules:
 - Each tag must be a realistic YouTube search query a viewer would type
 - Tags must cover different angles or sub-topics so results are diverse
 - No special characters, no hashtags, keep them lowercase
+- Every tag MUST be in English regardless of the input language
 - Return ONLY valid JSON, no extra text before or after
+
 
 Topic: {topic or ''}
 Niche: {niche or 'general'}

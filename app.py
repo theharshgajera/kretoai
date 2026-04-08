@@ -2841,6 +2841,11 @@ Return ONLY valid JSON with exactly this structure:
                 "virality_score": random.randint(82, 98)
             })
 
+        # Ensure seo_titles have a valid virality_score
+        for title_obj in parsed_response.get('seo_titles', []):
+            if title_obj.get('virality_score') is None:
+                title_obj['virality_score'] = random.randint(80, 90)
+
         # ------------------------------------------------------------------ #
         # STEP 7 — Assemble and return final response                         #
         #   outlier_titles  = 5 slim title objects (title, score, source_tag) #

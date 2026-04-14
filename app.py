@@ -2208,6 +2208,7 @@ def generate_titles():
         video_type = data.get('video_type', 'long').strip().lower()
         if video_type not in ['long', 'short']:
             video_type = 'long'
+        region_code = data.get('region_code', 'US').strip().upper()
 
         # ------------------------------------------------------------------ #
         # STEP 1 — Collect all transcript / script content                    #
@@ -2566,7 +2567,8 @@ Generate exactly 5 SEO OPTIMIZED TITLES. Each must use a different framework fro
                     part='snippet',
                     type='video',
                     order='viewCount',
-                    maxResults=10
+                    maxResults=10,
+                    regionCode=region_code
                 ).execute()
                 titles = [item['snippet']['title'] for item in search_response.get('items', [])]
                 if not titles:
@@ -2762,6 +2764,7 @@ Return ONLY valid JSON with exactly this structure:
                     type="video",
                     maxResults=25,
                     videoDuration="short" if video_type == "short" else "medium",
+                    regionCode=region_code
                 ).execute()
 
                 video_ids = [

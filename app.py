@@ -1558,7 +1558,7 @@ def shorts_outliers_from_channels():
 
         for ch_id in channel_ids:
             ch_resp = youtube.channels().list(
-                part="snippet,statistics,contentDetails",  # ✅ added contentDetails
+                part="snippet,statistics,contentDetails",
                 id=ch_id
             ).execute()
 
@@ -1569,19 +1569,31 @@ def shorts_outliers_from_channels():
             ch_title = ch_info["snippet"]["title"]
             subs_count = int(ch_info["statistics"].get("subscriberCount", 1))
 
-            # ✅ Use uploads playlist for consistency
             uploads_playlist_id = ch_info["contentDetails"]["relatedPlaylists"]["uploads"]
 
-            playlist_resp = youtube.playlistItems().list(
-                part="snippet",
-                playlistId=uploads_playlist_id,
-                maxResults=50
-            ).execute()
+            # ✅ Fetch 3x data — paginate up to 150 videos
+            video_ids = []
+            next_page_token = None
 
-            video_ids = [
-                item["snippet"]["resourceId"]["videoId"]
-                for item in playlist_resp.get("items", [])
-            ]
+            for _ in range(3):  # 3 pages × 50 = 150 videos
+                params = {
+                    "part": "snippet",
+                    "playlistId": uploads_playlist_id,
+                    "maxResults": 50
+                }
+                if next_page_token:
+                    params["pageToken"] = next_page_token
+
+                playlist_resp = youtube.playlistItems().list(**params).execute()
+
+                video_ids += [
+                    item["snippet"]["resourceId"]["videoId"]
+                    for item in playlist_resp.get("items", [])
+                ]
+
+                next_page_token = playlist_resp.get("nextPageToken")
+                if not next_page_token:
+                    break
 
             if not video_ids:
                 continue
@@ -1616,7 +1628,7 @@ def shorts_outliers_from_channels():
                 int(v["statistics"].get("viewCount", 0)) for v in videos_for_avg
             ) / len(videos_for_avg)
 
-            # ✅ popular — only multiplier <= 1
+            # popular — only multiplier >= 1
             popular_videos = sorted(
                 [
                     v for v in shorts_videos
@@ -1627,7 +1639,7 @@ def shorts_outliers_from_channels():
                 reverse=True
             )[:15]
 
-            # ✅ trending — only multiplier > 1
+            # trending — only multiplier > 1
             trending_videos = []
             for v in shorts_videos[:30]:
                 views = int(v["statistics"].get("viewCount", 0))

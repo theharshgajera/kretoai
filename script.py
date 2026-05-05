@@ -3796,6 +3796,211 @@ Be thorough and detailed. Extract ALL information visible in the image."""
         return text_content, "direct_input", None
 
 
+class WebpageProcessor:
+    """Extract and summarize content from any public webpage using Claude.
+    
+    Works like DocumentProcessor but for live web URLs: fetches HTML,
+    strips navigation/boilerplate, and sends the clean text to Claude
+    for a structured knowledge summary ready for script generation.
+    """
+    
+    def __init__(self):
+        self.anthropic_client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+        self.max_text_chars = 80000  # Claude context limit
+        self.request_timeout = 30    # seconds
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+
+    def process_webpage(self, url, label=None):
+        """
+        Fetch a webpage, extract readable text, and summarise with Claude.
+
+        Args:
+            url:   Full http/https URL of the page to process.
+            label: Optional friendly name shown in logs and stats.
+
+        Returns:
+            dict with keys: error, text, stats
+                - error: None on success, str message on failure
+                - text:  Claude-generated knowledge summary
+                - stats: word_count, char_count, source_type, url
+        """
+        print(f"\n{'='*60}")
+        print(f"WEBPAGE PROCESSING (CLAUDE): {label or url}")
+        print(f"{'='*60}\n")
+
+        if not url or not url.strip():
+            return {"error": "Empty URL provided", "text": None, "stats": None}
+
+        url = url.strip()
+        if not url.startswith(('http://', 'https://')):
+            return {
+                "error": f"Invalid URL (must start with http/https): {url}",
+                "text": None,
+                "stats": None
+            }
+
+        # 1. Fetch HTML
+        raw_html, fetch_error = self._fetch_html(url)
+        if fetch_error:
+            return {"error": fetch_error, "text": None, "stats": None}
+
+        # 2. Extract clean text
+        clean_text = self._extract_text(raw_html)
+        if not clean_text or len(clean_text) < 50:
+            return {
+                "error": "Could not extract readable text from the page.",
+                "text": None,
+                "stats": None
+            }
+
+        print(f"✓ Extracted: {len(clean_text):,} characters of readable text")
+
+        # 3. Truncate if needed
+        if len(clean_text) > self.max_text_chars:
+            half = self.max_text_chars // 2
+            clean_text = (
+                clean_text[:half]
+                + "\n\n[...MIDDLE CONTENT OMITTED FOR LENGTH...]\n\n"
+                + clean_text[-half:]
+            )
+
+        # 4. Summarise with Claude
+        print("Analysing webpage with Claude...")
+        summary = self._summarise_with_claude(clean_text, label or url)
+        if not summary:
+            return {"error": "Claude summarisation failed", "text": None, "stats": None}
+
+        word_count = len(summary.split())
+        print(f"\n{'='*60}")
+        print(f"✓ WEBPAGE PROCESSING COMPLETE")
+        print(f"{'='*60}")
+        print(f"Summary: {len(summary):,} chars, {word_count:,} words")
+        print(f"{'='*60}\n")
+
+        return {
+            "error": None,
+            "text": summary,
+            "stats": {
+                "word_count": word_count,
+                "char_count": len(summary),
+                "source_type": "webpage",
+                "url": url,
+                "label": label or url
+            }
+        }
+
+    # ------------------------------------------------------------------
+    # Private helpers
+    # ------------------------------------------------------------------
+
+    def _fetch_html(self, url):
+        """Download raw HTML. Returns (html_str, error_str|None)."""
+        try:
+            headers = {
+                "User-Agent": (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/124.0 Safari/537.36"
+                ),
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "Accept-Language": "en-US,en;q=0.5",
+            }
+            response = requests.get(
+                url,
+                headers=headers,
+                timeout=self.request_timeout,
+                allow_redirects=True
+            )
+            if response.status_code != 200:
+                return None, f"HTTP {response.status_code} when fetching page"
+            return response.text, None
+        except requests.exceptions.Timeout:
+            return None, "Request timed out (30 s)"
+        except requests.exceptions.ConnectionError:
+            return None, "Could not connect to the URL"
+        except Exception as e:
+            return None, f"Fetch error: {str(e)}"
+
+    def _extract_text(self, html):
+        """Strip HTML and return clean, readable text."""
+        try:
+            from bs4 import BeautifulSoup
+            soup = BeautifulSoup(html, "html.parser")
+
+            # Remove non-content tags
+            for tag in soup(
+                ["script", "style", "noscript", "header", "footer",
+                 "nav", "aside", "form", "iframe", "svg", "img"]
+            ):
+                tag.decompose()
+
+            # Try to locate main content block first
+            main = (
+                soup.find("article")
+                or soup.find("main")
+                or soup.find(id="content")
+                or soup.find(id="main")
+                or soup.find(class_="content")
+                or soup.find(class_="post")
+                or soup.find(class_="article")
+                or soup.body
+            )
+
+            raw = main.get_text(separator="\n") if main else soup.get_text(separator="\n")
+
+            # Collapse excessive whitespace
+            lines = [line.strip() for line in raw.splitlines()]
+            lines = [l for l in lines if l]  # drop blank lines
+            return "\n".join(lines)
+
+        except ImportError:
+            # bs4 not installed — fall back to naive regex stripping
+            import re as _re
+            text = _re.sub(r"<[^>]+>", " ", html)
+            text = _re.sub(r"\s+", " ", text)
+            return text.strip()
+        except Exception as e:
+            print(f"❌ Text extraction error: {e}")
+            return ""
+
+    def _summarise_with_claude(self, text, source_label):
+        """Send extracted text to Claude and return a knowledge summary."""
+        try:
+            prompt = f"""You are a content researcher. Analyse the following webpage content and extract key insights for YouTube/video script creation.
+
+Extract:
+1. Core topics, arguments, and themes covered on the page
+2. Specific data, facts, statistics, and figures
+3. Technical details, processes, or how-to information
+4. Quotes, expert opinions, or authoritative statements
+5. Unique angles, perspectives, or insights
+6. Practical takeaways and actionable points
+
+**WEBPAGE: {source_label}**
+
+{text}
+
+Provide a comprehensive, well-structured knowledge summary (400–800 words) that can be used directly as reference material for writing an engaging video script. Focus on facts and insights, not on the page's navigation or layout."""
+
+            message = self.anthropic_client.messages.create(
+                model="claude-sonnet-4-20250514",
+                max_tokens=4000,
+                temperature=0.2,
+                messages=[{"role": "user", "content": prompt}]
+            )
+            summary = message.content[0].text.strip()
+            print(f"✓ Claude summary: {len(summary):,} characters")
+            return summary
+        except Exception as e:
+            print(f"❌ Claude API error: {str(e)}")
+            import traceback
+            print(traceback.format_exc())
+            return None
+
+
 # Initialize processors for export
 # Initialize processors for export
 document_processor = DocumentProcessor()
@@ -3809,6 +4014,7 @@ audio_processor = AudioProcessor()  # ADD THIS LINE
 # tiktok_processor = TikTokProcessor()
 image_processor = ImageProcessor()
 text_processor = TextProcessor()
+webpage_processor = WebpageProcessor()
 universal_extractor = UniversalContentExtractor()
 # Update __all__ to export new processors
 __all__ = [
@@ -3817,10 +4023,11 @@ __all__ = [
     'UniversalContentExtractor',
     'InstagramProcessor',
     'FacebookProcessor',
-    'TikTokProcessor',  # NEW
-    'ImageProcessor',   # NEW
-    'TextProcessor',    # NEW
+    'TikTokProcessor',
+    'ImageProcessor',
+    'TextProcessor',
     'AudioProcessor',
+    'WebpageProcessor',   # NEW
     'EnhancedScriptGenerator',
     'user_data',    
     'UPLOAD_FOLDER',
@@ -3830,10 +4037,11 @@ __all__ = [
     'video_processor',
     'instagram_processor',
     'facebook_processor',
-    # 'tiktok_processor',  # NEW
-    'image_processor',   # NEW
-    'text_processor',    # NEW
+    # 'tiktok_processor',
+    'image_processor',
+    'text_processor',
     'audio_processor',
+    'webpage_processor',  # NEW
     'script_generator',
     'load_whisper_model'
 ]

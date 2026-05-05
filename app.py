@@ -114,6 +114,7 @@ from script import (
     image_processor,
     instagram_processor,
     text_processor,
+    webpage_processor,    # NEW: webpage link support
     # tiktok_processor,
     user_data,
     universal_extractor
@@ -4343,6 +4344,29 @@ def whole_script():
                     })
 
                 # -----------------------------
+                # WEBPAGE URL
+                # -----------------------------
+                elif item_type == 'webpage_url':
+                    url = item.get('url', '').strip()
+                    label = item.get('label') or item.get('name') or url
+                    if not url:
+                        return ('error', f"[{folder_name}] No URL provided for webpage_url item")
+                    try:
+                        print(f"\n[{folder_name}] Processing webpage: {url}")
+                        result = webpage_processor.process_webpage(url, label=label)
+                        if result.get('error'):
+                            return ('error', f"[{folder_name}] Webpage {url}: {result['error']}")
+                        return ('document', {
+                            'folder_name': folder_name,
+                            'source_name': label,
+                            'text': result.get('text', ''),
+                            'stats': result.get('stats', {}),
+                            'type': 'webpage'
+                        })
+                    except Exception as e:
+                        return ('error', f"[{folder_name}] Webpage error {url}: {str(e)}")
+
+                # -----------------------------
                 # UNKNOWN TYPE
                 # -----------------------------
                 else:
@@ -5173,6 +5197,26 @@ def short_script():
                             })
                         except Exception as e:
                             return ('error', f"[{folder_name}] Text input error: {str(e)}")
+
+                elif item_type == 'webpage_url':
+                    url = item.get('url', '').strip()
+                    label = item.get('label') or item.get('name') or url
+                    if url:
+                        try:
+                            print(f"\n[{folder_name}] Processing webpage: {url}")
+                            result = webpage_processor.process_webpage(url, label=label)
+                            if result.get('error'):
+                                return ('error', f"[{folder_name}] Webpage {url}: {result['error']}")
+                            return ('document', {
+                                'folder_name': folder_name,
+                                'source_name': label,
+                                'text': result.get('text', ''),
+                                'stats': result.get('stats', {}),
+                                'type': 'webpage'
+                            })
+                        except Exception as e:
+                            return ('error', f"[{folder_name}] Webpage error {url}: {str(e)}")
+                    return ('error', f"[{folder_name}] No URL provided for webpage_url item")
 
                 return ('error', f"[{folder_name}] Unknown item type: {item_type}")
 

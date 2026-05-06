@@ -4487,6 +4487,12 @@ def whole_script():
                 
                 transcripts_text = chr(10).join(grouped_text_parts)
                 
+                # Prevent prompt too long error
+                max_chars = 150000
+                if len(transcripts_text) > max_chars:
+                    print(f"⚠️ Truncating transcripts text from {len(transcripts_text):,} to {max_chars:,} chars")
+                    transcripts_text = transcripts_text[:max_chars] + "\n\n[...CONTENT TRUNCATED TO AVOID EXCEEDING MAXIMUM LENGTH...]"
+                
                 knowledge_prompt = f"""You are analyzing {len(processed_inspiration)} inspiration sources to extract KNOWLEDGE POINTS that can be used as reference material for creating a new video script.
 
 The sources are organized into NAMED GROUPS by the user. **PRESERVE the group names** in your output so the user can reference them by name (e.g., "use facts from Group 1").
@@ -4559,6 +4565,12 @@ Provide a structured knowledge summary ORGANIZED BY GROUP NAME. Use clear header
                         grouped_text_parts.append(f'Document {idx+1} ({doc_label}):\n{text}')
                 
                 documents_text = chr(10).join(grouped_text_parts)
+                
+                # Prevent prompt too long error
+                max_chars = 150000
+                if len(documents_text) > max_chars:
+                    print(f"⚠️ Truncating documents text from {len(documents_text):,} to {max_chars:,} chars")
+                    documents_text = documents_text[:max_chars] + "\n\n[...CONTENT TRUNCATED TO AVOID EXCEEDING MAXIMUM LENGTH...]"
                 
                 doc_prompt = f"""You are analyzing {len(processed_documents)} documents/images/text inputs to extract FACTUAL KNOWLEDGE that can be used as reference material.
 
@@ -5266,6 +5278,14 @@ def short_script():
                     f"Source {i+1}: {v.get('url', v.get('source', 'Unknown'))}"
                     for i, v in enumerate(processed_inspiration)
                 ]
+                transcripts_text = chr(10).join([f'--- SOURCE {i+1} ---{chr(10)}{t}' for i, t in enumerate(transcripts)])
+                
+                # Prevent prompt too long error
+                max_chars = 150000
+                if len(transcripts_text) > max_chars:
+                    print(f"⚠️ Truncating transcripts text from {len(transcripts_text):,} to {max_chars:,} chars")
+                    transcripts_text = transcripts_text[:max_chars] + "\n\n[...CONTENT TRUNCATED TO AVOID EXCEEDING MAXIMUM LENGTH...]"
+                
                 knowledge_prompt = f"""You are analyzing {len(transcripts)} inspiration sources to extract KNOWLEDGE POINTS for a short-form video script.
 
 **IMPORTANT: Extract factual knowledge, insights, and information ONLY.**
@@ -5273,7 +5293,7 @@ def short_script():
 Sources:\n{chr(10).join(sources_info)}
 
 TRANSCRIPTS:
-{chr(10).join([f'--- SOURCE {i+1} ---{chr(10)}{t}' for i, t in enumerate(transcripts)])}
+{transcripts_text}
 
 Provide a structured knowledge summary without copying style or delivery."""
                 message = anthropic_client.messages.create(
@@ -5292,12 +5312,20 @@ Provide a structured knowledge summary without copying style or delivery."""
                     f"Document {i+1}: {d.get('filename', d.get('source_name', 'Unknown'))}"
                     for i, d in enumerate(processed_documents)
                 ]
+                documents_text = chr(10).join([f'--- DOCUMENT {i+1} ---{chr(10)}{t}' for i, t in enumerate(texts)])
+                
+                # Prevent prompt too long error
+                max_chars = 150000
+                if len(documents_text) > max_chars:
+                    print(f"⚠️ Truncating documents text from {len(documents_text):,} to {max_chars:,} chars")
+                    documents_text = documents_text[:max_chars] + "\n\n[...CONTENT TRUNCATED TO AVOID EXCEEDING MAXIMUM LENGTH...]"
+                
                 doc_prompt = f"""You are analyzing {len(texts)} documents/images/text inputs to extract FACTUAL KNOWLEDGE for a short-form video script.
 
 Sources:\n{chr(10).join(sources_info)}
 
 DOCUMENTS:
-{chr(10).join([f'--- DOCUMENT {i+1} ---{chr(10)}{t}' for i, t in enumerate(texts)])}
+{documents_text}
 
 Provide a structured knowledge summary (400-600 words) focusing on factual content only."""
                 message = anthropic_client.messages.create(
@@ -8897,6 +8925,8 @@ def process_video():
                 if url and isinstance(url, str): sources_to_process.append({'source_type': 'image', 'source_url': url.strip()})
             for url in data.get('documents', []):
                 if url and isinstance(url, str): sources_to_process.append({'source_type': 'document', 'source_url': url.strip()})
+            for url in data.get('webpage_urls', []):
+                if url and isinstance(url, str): sources_to_process.append({'source_type': 'webpage', 'source_url': url.strip()})
             
             text_inputs_data = data.get('text_inputs')
             if text_inputs_data:
@@ -9087,6 +9117,19 @@ def process_video():
                 else:
                     content, method, error = universal_extractor.extract_text_content(text_content)
                     source_info = 'text_input'
+            
+            # WEBPAGE
+            elif source_type == 'webpage':
+                if not source_url:
+                    error = "source_url required for webpage"
+                else:
+                    result = webpage_processor.process_webpage(source_url)
+                    if result.get('error'):
+                        error = result['error']
+                    else:
+                        content = result.get('text', '')
+                        method = 'webpage_processor'
+                        source_info = os.path.basename(source_url.split('?')[0]) or source_url
             
             # UNKNOWN
             else:
